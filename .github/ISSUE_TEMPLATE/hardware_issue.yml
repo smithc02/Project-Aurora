@@ -1,0 +1,18 @@
+name: Hardware issue
+description: Report a non-emergency hardware concern without unsafe instructions.
+title: "hardware: "
+labels: [hardware]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include mains wiring instructions, credentials, or private network data. Stop and seek qualified help for electrical safety concerns."
+  - type: textarea
+    attributes:
+      label: Hardware and observed behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Safety context
+    validations:
+      required: true
