@@ -41,3 +41,6 @@ files = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aurora_core"]
