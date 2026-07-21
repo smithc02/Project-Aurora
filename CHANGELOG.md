@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added Milestone 6 explicit, non-invasive Linux capture-device presence and
+  V4L2 registration metadata validation.
+
 - Added Milestone 5 explicit, one-shot HyperHDR read-only server-information
   validation using only GET `/json-rpc` with the fixed `serverinfo` command.
 

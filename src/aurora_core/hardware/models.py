@@ -39,3 +39,26 @@ class HyperHDRValidationReport:
     message: str
     server_info_received: bool = False
     hdr_mode_enabled: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureDeviceProbeResult:
+    reason_code: str
+    device_node_present: bool = False
+    character_device: bool = False
+    v4l2_registered: bool = False
+    process_read_access: bool = False
+    device_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureDeviceValidationReport:
+    component_id: ComponentId
+    state: ComponentHealthState
+    reason_code: str
+    message: str
+    device_node_present: bool = False
+    character_device: bool = False
+    v4l2_registered: bool = False
+    process_read_access: bool = False
+    device_name: str | None = None

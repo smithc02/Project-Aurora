@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated
 
@@ -88,6 +89,28 @@ class DDPSettings(EndpointSettings):
 class CaptureDeviceSettings(AuroraModel):
     enabled: StrictBoolean = False
     identifier: NonEmptyString | None = None
+
+    @field_validator("identifier")
+    @classmethod
+    def identifier_is_supported_linux_path(cls, value: str | None) -> str | None:
+        """Validate only the supported identifier grammar; never inspect paths."""
+        if value is None:
+            return value
+        if any(character in value for character in ("\x00", "\n", "\r")):
+            raise ValueError("identifier contains unsafe control characters")
+        if any(character in value for character in ("?", "#", "@", "*", "[", "]")):
+            raise ValueError(
+                "identifier must not use URL, credential, or wildcard syntax"
+            )
+        if "://" in value or value.startswith("~") or ".." in value.split("/"):
+            raise ValueError(
+                "identifier must be an absolute non-traversing device path"
+            )
+        if re.fullmatch(r"/dev/video[0-9]+", value) or re.fullmatch(
+            r"/dev/v4l/(?:by-id|by-path)/[^/]+", value
+        ):
+            return value
+        raise ValueError("identifier must be /dev/videoN or one stable /dev/v4l link")
 
     @model_validator(mode="after")
     def enabled_device_has_identifier(self) -> CaptureDeviceSettings:
