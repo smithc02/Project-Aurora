@@ -45,3 +45,25 @@ Milestone 2 supplies a validated configuration model for the planned components
 only. It loads safe defaults, an explicitly selected YAML file, `AURORA_`
 environment overrides, and CLI overrides without connecting to a device. The
 configuration model does not establish any hardware or network integration.
+
+## Runtime boundary (Milestone 3)
+
+`aurora_core.config` owns loading and validates one `AuroraSettings` snapshot.
+Runtime planning accepts that snapshot only and creates an immutable,
+secret-free `RuntimePlan`; it neither reads files or environment variables nor
+contacts devices. The plan always orders components as capture device, HyperHDR,
+WLED, DDP, then MQTT. Zones and LED layout are summarized as resources, not
+startable components.
+
+Future adapters must be injected through the synchronous component contract
+(`component_id`, `start`, `stop`, and `health`). The controller starts enabled
+components in plan order and stops successful starts in reverse order, including
+startup rollback. Lifecycle states are created, starting, running, stopping,
+stopped, and failed. Health states are disabled, unknown, healthy, degraded,
+and unhealthy; valid configuration begins as unknown.
+
+Overall health is disabled with no enabled components, then prioritizes
+unhealthy/failed, degraded, unknown (including missing reports), and healthy.
+No automatic reload, file watching, environment rereading, polling, or adapter
+implementation exists. To apply configuration changes, stop the controller and
+create a new settings snapshot, plan, and controller.

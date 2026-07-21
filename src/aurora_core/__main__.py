@@ -8,6 +8,8 @@ from pathlib import Path
 
 from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
+from aurora_core.runtime import build_runtime_plan
+from aurora_core.runtime.errors import AuroraRuntimeError
 
 APPLICATION_NAME = "Project Aurora"
 
@@ -29,6 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
     validate_parser.add_argument("--log-level", help="Override logging.level.")
+    runtime_parser = subparsers.add_parser("runtime", help="Runtime planning commands.")
+    runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_command")
+    plan_parser = runtime_subparsers.add_parser(
+        "plan", help="Build a sanitized runtime plan without connectivity checks."
+    )
+    plan_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    plan_parser.add_argument("--log-level", help="Override logging.level.")
     return parser
 
 
@@ -53,6 +62,29 @@ def main() -> int:
             print(f"Configuration validation failed: {error}", file=sys.stderr)
             return 1
         print("Configuration is valid (connectivity was not tested).")
+        return 0
+    if args.command == "runtime" and args.runtime_command == "plan":
+        overrides = (
+            {"logging": {"level": args.log_level}}
+            if args.log_level is not None
+            else None
+        )
+        try:
+            plan = build_runtime_plan(
+                load_settings(config_path=args.config, cli_overrides=overrides)
+            )
+        except (AuroraConfigurationError, AuroraRuntimeError) as error:
+            print(f"Runtime planning failed: {error}", file=sys.stderr)
+            return 1
+        print("Runtime plan valid; connectivity and hardware were not tested.")
+        for component in plan.components:
+            if component.enabled:
+                print(f"{component.component_id.value}: configured, health unknown")
+            else:
+                print(f"{component.component_id.value}: disabled")
+        print(f"lighting_zones: {plan.lighting_zone_count} configured")
+        layout = "configured" if plan.led_layout_configured else "not configured"
+        print(f"led_layout: {layout}")
         return 0
     print(f"{APPLICATION_NAME} {__version__}")
     return 0
