@@ -105,3 +105,7 @@ The explicit `capture-modes` command opens one configured node once, queries
 capabilities, and performs only bounded V4L2 format, size, and interval
 enumeration. It does not configure capture or acquire frames; runtime remains
 hardware-free. See [capture mode enumeration](capture-mode-enumeration.md).
+
+Milestone 9 adds a separate operator-only `capture-frame` boundary. It permits
+only capability/current-format queries plus one bounded read/write frame attempt
+on one configured target; it never streams, transmits, or retains frame data.

@@ -10,6 +10,7 @@ from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
 from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
+from aurora_core.hardware.capture_frame import validate_capture_frame
 from aurora_core.hardware.capture_modes import validate_capture_modes
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.wled import validate_wled
@@ -95,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     modes_parser.add_argument(
         "--identifier", help="Override capture_device.identifier."
     )
+    frame_parser = hardware_validate_subparsers.add_parser(
+        "capture-frame", help="Bounded single-frame V4L2 read/write validation."
+    )
+    frame_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    frame_parser.add_argument("--log-level", help="Override logging.level.")
+    frame_parser.add_argument(
+        "--identifier", help="Override capture_device.identifier."
+    )
     return parser
 
 
@@ -176,6 +185,17 @@ def _print_capture_modes_report(report: object) -> None:
         "No format was configured, no input was selected, no buffer was allocated, "
         "no stream was started, and no frame was acquired."
     )
+
+
+def _print_capture_frame_report(report: object) -> None:
+    from aurora_core.hardware.models import CaptureFrameValidationReport
+
+    assert isinstance(report, CaptureFrameValidationReport)
+    print(f"Capture-frame validation: {report.state.value}")
+    print(f"reason: {report.reason_code}")
+    print(f"frame_received: {'yes' if report.frame_received else 'no'}")
+    print("streaming_io_was_used: no")
+    print("No frame content was retained, printed, or transmitted.")
     print(
         "HDMI signal, HyperHDR ingest, DDP, WLED output, LEDs, and the "
         "complete lighting path were not tested."
@@ -315,6 +335,27 @@ def main() -> int:
     if args.check:
         print(f"{APPLICATION_NAME} {__version__}: package startup check passed")
         return 0
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "capture-frame"
+    ):
+        frame_override: dict[str, object] = {}
+        if args.log_level is not None:
+            frame_override["logging"] = {"level": args.log_level}
+        if args.identifier is not None:
+            frame_override["capture_device"] = {"identifier": args.identifier}
+        try:
+            frame_report = validate_capture_frame(
+                load_settings(
+                    config_path=args.config, cli_overrides=frame_override or None
+                )
+            )
+        except AuroraConfigurationError:
+            print("Capture-frame validation configuration failed.", file=sys.stderr)
+            return 1
+        _print_capture_frame_report(frame_report)
+        return 0 if frame_report.state is ComponentHealthState.HEALTHY else 1
     if (
         args.command == "hardware"
         and args.hardware_command == "validate"
