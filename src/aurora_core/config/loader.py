@@ -64,11 +64,17 @@ def load_yaml_file(path: Path) -> dict[str, Any]:
     except FileNotFoundError as error:
         raise ConfigurationFileError(f"Configuration file not found: {path}") from error
     except PermissionError as error:
-        raise ConfigurationFileError(f"Configuration file is unreadable: {path}") from error
+        raise ConfigurationFileError(
+            f"Configuration file is unreadable: {path}"
+        ) from error
     except OSError as error:
-        raise ConfigurationFileError(f"Configuration file could not be read: {path}") from error
+        raise ConfigurationFileError(
+            f"Configuration file could not be read: {path}"
+        ) from error
     except yaml.YAMLError as error:
-        raise ConfigurationFileError(f"Configuration file contains malformed YAML: {path}") from error
+        raise ConfigurationFileError(
+            f"Configuration file contains malformed YAML: {path}"
+        ) from error
 
     if document is None:
         return {}

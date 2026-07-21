@@ -46,7 +46,7 @@ class EndpointSettings(AuroraModel):
     port: Port | None = None
 
     @model_validator(mode="after")
-    def enabled_endpoint_has_host(self) -> "EndpointSettings":
+    def enabled_endpoint_has_host(self) -> EndpointSettings:
         if self.enabled and self.host is None:
             raise ValueError("host is required when enabled is true")
         return self
@@ -69,7 +69,7 @@ class CaptureDeviceSettings(AuroraModel):
     identifier: NonEmptyString | None = None
 
     @model_validator(mode="after")
-    def enabled_device_has_identifier(self) -> "CaptureDeviceSettings":
+    def enabled_device_has_identifier(self) -> CaptureDeviceSettings:
         if self.enabled and self.identifier is None:
             raise ValueError("identifier is required when enabled is true")
         return self
