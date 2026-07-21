@@ -88,3 +88,15 @@ URL-encoded command is `serverinfo`. `--timeout` overrides
 `AURORA_HYPERHDR__VALIDATION_TIMEOUT_SECONDS`, YAML, and the 2.0-second
 default. It rejects redirects, accepts at most 256 KiB, prints no endpoint
 details, and changes no HyperHDR state.
+
+## Manual V4L2 capability validation
+
+```bash
+uv run aurora hardware validate capture-capability \
+  --config configs/aurora.local.yaml
+```
+
+This Linux-only manual action uses V4L2-required `O_RDWR`, `O_NONBLOCK`, and
+`O_CLOEXEC` when available, makes one `VIDIOC_QUERYCAP` request, then closes the
+descriptor. It does not read a frame, configure a format, allocate buffers, or
+start streaming.

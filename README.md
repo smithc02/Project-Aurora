@@ -6,6 +6,8 @@
 > hardware-free runtime planning and lifecycle contracts—not lighting-control
 > functionality or device communication. Milestones 4 and 5 add explicit,
 > one-shot, read-only WLED and HyperHDR information validation.
+> Milestone 7 adds explicit query-only Linux V4L2 capability validation; it
+> acquires no frame and changes no capture settings.
 
 ## Architecture summary
 
@@ -52,6 +54,7 @@ uv run aurora runtime plan --config configs/aurora.example.yaml
 uv run aurora hardware validate wled --config configs/aurora.local.yaml
 uv run aurora hardware validate hyperhdr --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-device --config configs/aurora.local.yaml
+uv run aurora hardware validate capture-capability --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
