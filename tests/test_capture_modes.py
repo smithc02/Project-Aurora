@@ -506,3 +506,110 @@ def test_nested_ioctl_failures_retain_empty_partial_containers(
     gaps = []
     values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
     assert values == [] and not done and gaps == ["frame_interval_enumeration_failed"]
+
+
+def test_top_level_probe_failure_outcomes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aurora_core.hardware import capture_modes_probe as m
+
+    monkeypatch.setattr(m, "_validated_video_target", lambda _: ("/dev/video0", None))
+    monkeypatch.setattr(m.os, "open", lambda p, f: 4)
+    monkeypatch.setattr(m.os, "close", lambda fd: None)
+    monkeypatch.setattr(m.os, "fstat", lambda fd: SimpleNamespace(st_mode=stat.S_IFREG))
+    assert (
+        LinuxV4L2ModeProbe().enumerate_modes(identifier="x").reason_code
+        == "not_character_device"
+    )
+    monkeypatch.setattr(m.os, "fstat", lambda fd: SimpleNamespace(st_mode=stat.S_IFCHR))
+    monkeypatch.setattr(
+        m.fcntl,
+        "ioctl",
+        lambda *args: (_ for _ in ()).throw(OSError(errno.ENOTTY, "x")),
+    )
+    assert (
+        LinuxV4L2ModeProbe().enumerate_modes(identifier="x").reason_code
+        == "querycap_not_supported"
+    )
+    monkeypatch.setattr(
+        m.fcntl, "ioctl", lambda *args: (_ for _ in ()).throw(OSError(errno.EIO, "x"))
+    )
+    assert (
+        LinuxV4L2ModeProbe().enumerate_modes(identifier="x").reason_code
+        == "capability_query_failed"
+    )
+
+
+def test_probe_rejects_no_capture_capability(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aurora_core.hardware import capture_modes_probe as m
+
+    monkeypatch.setattr(m, "_validated_video_target", lambda _: ("/dev/video0", None))
+    monkeypatch.setattr(m.os, "open", lambda p, f: 4)
+    monkeypatch.setattr(m.os, "close", lambda fd: None)
+    monkeypatch.setattr(m.os, "fstat", lambda fd: SimpleNamespace(st_mode=stat.S_IFCHR))
+    monkeypatch.setattr(m.fcntl, "ioctl", lambda fd, request, b, mutate: 0)
+    assert (
+        LinuxV4L2ModeProbe().enumerate_modes(identifier="x").reason_code
+        == "video_capture_not_supported"
+    )
+
+
+def test_mode_printer_phase_wording(capsys: pytest.CaptureFixture[str]) -> None:
+    from aurora_core.__main__ import _print_capture_modes_report
+    from aurora_core.hardware.models import CaptureModeValidationReport
+
+    base = (ComponentId.CAPTURE_DEVICE, ComponentHealthState.UNHEALTHY, "safe", "safe")
+    _print_capture_modes_report(CaptureModeValidationReport(*base))
+    assert "No capture device was opened." in capsys.readouterr().out
+    _print_capture_modes_report(
+        CaptureModeValidationReport(
+            *base,
+            device_was_opened=True,
+            querycap_was_issued=True,
+            enumeration_ioctl_was_issued=True,
+            descriptor_was_closed=True,
+        )
+    )
+    assert "The capture device was closed." in capsys.readouterr().out
+    _print_capture_modes_report(
+        CaptureModeValidationReport(
+            *base, device_was_opened=True, descriptor_was_closed=False
+        )
+    )
+    assert "closure could not be confirmed" in capsys.readouterr().out
+
+
+def test_format_response_validation_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = LinuxV4L2ModeProbe()
+    malformed = [
+        u._FM.pack(
+            1,
+            1,
+            0,
+            b"bad\0" + b"\0" * 28,
+            int.from_bytes(b"YUYV", "little"),
+            0,
+            0,
+            0,
+            0,
+        )
+    ]
+    monkeypatch.setattr(
+        probe,
+        "_call",
+        lambda fd, request, b, budget: b.__setitem__(slice(None), malformed.pop()),
+    )
+    with pytest.raises(ValueError):
+        probe._formats(1, 1, "single_planar", [0], [0], [])
+    malformed = [
+        u._FM.pack(
+            0, 1, 0, b"bad" + b"x" * 29, int.from_bytes(b"YUYV", "little"), 0, 0, 0, 0
+        )
+    ]
+    monkeypatch.setattr(
+        probe,
+        "_call",
+        lambda fd, request, b, budget: b.__setitem__(slice(None), malformed.pop()),
+    )
+    with pytest.raises(ValueError):
+        probe._formats(1, 1, "single_planar", [0], [0], [])
