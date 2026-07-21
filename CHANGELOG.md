@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added Milestone 7 explicit Linux V4L2 query-only capability validation using
+  one `VIDIOC_QUERYCAP` ioctl and no capture operations.
+
 - Added Milestone 6 explicit, non-invasive Linux capture-device presence and
   V4L2 registration metadata validation.
 

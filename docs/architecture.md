@@ -89,3 +89,12 @@ The explicit capture validation command performs bounded local Linux metadata
 inspection of one configured identifier. It never opens the node or issues an
 ioctl, and it neither contacts HyperHDR/WLED nor starts the runtime controller.
 See [capture-device validation](capture-device-validation.md).
+
+## Query-only V4L2 capability boundary (Milestone 7)
+
+The explicit `aurora hardware validate capture-capability` command resolves one
+configured identifier, opens one V4L2 node, issues only `VIDIOC_QUERYCAP`, and
+closes the descriptor. It uses node-specific `device_caps` when Linux signals
+`V4L2_CAP_DEVICE_CAPS`; otherwise it uses `capabilities`. It does no frame,
+format, buffer, streaming, network, or runtime operation. See
+[capture capability validation](capture-capability-validation.md).

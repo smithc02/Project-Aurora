@@ -1,8 +1,11 @@
 """Explicit hardware validation services."""
 
+from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.models import (
+    CaptureCapabilityProbeResult,
+    CaptureCapabilityValidationReport,
     CaptureDeviceProbeResult,
     CaptureDeviceValidationReport,
     HyperHDRServerInfo,
@@ -23,4 +26,7 @@ __all__ = [
     "CaptureDeviceProbeResult",
     "CaptureDeviceValidationReport",
     "validate_capture_device",
+    "CaptureCapabilityProbeResult",
+    "CaptureCapabilityValidationReport",
+    "validate_capture_capability",
 ]

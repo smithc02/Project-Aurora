@@ -8,6 +8,7 @@ from pathlib import Path
 
 from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
+from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.wled import validate_wled
@@ -74,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
     capture_parser.add_argument("--log-level", help="Override logging.level.")
     capture_parser.add_argument(
+        "--identifier", help="Override capture_device.identifier."
+    )
+    capability_parser = hardware_validate_subparsers.add_parser(
+        "capture-capability",
+        help="Query one Linux V4L2 node with VIDIOC_QUERYCAP only.",
+    )
+    capability_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    capability_parser.add_argument("--log-level", help="Override logging.level.")
+    capability_parser.add_argument(
         "--identifier", help="Override capture_device.identifier."
     )
     return parser
@@ -158,6 +168,42 @@ def _print_capture_device_report(report: object) -> None:
         print("The capture device was not opened.")
 
 
+def _print_capture_capability_report(report: object) -> None:
+    from aurora_core.hardware.models import CaptureCapabilityValidationReport
+
+    assert isinstance(report, CaptureCapabilityValidationReport)
+    print(f"Capture capability validation: {report.state.value}")
+    if report.state is ComponentHealthState.HEALTHY:
+        print("querycap_response: valid")
+        print(f"driver: {report.driver_name}")
+        print(f"card: {report.card_name}")
+        print(f"v4l2_api_version: {report.v4l2_api_version}")
+        print(
+            f"single_planar_capture: {'yes' if report.single_planar_capture else 'no'}"
+        )
+        print(f"multi_planar_capture: {'yes' if report.multi_planar_capture else 'no'}")
+        print(f"streaming_io: {'yes' if report.streaming_io else 'no'}")
+        print(f"readwrite_io: {'yes' if report.readwrite_io else 'no'}")
+        print("Query-only validation completed.")
+        print("The device was opened only for VIDIOC_QUERYCAP and was then closed.")
+        print(
+            "No format was configured, no buffer was allocated, and no frame "
+            "was acquired."
+        )
+        print(
+            "Formats, resolutions, frame rates, HDMI signal, HyperHDR ingest, "
+            "DDP, WLED output, LEDs, and the complete lighting path were not tested."
+        )
+    elif report.state is ComponentHealthState.DISABLED:
+        print(f"reason: {report.reason_code}")
+        print("No capture device was opened.")
+        print("No ioctl was issued.")
+    else:
+        print(f"reason: {report.reason_code}")
+        print("The device was closed when it had been opened.")
+        print("No frame was acquired and no capture settings were changed.")
+
+
 def main() -> int:
     """Run the minimal command-line interface without hardware interaction."""
     args = build_parser().parse_args()
@@ -230,6 +276,29 @@ def main() -> int:
             return 1
         _print_capture_device_report(capture_report)
         return 0 if capture_report.state is ComponentHealthState.HEALTHY else 1
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "capture-capability"
+    ):
+        capability_override: dict[str, object] = {}
+        if args.log_level is not None:
+            capability_override["logging"] = {"level": args.log_level}
+        if args.identifier is not None:
+            capability_override["capture_device"] = {"identifier": args.identifier}
+        try:
+            capability_report = validate_capture_capability(
+                load_settings(
+                    config_path=args.config, cli_overrides=capability_override or None
+                )
+            )
+        except AuroraConfigurationError:
+            print(
+                "Capture capability validation configuration failed.", file=sys.stderr
+            )
+            return 1
+        _print_capture_capability_report(capability_report)
+        return 0 if capability_report.state is ComponentHealthState.HEALTHY else 1
     if args.command == "config" and args.config_command == "validate":
         overrides = (
             {"logging": {"level": args.log_level}}
