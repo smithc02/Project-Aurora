@@ -54,18 +54,22 @@ class LinuxV4L2CapabilityProbe:
         try:
             try:
                 if not stat.S_ISCHR(os.fstat(descriptor).st_mode):
-                    return CaptureCapabilityProbeResult("not_character_device")
+                    return _opened_failure("not_character_device")
             except OSError:
-                return CaptureCapabilityProbeResult("device_unavailable")
+                return _opened_failure("device_unavailable")
             response = bytearray(_CAPABILITY_SIZE)
             try:
                 fcntl.ioctl(descriptor, _VIDIOC_QUERYCAP, response, True)
             except OSError as error:
-                return CaptureCapabilityProbeResult(_ioctl_error_reason(error))
+                return _opened_failure(
+                    _ioctl_error_reason(error), ioctl_was_issued=True
+                )
             try:
-                return _parse_response(response)
+                return _opened_success(_parse_response(response))
             except (UnicodeDecodeError, ValueError, struct.error):
-                return CaptureCapabilityProbeResult("invalid_capability_response")
+                return _opened_failure(
+                    "invalid_capability_response", ioctl_was_issued=True
+                )
         finally:
             os.close(descriptor)
 
@@ -130,6 +134,36 @@ def _parse_response(response: bytearray) -> CaptureCapabilityProbeResult:
         bool(effective & _V4L2_CAP_VIDEO_CAPTURE_MPLANE),
         bool(effective & _V4L2_CAP_STREAMING),
         bool(effective & _V4L2_CAP_READWRITE),
+    )
+
+
+def _opened_success(
+    result: CaptureCapabilityProbeResult,
+) -> CaptureCapabilityProbeResult:
+    return CaptureCapabilityProbeResult(
+        result.reason_code,
+        result.query_succeeded,
+        result.driver_name,
+        result.card_name,
+        result.v4l2_api_version,
+        result.single_planar_capture,
+        result.multi_planar_capture,
+        result.streaming_io,
+        result.readwrite_io,
+        True,
+        True,
+        True,
+    )
+
+
+def _opened_failure(
+    reason_code: str, *, ioctl_was_issued: bool = False
+) -> CaptureCapabilityProbeResult:
+    return CaptureCapabilityProbeResult(
+        reason_code,
+        device_was_opened=True,
+        ioctl_was_issued=ioctl_was_issued,
+        descriptor_was_closed=True,
     )
 
 

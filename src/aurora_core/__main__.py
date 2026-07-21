@@ -200,8 +200,17 @@ def _print_capture_capability_report(report: object) -> None:
         print("No ioctl was issued.")
     else:
         print(f"reason: {report.reason_code}")
-        print("The device was closed when it had been opened.")
-        print("No frame was acquired and no capture settings were changed.")
+        if not report.device_was_opened:
+            print("No capture device was opened.")
+            print("No ioctl was issued.")
+        else:
+            assert report.descriptor_was_closed
+            print("The capture device was closed.")
+            if report.ioctl_was_issued:
+                print("VIDIOC_QUERYCAP was issued.")
+            else:
+                print("No ioctl was issued.")
+            print("No frame was acquired and no capture settings were changed.")
 
 
 def main() -> int:

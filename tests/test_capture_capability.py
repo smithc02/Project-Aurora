@@ -99,6 +99,11 @@ def test_probe_uses_one_zeroed_buffer_open_ioctl_and_close(
     assert result.query_succeeded and result.driver_name == "uvcvideo"
     assert result.card_name == "USB Video" and result.v4l2_api_version == "6.18.10"
     assert calls["open"] == 1 and calls["close"] == [47]
+    assert (
+        result.device_was_opened
+        and result.ioctl_was_issued
+        and result.descriptor_was_closed
+    )
     fd, request, buffer, mutate = calls["ioctl"][0]
     assert (fd, request, mutate) == (47, _VIDIOC_QUERYCAP, True)
     assert buffer == bytes(104)
@@ -176,6 +181,9 @@ def test_close_occurs_after_ioctl_failure(monkeypatch: pytest.MonkeyPatch) -> No
         == "querycap_not_supported"
     )
     assert calls["close"] == [47]
+    result = LinuxV4L2CapabilityProbe().query(identifier="/dev/video0")
+    assert result.device_was_opened and result.ioctl_was_issued
+    assert result.descriptor_was_closed
 
 
 def test_open_failure_does_not_close_or_ioctl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,10 +195,10 @@ def test_open_failure_does_not_close_or_ioctl(monkeypatch: pytest.MonkeyPatch) -
         "open",
         lambda path, flags: (_ for _ in ()).throw(OSError(errno.EACCES, "secret")),
     )
-    assert (
-        LinuxV4L2CapabilityProbe().query(identifier="/dev/video0").reason_code
-        == "permission_denied"
-    )
+    result = LinuxV4L2CapabilityProbe().query(identifier="/dev/video0")
+    assert result.reason_code == "permission_denied"
+    assert not result.device_was_opened
+    assert not result.ioctl_was_issued and not result.descriptor_was_closed
     assert calls["close"] == [] and calls["ioctl"] == []
 
 
@@ -393,6 +401,60 @@ def test_cli_healthy_output_is_sanitized(
     output = capsys.readouterr().out
     assert "driver: uvcvideo" in output and "then closed" in output
     assert "/dev/video9" not in output
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "opened", "issued", "closed", "expected"),
+    [
+        ("unsupported_platform", False, False, False, "No capture device was opened."),
+        ("identifier_invalid", False, False, False, "No capture device was opened."),
+        ("permission_denied", False, False, False, "No capture device was opened."),
+        ("querycap_not_supported", True, True, True, "The capture device was closed."),
+        (
+            "invalid_capability_response",
+            True,
+            True,
+            True,
+            "The capture device was closed.",
+        ),
+    ],
+)
+def test_cli_failure_phase_output_is_accurate_and_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reason_code: str,
+    opened: bool,
+    issued: bool,
+    closed: bool,
+    expected: str,
+) -> None:
+    from aurora_core.__main__ import main
+    from aurora_core.hardware.models import CaptureCapabilityValidationReport
+    from aurora_core.runtime.models import ComponentId
+
+    report = CaptureCapabilityValidationReport(
+        ComponentId.CAPTURE_DEVICE,
+        ComponentHealthState.UNHEALTHY,
+        reason_code,
+        "do-not-print-this /dev/video9 errno 13",
+        device_was_opened=opened,
+        ioctl_was_issued=issued,
+        descriptor_was_closed=closed,
+    )
+    monkeypatch.setattr(
+        "aurora_core.__main__.validate_capture_capability", lambda settings: report
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["aurora", "hardware", "validate", "capture-capability"]
+    )
+    assert main() == 1
+    output = capsys.readouterr().out
+    assert expected in output and "do-not-print-this" not in output
+    assert "/dev/video9" not in output and "errno 13" not in output
+    if opened:
+        assert "VIDIOC_QUERYCAP was issued." in output
+    else:
+        assert "No ioctl was issued." in output
 
 
 def test_service_unsupported_exception_and_missing_io_are_safe() -> None:

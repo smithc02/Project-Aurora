@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 
 from aurora_core.config.models import AuroraSettings
 from aurora_core.hardware.capture_capability_probe import (
@@ -46,29 +47,9 @@ def validate_capture_capability(
         result = CaptureCapabilityProbeResult("capability_query_failed")
     if result.reason_code == "validated":
         if not (result.single_planar_capture or result.multi_planar_capture):
-            result = CaptureCapabilityProbeResult(
-                "video_capture_not_supported",
-                True,
-                result.driver_name,
-                result.card_name,
-                result.v4l2_api_version,
-                result.single_planar_capture,
-                result.multi_planar_capture,
-                result.streaming_io,
-                result.readwrite_io,
-            )
+            result = replace(result, reason_code="video_capture_not_supported")
         elif not (result.streaming_io or result.readwrite_io):
-            result = CaptureCapabilityProbeResult(
-                "capture_io_method_missing",
-                True,
-                result.driver_name,
-                result.card_name,
-                result.v4l2_api_version,
-                result.single_planar_capture,
-                result.multi_planar_capture,
-                result.streaming_io,
-                result.readwrite_io,
-            )
+            result = replace(result, reason_code="capture_io_method_missing")
     return _report(
         result,
         ComponentHealthState.HEALTHY
@@ -95,4 +76,7 @@ def _report(
         result.multi_planar_capture,
         result.streaming_io,
         result.readwrite_io,
+        result.device_was_opened,
+        result.ioctl_was_issued,
+        result.descriptor_was_closed,
     )

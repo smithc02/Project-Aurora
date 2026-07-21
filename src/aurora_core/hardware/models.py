@@ -77,6 +77,9 @@ class CaptureCapabilityProbeResult:
     multi_planar_capture: bool = False
     streaming_io: bool = False
     readwrite_io: bool = False
+    device_was_opened: bool = False
+    ioctl_was_issued: bool = False
+    descriptor_was_closed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,3 +98,6 @@ class CaptureCapabilityValidationReport:
     multi_planar_capture: bool = False
     streaming_io: bool = False
     readwrite_io: bool = False
+    device_was_opened: bool = False
+    ioctl_was_issued: bool = False
+    descriptor_was_closed: bool = False
