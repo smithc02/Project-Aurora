@@ -198,6 +198,9 @@ class LinuxV4L2ModeProbe:
             b[4:8] = q.to_bytes(4, "little")
             try:
                 self._call(fd, u.VIDIOC_ENUM_FMT, b, budget)
+            except _EnumerationLimitReached:
+                self._gap(gaps, "enumeration_limit_reached")
+                return out
             except OSError as e:
                 if e.errno == errno.EINVAL:
                     return out
@@ -250,6 +253,9 @@ class LinuxV4L2ModeProbe:
             b[4:8] = pix.to_bytes(4, "little")
             try:
                 self._call(fd, u.VIDIOC_ENUM_FRAMESIZES, b, budget)
+            except _EnumerationLimitReached:
+                self._gap(gaps, "enumeration_limit_reached")
+                return out
             except OSError as e:
                 if e.errno == errno.EINVAL:
                     if not out:
@@ -332,6 +338,9 @@ class LinuxV4L2ModeProbe:
             b[12:16] = h.to_bytes(4, "little")
             try:
                 self._call(fd, u.VIDIOC_ENUM_FRAMEINTERVALS, b, budget)
+            except _EnumerationLimitReached:
+                self._gap(gaps, "enumeration_limit_reached")
+                return out, False
             except OSError as e:
                 if e.errno == errno.EINVAL:
                     if not out:

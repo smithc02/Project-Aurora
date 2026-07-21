@@ -467,3 +467,42 @@ def test_nested_malformed_responses_retain_prior_records(
     assert (
         len(intervals) == 1 and not done and "invalid_frame_interval_response" in gaps
     )
+
+
+def test_ioctl_budget_exhaustion_retains_nearest_partial_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aurora_core.hardware import capture_modes_probe as m
+
+    probe = LinuxV4L2ModeProbe()
+    monkeypatch.setattr(
+        probe,
+        "_call",
+        lambda *args: (_ for _ in ()).throw(m._EnumerationLimitReached()),
+    )
+    gaps: list[str] = []
+    assert probe._formats(1, 1, "single_planar", [0], [0], gaps) == []
+    assert gaps == ["enumeration_limit_reached"]
+    gaps = []
+    assert probe._sizes(1, 1, [0], [0], gaps) == [] and gaps == [
+        "enumeration_limit_reached"
+    ]
+    gaps = []
+    intervals, complete = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
+    assert intervals == [] and not complete and gaps == ["enumeration_limit_reached"]
+
+
+def test_nested_ioctl_failures_retain_empty_partial_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = LinuxV4L2ModeProbe()
+    monkeypatch.setattr(
+        probe, "_call", lambda *args: (_ for _ in ()).throw(OSError(errno.EIO, "x"))
+    )
+    gaps: list[str] = []
+    assert probe._sizes(1, 1, [0], [0], gaps) == [] and gaps == [
+        "frame_size_enumeration_failed"
+    ]
+    gaps = []
+    values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
+    assert values == [] and not done and gaps == ["frame_interval_enumeration_failed"]
