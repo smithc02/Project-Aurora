@@ -98,3 +98,10 @@ closes the descriptor. It uses node-specific `device_caps` when Linux signals
 `V4L2_CAP_DEVICE_CAPS`; otherwise it uses `capabilities`. It does no frame,
 format, buffer, streaming, network, or runtime operation. See
 [capture capability validation](capture-capability-validation.md).
+
+## Bounded V4L2 mode boundary (Milestone 8)
+
+The explicit `capture-modes` command opens one configured node once, queries
+capabilities, and performs only bounded V4L2 format, size, and interval
+enumeration. It does not configure capture or acquire frames; runtime remains
+hardware-free. See [capture mode enumeration](capture-mode-enumeration.md).

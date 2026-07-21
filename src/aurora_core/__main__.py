@@ -10,6 +10,7 @@ from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
 from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
+from aurora_core.hardware.capture_modes import validate_capture_modes
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.wled import validate_wled
 from aurora_core.runtime import build_runtime_plan
@@ -86,7 +87,68 @@ def build_parser() -> argparse.ArgumentParser:
     capability_parser.add_argument(
         "--identifier", help="Override capture_device.identifier."
     )
+    modes_parser = hardware_validate_subparsers.add_parser(
+        "capture-modes", help="Bounded query-only V4L2 mode enumeration."
+    )
+    modes_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    modes_parser.add_argument("--log-level", help="Override logging.level.")
+    modes_parser.add_argument(
+        "--identifier", help="Override capture_device.identifier."
+    )
     return parser
+
+
+def _print_capture_modes_report(report: object) -> None:
+    from aurora_core.hardware.models import CaptureModeValidationReport
+
+    assert isinstance(report, CaptureModeValidationReport)
+    print(f"Capture mode validation: {report.state.value}")
+    print(f"reason: {report.reason_code}")
+    print(f"enumeration_complete: {'yes' if report.enumeration_complete else 'no'}")
+    print(f"formats_reported: {report.format_count}")
+    print(f"frame_sizes_reported: {report.frame_size_count}")
+    print(f"frame_intervals_reported: {report.frame_interval_count}")
+    for reason in report.partial_reason_codes:
+        print(f"partial_reason: {reason}")
+    for number, fmt in enumerate(report.formats):
+        print(f"\nformat[{number}]")
+        print(f"queue_type: {fmt.queue_type}")
+        print(f"fourcc: {fmt.fourcc}")
+        print(f"big_endian: {'yes' if fmt.big_endian else 'no'}")
+        if fmt.description is not None:
+            print(f"description: {fmt.description}")
+        print(f"compressed: {'yes' if fmt.compressed else 'no'}")
+        print(f"emulated: {'yes' if fmt.emulated else 'no'}")
+        for size_number, size in enumerate(fmt.frame_sizes):
+            if size.kind == "discrete":
+                print(f"  size[{size_number}]: {size.width}x{size.height}")
+                for interval_number, interval in enumerate(size.intervals):
+                    if interval.kind == "discrete":
+                        print(
+                            f"    interval[{interval_number}]: "
+                            f"{interval.numerator}/{interval.denominator} s"
+                        )
+                        print(
+                            f"    fps[{interval_number}]: "
+                            f"{interval.denominator}/{interval.numerator}"
+                        )
+            else:
+                print(
+                    f"  size[{size_number}]: {size.kind} range; "
+                    "frame intervals were not queried"
+                )
+    if report.device_was_opened:
+        print("The capture device was closed.")
+    else:
+        print("No capture device was opened.")
+    print(
+        "No format was configured, no input was selected, no buffer was allocated, "
+        "no stream was started, and no frame was acquired."
+    )
+    print(
+        "HDMI signal, HyperHDR ingest, DDP, WLED output, LEDs, and the "
+        "complete lighting path were not tested."
+    )
 
 
 def _print_wled_report(report: object) -> None:
@@ -264,6 +326,25 @@ def main() -> int:
             return 1
         _print_hyperhdr_report(hyperhdr_report)
         return 0 if hyperhdr_report.state is ComponentHealthState.HEALTHY else 1
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "capture-modes"
+    ):
+        override: dict[str, object] = {}
+        if args.log_level is not None:
+            override["logging"] = {"level": args.log_level}
+        if args.identifier is not None:
+            override["capture_device"] = {"identifier": args.identifier}
+        try:
+            mode_report = validate_capture_modes(
+                load_settings(config_path=args.config, cli_overrides=override or None)
+            )
+        except AuroraConfigurationError:
+            print("Capture mode validation configuration failed.", file=sys.stderr)
+            return 1
+        _print_capture_modes_report(mode_report)
+        return 0 if mode_report.state is ComponentHealthState.HEALTHY else 1
     if (
         args.command == "hardware"
         and args.hardware_command == "validate"

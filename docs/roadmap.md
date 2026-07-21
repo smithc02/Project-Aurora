@@ -10,8 +10,7 @@
    presence and V4L2 registration metadata validation.
 7. **Milestone 7 (completed):** explicit query-only Linux V4L2 capability
    validation using one `VIDIOC_QUERYCAP` ioctl.
-8. **Future, separate milestone:** bounded format, resolution, and frame-rate
-   enumeration only after separate approval.
+8. **Milestone 8 (completed):** explicit bounded query-only Linux V4L2 format, size, and frame-interval enumeration.
 9. **Future, separate milestone:** frame acquisition only after separate approval.
 10. **Future, separate milestone:** DDP transmission only after separate approval;
     runtime adapters remain deferred.

@@ -118,3 +118,8 @@ check an explicit file. Copy `configs/aurora.example.yaml` to an untracked file
 before adding deployment-specific values. MQTT passwords use protected values
 and are not printed by validation output or configuration errors. `.env.example`
 documents safe environment names; Aurora deliberately does not load `.env` files.
+
+Milestone 8 adds the explicit Linux-only `aurora hardware validate capture-modes`
+command for bounded query-only V4L2 format, size, and interval reporting. It
+opens the configured node only for that command, changes no capture
+configuration, and acquires no frame. See [capture mode enumeration](docs/capture-mode-enumeration.md).

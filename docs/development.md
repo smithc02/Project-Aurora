@@ -100,3 +100,14 @@ This Linux-only manual action uses V4L2-required `O_RDWR`, `O_NONBLOCK`, and
 `O_CLOEXEC` when available, makes one `VIDIOC_QUERYCAP` request, then closes the
 descriptor. It does not read a frame, configure a format, allocate buffers, or
 start streaming.
+
+
+## Manual V4L2 mode enumeration
+
+```bash
+uv run aurora hardware validate capture-modes --config configs/aurora.local.yaml
+```
+
+This Linux-only command is manual, query-only, bounded, and non-streaming. It
+opens the configured node once, makes one capability query and fixed enumeration
+ioctls only, closes it, changes no capture setting, and acquires no frame.
