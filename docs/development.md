@@ -62,3 +62,15 @@ prints a deterministic sanitized summary. It does not print endpoint details or
 passwords, start components, instantiate a controller, test connectivity, or
 verify hardware. Configuration snapshots are immutable runtime inputs; reload
 and file watching are intentionally absent in this milestone.
+
+
+## Manual WLED validation
+
+This is an operator action, not CI activity:
+
+```bash
+uv run aurora hardware validate wled \
+  --config configs/aurora.local.yaml
+```
+
+The command alone may access the configured WLED device. It uses only GET `/json/info`, does not print endpoint details, and sends no LED data or state changes. `--timeout` overrides environment, YAML, and the 2.0 second default.

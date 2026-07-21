@@ -8,8 +8,10 @@ from pathlib import Path
 
 from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
+from aurora_core.hardware.wled import validate_wled
 from aurora_core.runtime import build_runtime_plan
 from aurora_core.runtime.errors import AuroraRuntimeError
+from aurora_core.runtime.models import ComponentHealthState
 
 APPLICATION_NAME = "Project Aurora"
 
@@ -38,7 +40,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
     plan_parser.add_argument("--log-level", help="Override logging.level.")
+    hardware_parser = subparsers.add_parser(
+        "hardware", help="Explicit hardware validation commands."
+    )
+    hardware_subparsers = hardware_parser.add_subparsers(dest="hardware_command")
+    hardware_validate_parser = hardware_subparsers.add_parser(
+        "validate", help="Run one read-only hardware validation."
+    )
+    hardware_validate_subparsers = hardware_validate_parser.add_subparsers(
+        dest="hardware_component"
+    )
+    wled_parser = hardware_validate_subparsers.add_parser(
+        "wled", help="Validate WLED using GET /json/info only."
+    )
+    wled_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    wled_parser.add_argument("--log-level", help="Override logging.level.")
+    wled_parser.add_argument(
+        "--timeout", type=float, help="Override WLED validation timeout in seconds."
+    )
     return parser
+
+
+def _print_wled_report(report: object) -> None:
+    from aurora_core.hardware.models import WLEDValidationReport
+
+    assert isinstance(report, WLEDValidationReport)
+    print(f"WLED validation: {report.state.value}")
+    if report.state in {ComponentHealthState.HEALTHY, ComponentHealthState.DEGRADED}:
+        print(f"firmware_version: {report.firmware_version}")
+        print(f"reported_led_count: {report.reported_led_count}")
+        expected = (
+            "not configured"
+            if report.expected_led_count is None
+            else str(report.expected_led_count)
+        )
+        print(f"expected_led_count: {expected}")
+        match = (
+            "not evaluated"
+            if report.led_count_matches is None
+            else ("yes" if report.led_count_matches else "no")
+        )
+        print(f"led_count_match: {match}")
+        print("Read-only validation completed; no WLED state was changed.")
+        print("HyperHDR, capture, DDP, and the complete lighting path were not tested.")
+    else:
+        print(f"reason: {report.reason_code}")
+        print("No WLED state was changed.")
 
 
 def main() -> int:
@@ -50,6 +97,27 @@ def main() -> int:
     if args.check:
         print(f"{APPLICATION_NAME} {__version__}: package startup check passed")
         return 0
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "wled"
+    ):
+        wled_override: dict[str, object] = {}
+        if args.log_level is not None:
+            wled_override["logging"] = {"level": args.log_level}
+        if args.timeout is not None:
+            wled_override["wled"] = {"validation_timeout_seconds": args.timeout}
+        try:
+            report = validate_wled(
+                load_settings(
+                    config_path=args.config, cli_overrides=wled_override or None
+                )
+            )
+        except AuroraConfigurationError as error:
+            print(f"WLED validation configuration failed: {error}", file=sys.stderr)
+            return 1
+        _print_wled_report(report)
+        return 0 if report.state is ComponentHealthState.HEALTHY else 1
     if args.command == "config" and args.config_command == "validate":
         overrides = (
             {"logging": {"level": args.log_level}}
