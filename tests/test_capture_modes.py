@@ -613,3 +613,34 @@ def test_format_response_validation_is_sanitized(
     )
     with pytest.raises(ValueError):
         probe._formats(1, 1, "single_planar", [0], [0], [])
+
+
+def test_size_and_interval_invalid_outcomes(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = LinuxV4L2ModeProbe()
+    monkeypatch.setattr(
+        probe, "_call", lambda *args: (_ for _ in ()).throw(OSError(errno.EINVAL, "x"))
+    )
+    gaps: list[str] = []
+    assert probe._sizes(1, 1, [0], [0], gaps) == [] and gaps == [
+        "frame_size_enumeration_unavailable"
+    ]
+    gaps = []
+    values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
+    assert (
+        values == [] and not done and gaps == ["frame_interval_enumeration_unavailable"]
+    )
+    bad = [u._FS.pack(0, 1, 1, 0, 480, 0, 0, 0, 0, 0, 0)]
+    monkeypatch.setattr(
+        probe, "_call", lambda fd, r, b, bu: b.__setitem__(slice(None), bad.pop())
+    )
+    gaps = []
+    assert probe._sizes(1, 1, [0], [0], gaps) == [] and gaps == [
+        "invalid_frame_size_response"
+    ]
+    bad_i = [u._FI.pack(0, 1, 1, 1, 1, 0, 60, 0, 0, 0, 0, 0, 0)]
+    monkeypatch.setattr(
+        probe, "_call", lambda fd, r, b, bu: b.__setitem__(slice(None), bad_i.pop())
+    )
+    gaps = []
+    values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
+    assert values == [] and not done and gaps == ["invalid_frame_interval_response"]
