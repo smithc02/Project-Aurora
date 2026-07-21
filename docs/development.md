@@ -38,3 +38,15 @@ make check
 
 Use `uv lock --upgrade` only when intentionally updating allowed dependency
 versions. Commit `uv.lock` with every dependency resolution change.
+
+## Configuration validation
+
+The configuration loader uses safe YAML and Pydantic validation only. It does not
+open capture devices or make network or hardware connections. Provide a file
+explicitly with `--config`; Aurora does not search system directories. The
+precedence order is CLI > `AURORA_` environment variables > YAML > built-in safe
+defaults. Nested environment names use `__`, such as `AURORA_MQTT__USERNAME` and
+`AURORA_WLED__PORT`.
+
+Use an untracked configuration file for real deployment values. Passwords are
+protected from repr output and are excluded from user-facing validation errors.
