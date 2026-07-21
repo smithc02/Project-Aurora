@@ -183,7 +183,16 @@ def test_service_states() -> None:
         validate_capture_modes(
             settings,
             Fake(
-                CaptureModeProbeResult("validated_with_gaps", (fmt,), False, ("gap",), True, True, True, True)
+                CaptureModeProbeResult(
+                    "validated_with_gaps",
+                    (fmt,),
+                    False,
+                    ("gap",),
+                    True,
+                    True,
+                    True,
+                    True,
+                )
             ),
             platform="linux",
         ).state
@@ -424,3 +433,37 @@ def test_probe_fstat_and_close_failure_are_sanitized(
     )
     r = LinuxV4L2ModeProbe().enumerate_modes(identifier="x")
     assert not r.descriptor_was_closed
+
+
+def test_nested_malformed_responses_retain_prior_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = LinuxV4L2ModeProbe()
+    size_calls = [
+        u._FS.pack(0, 1, 1, 640, 480, 0, 0, 0, 0, 0, 0),
+        u._FS.pack(9, 1, 1, 800, 600, 0, 0, 0, 0, 0, 0),
+    ]
+    monkeypatch.setattr(
+        probe,
+        "_call",
+        lambda fd, request, b, budget: b.__setitem__(slice(None), size_calls.pop(0)),
+    )
+    monkeypatch.setattr(probe, "_intervals", lambda *args: ([], False))
+    gaps: list[str] = []
+    sizes = probe._sizes(1, 1, [0], [0], gaps)
+    assert len(sizes) == 1 and "invalid_frame_size_response" in gaps
+    probe = LinuxV4L2ModeProbe()
+    int_calls = [
+        u._FI.pack(0, 1, 1, 1, 1, 1, 60, 0, 0, 0, 0, 0, 0),
+        u._FI.pack(9, 1, 1, 1, 1, 1, 30, 0, 0, 0, 0, 0, 0),
+    ]
+    monkeypatch.setattr(
+        probe,
+        "_call",
+        lambda fd, request, b, budget: b.__setitem__(slice(None), int_calls.pop(0)),
+    )
+    gaps = []
+    intervals, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
+    assert (
+        len(intervals) == 1 and not done and "invalid_frame_interval_response" in gaps
+    )

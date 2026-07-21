@@ -213,7 +213,10 @@ class LinuxV4L2ModeProbe:
                 raise ValueError
             fourcc, be = self._fourcc(pix)
             # Reserve the format record before nested enumeration.
-            self._record(records, gaps)
+            try:
+                self._record(records, gaps)
+            except _EnumerationLimitReached:
+                return out
             sizes = self._sizes(fd, pix, budget, records, gaps)
             out.append(
                 CapturePixelFormat(
@@ -256,12 +259,17 @@ class LinuxV4L2ModeProbe:
                 return out
             ri, rp, kind, *v = u._FS.unpack(b)
             if ri != index or rp != pix or any(v[-2:]):
-                raise _NestedInvalid("invalid_frame_size_response")
+                self._gap(gaps, "invalid_frame_size_response")
+                return out
             if kind == 1:
                 w, h = v[:2]
                 if not w or not h:
-                    raise _NestedInvalid("invalid_frame_size_response")
-                self._record(records, gaps)
+                    self._gap(gaps, "invalid_frame_size_response")
+                    return out
+                try:
+                    self._record(records, gaps)
+                except _EnumerationLimitReached:
+                    return out
                 ints, done = self._intervals(fd, pix, w, h, budget, records, gaps)
                 out.append(
                     CaptureFrameSize(
@@ -274,7 +282,8 @@ class LinuxV4L2ModeProbe:
                 )
                 continue
             if index or kind not in {2, 3}:
-                raise _NestedInvalid("invalid_frame_size_response")
+                self._gap(gaps, "invalid_frame_size_response")
+                return out
             a, bw, sw, c, d, sh = v[:6]
             if (
                 not all((a, bw, c, d))
@@ -282,8 +291,12 @@ class LinuxV4L2ModeProbe:
                 or c > d
                 or (kind == 3 and (not sw or not sh))
             ):
-                raise _NestedInvalid("invalid_frame_size_response")
-            self._record(records, gaps)
+                self._gap(gaps, "invalid_frame_size_response")
+                return out
+            try:
+                self._record(records, gaps)
+            except _EnumerationLimitReached:
+                return out
             self._gap(gaps, "frame_intervals_not_queried_for_range")
             out.append(
                 CaptureFrameSize(
@@ -328,24 +341,34 @@ class LinuxV4L2ModeProbe:
                 return out, False
             ri, rp, rw, rh, kind, *v = u._FI.unpack(b)
             if ri != index or rp != pix or rw != w or rh != h or any(v[-2:]):
-                raise _NestedInvalid("invalid_frame_interval_response")
+                self._gap(gaps, "invalid_frame_interval_response")
+                return out, False
             if kind == 1:
                 n, d = v[:2]
                 if not n or not d:
-                    raise _NestedInvalid("invalid_frame_interval_response")
-                self._record(records, gaps)
+                    self._gap(gaps, "invalid_frame_interval_response")
+                    return out, False
+                try:
+                    self._record(records, gaps)
+                except _EnumerationLimitReached:
+                    return out, False
                 out.append(CaptureFrameInterval("discrete", n, d))
                 continue
             if index or kind not in {2, 3}:
-                raise _NestedInvalid("invalid_frame_interval_response")
+                self._gap(gaps, "invalid_frame_interval_response")
+                return out, False
             mn, md, mx, xd, sn, sd = v[:6]
             if (
                 not all((mn, md, mx, xd))
                 or mn * xd > mx * md
                 or (kind == 3 and (not sn or not sd))
             ):
-                raise _NestedInvalid("invalid_frame_interval_response")
-            self._record(records, gaps)
+                self._gap(gaps, "invalid_frame_interval_response")
+                return out, False
+            try:
+                self._record(records, gaps)
+            except _EnumerationLimitReached:
+                return out, False
             out.append(
                 CaptureFrameInterval(
                     "continuous" if kind == 2 else "stepwise",
