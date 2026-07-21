@@ -101,3 +101,72 @@ class CaptureCapabilityValidationReport:
     device_was_opened: bool = False
     ioctl_was_issued: bool = False
     descriptor_was_closed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFrameInterval:
+    kind: str
+    numerator: int | None = None
+    denominator: int | None = None
+    min_numerator: int | None = None
+    min_denominator: int | None = None
+    max_numerator: int | None = None
+    max_denominator: int | None = None
+    step_numerator: int | None = None
+    step_denominator: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFrameSize:
+    kind: str
+    width: int | None = None
+    height: int | None = None
+    min_width: int | None = None
+    max_width: int | None = None
+    step_width: int | None = None
+    min_height: int | None = None
+    max_height: int | None = None
+    step_height: int | None = None
+    intervals: tuple[CaptureFrameInterval, ...] = ()
+    intervals_enumerated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CapturePixelFormat:
+    queue_type: str
+    fourcc: str
+    big_endian: bool
+    description: str | None
+    compressed: bool
+    emulated: bool
+    frame_sizes: tuple[CaptureFrameSize, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureModeProbeResult:
+    reason_code: str
+    formats: tuple[CapturePixelFormat, ...] = ()
+    enumeration_complete: bool = False
+    partial_reason_codes: tuple[str, ...] = ()
+    device_was_opened: bool = False
+    querycap_was_issued: bool = False
+    enumeration_ioctl_was_issued: bool = False
+    descriptor_was_closed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureModeValidationReport:
+    component_id: ComponentId
+    state: ComponentHealthState
+    reason_code: str
+    message: str
+    formats: tuple[CapturePixelFormat, ...] = ()
+    format_count: int = 0
+    frame_size_count: int = 0
+    frame_interval_count: int = 0
+    enumeration_complete: bool = False
+    partial_reason_codes: tuple[str, ...] = ()
+    device_was_opened: bool = False
+    querycap_was_issued: bool = False
+    enumeration_ioctl_was_issued: bool = False
+    descriptor_was_closed: bool = False

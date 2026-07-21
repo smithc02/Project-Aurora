@@ -27,3 +27,9 @@ access: V4L2 specifies `O_RDWR` for opening devices. It performs one
 non-streaming capability query and closes the descriptor. It does not acquire
 a frame, change capture settings, validate signal presence, or validate the
 lighting path.
+
+
+Milestone 8's `capture-modes` command is query-only and non-streaming. It can
+open one configured V4L2 node as required by V4L2, but configures no format and
+acquires no frame; it does not test HDMI signal, HyperHDR, DDP, WLED, LEDs, or
+the electrical installation.

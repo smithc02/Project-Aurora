@@ -19,3 +19,5 @@
   environment and CLI precedence, and a hardware-free validation command.
 - Established Milestone 1 repository, development environment, documentation,
   configuration, CI, and minimal package scaffolding.
+
+- Added Milestone 8 explicit bounded query-only V4L2 capture mode enumeration.
