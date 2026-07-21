@@ -8,6 +8,7 @@ logging:
   level: "INFO"
 hyperhdr:
   enabled: false
+  validation_timeout_seconds: 2.0
 wled:
   enabled: false
   validation_timeout_seconds: 2.0
@@ -22,3 +23,4 @@ mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
 # Read-only WLED validation uses GET /json/info only when explicitly invoked.
 # wled.validation_timeout_seconds defaults to 2.0 seconds (0.1–10.0).
+# Read-only HyperHDR validation uses GET /json-rpc serverinfo only when explicitly invoked.

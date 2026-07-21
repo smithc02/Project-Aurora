@@ -74,3 +74,17 @@ uv run aurora hardware validate wled \
 ```
 
 The command alone may access the configured WLED device. It uses only GET `/json/info`, does not print endpoint details, and sends no LED data or state changes. `--timeout` overrides environment, YAML, and the 2.0 second default.
+
+## Manual HyperHDR validation
+
+```bash
+uv run aurora hardware validate hyperhdr \
+  --config configs/aurora.local.yaml
+```
+
+This operator action is not run in CI. It alone may access the configured
+HyperHDR host, using exactly one GET `/json-rpc` request whose internally
+URL-encoded command is `serverinfo`. `--timeout` overrides
+`AURORA_HYPERHDR__VALIDATION_TIMEOUT_SECONDS`, YAML, and the 2.0-second
+default. It rejects redirects, accepts at most 256 KiB, prints no endpoint
+details, and changes no HyperHDR state.

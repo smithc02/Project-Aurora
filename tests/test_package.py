@@ -100,3 +100,23 @@ def test_hardware_validate_output_is_sanitized(monkeypatch, capsys) -> None:  # 
     assert "firmware_version: 0.15.0" in output
     assert "no WLED state was changed" in output
     assert "HyperHDR, capture, DDP" in output
+
+
+def test_hyperhdr_cli_disabled_and_sanitized(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("AURORA_MQTT__PASSWORD", "do-not-print-this")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "aurora",
+            "hardware",
+            "validate",
+            "hyperhdr",
+            "--config",
+            "configs/aurora.example.yaml",
+        ],
+    )
+    assert main() == 1
+    output = capsys.readouterr().out
+    assert "HyperHDR validation: disabled" in output
+    assert "No HyperHDR request was made." in output
+    assert "do-not-print-this" not in output

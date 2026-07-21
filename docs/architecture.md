@@ -72,3 +72,13 @@ create a new settings snapshot, plan, and controller.
 ## Read-only WLED boundary (Milestone 4)
 
 The explicit `aurora hardware validate wled` operator command is the only hardware-facing capability. It makes one GET request to WLED's fixed `/json/info` endpoint, with a finite configured timeout and a 64 KiB response limit. It parses only firmware version and LED count. It does not start the runtime controller, transmit DDP, alter WLED state, or validate HyperHDR or capture hardware. A future runtime adapter requires separate approval.
+
+## Read-only HyperHDR boundary (Milestone 5)
+
+`aurora hardware validate hyperhdr` is a separate explicit operator command. It
+makes exactly one HTTP GET to fixed `/json-rpc`, URL-encoding only the fixed
+`{"command":"serverinfo"}` request. It has a finite timeout (default 2.0
+seconds), rejects redirects, and limits responses to 256 KiB. It retains only
+successful server-information status and optional `videomodehdr`; it neither
+changes HyperHDR state nor contacts WLED, starts capture, sends DDP, or starts
+the runtime controller.

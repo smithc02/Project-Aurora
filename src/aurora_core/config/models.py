@@ -53,6 +53,15 @@ class EndpointSettings(AuroraModel):
     host: NonEmptyString | None = None
     port: Port | None = None
 
+    @field_validator("host")
+    @classmethod
+    def host_is_hostname_or_ip_literal(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            token in value for token in ("://", "/", "?", "#", "@")
+        ):
+            raise ValueError("host must be a hostname or IP literal without URL syntax")
+        return value
+
     @model_validator(mode="after")
     def enabled_endpoint_has_host(self) -> EndpointSettings:
         if self.enabled and self.host is None:
@@ -63,20 +72,13 @@ class EndpointSettings(AuroraModel):
 class HyperHDRSettings(EndpointSettings):
     """Description-only HyperHDR settings; no connection is attempted."""
 
+    validation_timeout_seconds: ValidationTimeout = 2.0
+
 
 class WLEDSettings(EndpointSettings):
     """WLED configuration for explicit, read-only information validation only."""
 
     validation_timeout_seconds: ValidationTimeout = 2.0
-
-    @field_validator("host")
-    @classmethod
-    def host_is_hostname_or_ip_literal(cls, value: str | None) -> str | None:
-        if value is not None and any(
-            token in value for token in ("://", "/", "?", "#", "@")
-        ):
-            raise ValueError("host must be a hostname or IP literal without URL syntax")
-        return value
 
 
 class DDPSettings(EndpointSettings):
