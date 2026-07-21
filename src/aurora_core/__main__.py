@@ -133,10 +133,28 @@ def _print_capture_modes_report(report: object) -> None:
                             f"{interval.denominator}/{interval.numerator}"
                         )
             else:
-                print(
-                    f"  size[{size_number}]: {size.kind} range; "
-                    "frame intervals were not queried"
-                )
+                print(f"  size[{size_number}]: {size.kind} range")
+                print(f"    min_size: {size.min_width}x{size.min_height}")
+                print(f"    max_size: {size.max_width}x{size.max_height}")
+                if size.kind == "stepwise":
+                    print(f"    size_step: {size.step_width}x{size.step_height}")
+                print("    frame intervals were not queried")
+            for interval_number, interval in enumerate(size.intervals):
+                if interval.kind != "discrete":
+                    print(f"    interval[{interval_number}]: {interval.kind} range")
+                    print(
+                        f"      min_interval: {interval.min_numerator}/"
+                        f"{interval.min_denominator} s"
+                    )
+                    print(
+                        f"      max_interval: {interval.max_numerator}/"
+                        f"{interval.max_denominator} s"
+                    )
+                    if interval.kind == "stepwise":
+                        print(
+                            f"      interval_step: {interval.step_numerator}/"
+                            f"{interval.step_denominator} s"
+                        )
     if report.device_was_opened:
         print("The capture device was closed.")
     else:

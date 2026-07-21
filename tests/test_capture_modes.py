@@ -238,7 +238,7 @@ def test_private_normalizers_and_bounds(monkeypatch: pytest.MonkeyPatch) -> None
     )
     with pytest.raises(ValueError):
         probe._fourcc(1)
-    with pytest.raises(ValueError):
+    with pytest.raises(m._EnumerationLimitReached):
         probe._call(1, 1, bytearray(), [m._MAX_IOCTLS])
 
 
@@ -251,13 +251,13 @@ def test_interval_ranges_and_nested_errors(monkeypatch: pytest.MonkeyPatch) -> N
         b[:] = responses.pop()
 
     monkeypatch.setattr(probe, "_call", call)
-    got = probe._intervals(1, 1, 1, 1, [0], [0], [])
-    assert got[0].kind == "stepwise" and got[0].step_denominator == 60
+    got, complete = probe._intervals(1, 1, 1, 1, [0], [0], [])
+    assert complete and got[0].kind == "stepwise" and got[0].step_denominator == 60
     monkeypatch.setattr(
         probe, "_call", lambda *args: (_ for _ in ()).throw(OSError(errno.EIO, "x"))
     )
     gaps: list[str] = []
-    assert probe._intervals(1, 1, 1, 1, [0], [0], gaps) == [] and gaps == [
+    assert probe._intervals(1, 1, 1, 1, [0], [0], gaps) == ([], False) and gaps == [
         "frame_interval_enumeration_failed"
     ]
 
@@ -344,3 +344,83 @@ def test_service_unsupported_platform_does_not_call_probe() -> None:
         == "unsupported_platform"
         and fake.calls == 0
     )
+
+
+def test_mode_printer_renders_ranges(capsys: pytest.CaptureFixture[str]) -> None:
+    from aurora_core.__main__ import _print_capture_modes_report
+    from aurora_core.hardware.models import (
+        CaptureFrameInterval,
+        CaptureFrameSize,
+        CaptureModeValidationReport,
+    )
+
+    interval = CaptureFrameInterval(
+        "stepwise",
+        min_numerator=1,
+        min_denominator=60,
+        max_numerator=1,
+        max_denominator=30,
+        step_numerator=1,
+        step_denominator=120,
+    )
+    size = CaptureFrameSize(
+        "stepwise",
+        min_width=640,
+        max_width=1920,
+        step_width=16,
+        min_height=480,
+        max_height=1080,
+        step_height=8,
+        intervals=(interval,),
+    )
+    fmt = CapturePixelFormat(
+        "single_planar", "YUYV", False, None, False, False, (size,)
+    )
+    _print_capture_modes_report(
+        CaptureModeValidationReport(
+            ComponentId.CAPTURE_DEVICE,
+            ComponentHealthState.DEGRADED,
+            "validated_with_gaps",
+            "safe",
+            (fmt,),
+            1,
+            1,
+            1,
+            False,
+            ("gap",),
+            True,
+            True,
+            True,
+            True,
+        )
+    )
+    out = capsys.readouterr().out
+    assert (
+        "min_size: 640x480" in out
+        and "size_step: 16x8" in out
+        and "interval_step: 1/120 s" in out
+    )
+
+
+def test_probe_fstat_and_close_failure_are_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aurora_core.hardware import capture_modes_probe as m
+
+    monkeypatch.setattr(m, "_validated_video_target", lambda _: ("/dev/video0", None))
+    monkeypatch.setattr(m.os, "open", lambda p, f: 7)
+    monkeypatch.setattr(m.os, "fstat", lambda fd: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(m.os, "close", lambda fd: None)
+    r = LinuxV4L2ModeProbe().enumerate_modes(identifier="x")
+    assert (
+        r.reason_code == "device_unavailable"
+        and r.device_was_opened
+        and r.descriptor_was_closed
+    )
+    monkeypatch.setattr(m.os, "fstat", lambda fd: SimpleNamespace(st_mode=stat.S_IFCHR))
+    monkeypatch.setattr(m.os, "close", lambda fd: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        m.fcntl, "ioctl", lambda *a: (_ for _ in ()).throw(OSError(errno.ENOTTY, "x"))
+    )
+    r = LinuxV4L2ModeProbe().enumerate_modes(identifier="x")
+    assert not r.descriptor_was_closed

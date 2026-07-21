@@ -29,6 +29,10 @@ _MAX_FORMATS, _MAX_SIZES, _MAX_INTERVALS, _MAX_IOCTLS, _MAX_RECORDS = (
 )
 
 
+class _EnumerationLimitReached(Exception):
+    pass
+
+
 class CaptureModeProbe(Protocol):
     def enumerate_modes(self, *, identifier: str) -> CaptureModeProbeResult: ...
 
@@ -45,73 +49,133 @@ class LinuxV4L2ModeProbe:
             )
         except OSError as e:
             return CaptureModeProbeResult(_open_error_reason(e))
+        result: CaptureModeProbeResult
+        query = False
+        enum = False
         try:
-            if not stat.S_ISCHR(os.fstat(fd).st_mode):
-                return self._fail("not_character_device", opened=True)
-            cap = bytearray(104)
             try:
-                fcntl.ioctl(fd, u.VIDIOC_QUERYCAP, cap, True)
-            except OSError as e:
-                return self._fail(
-                    "querycap_not_supported"
-                    if e.errno in {errno.ENOTTY, errno.EINVAL}
-                    else "capability_query_failed",
-                    opened=True,
-                    query=True,
-                )
-            caps = int.from_bytes(cap[84:88], "little")
-            dcaps = int.from_bytes(cap[88:92], "little")
-            effective = dcaps if caps & u.CAP_DEVICE_CAPS else caps
-            queues = (
-                [(u.VIDEO_CAPTURE, "single_planar")]
-                if effective & u.CAP_VIDEO_CAPTURE
-                else []
-            )
-            if effective & u.CAP_VIDEO_CAPTURE_MPLANE:
-                queues.append((u.VIDEO_CAPTURE_MPLANE, "multi_planar"))
-            if not queues:
-                return self._fail(
-                    "video_capture_not_supported", opened=True, query=True
-                )
-            formats: list[CapturePixelFormat] = []
-            gaps: list[str] = []
-            budget = [1]
-            records = [0]
-            for q, label in queues:
-                try:
-                    formats.extend(self._formats(fd, q, label, budget, records, gaps))
-                except ValueError:
-                    gaps.append("invalid_format_response")
-                except OSError as e:
-                    if e.errno != errno.EINVAL:
-                        gaps.append("format_enumeration_failed")
-            complete = not gaps
-            return CaptureModeProbeResult(
-                "validated" if complete else "validated_with_gaps",
-                tuple(formats),
-                complete,
-                tuple(dict.fromkeys(gaps)),
-                True,
-                True,
-                budget[0] > 1,
-                True,
-            )
-        finally:
-            os.close(fd)
+                if not stat.S_ISCHR(os.fstat(fd).st_mode):
+                    result = CaptureModeProbeResult(
+                        "not_character_device", device_was_opened=True
+                    )
+                else:
+                    cap = bytearray(104)
+                    try:
+                        fcntl.ioctl(fd, u.VIDIOC_QUERYCAP, cap, True)
+                        query = True
+                    except OSError as e:
+                        result = CaptureModeProbeResult(
+                            "querycap_not_supported"
+                            if e.errno in {errno.ENOTTY, errno.EINVAL}
+                            else "capability_query_failed",
+                            device_was_opened=True,
+                            querycap_was_issued=True,
+                        )
+                    else:
+                        caps = int.from_bytes(cap[84:88], "little")
+                        dcaps = int.from_bytes(cap[88:92], "little")
+                        effective = dcaps if caps & u.CAP_DEVICE_CAPS else caps
+                        queues = []
+                        if effective & u.CAP_VIDEO_CAPTURE:
+                            queues.append((u.VIDEO_CAPTURE, "single_planar"))
+                        if effective & u.CAP_VIDEO_CAPTURE_MPLANE:
+                            queues.append((u.VIDEO_CAPTURE_MPLANE, "multi_planar"))
+                        if not queues:
+                            result = CaptureModeProbeResult(
+                                "video_capture_not_supported",
+                                device_was_opened=True,
+                                querycap_was_issued=True,
+                            )
+                        else:
+                            formats: list[CapturePixelFormat] = []
+                            gaps: list[str] = []
+                            budget = [1]
+                            records = [0]
+                            for q, label in queues:
+                                try:
+                                    formats.extend(
+                                        self._formats(
+                                            fd, q, label, budget, records, gaps
+                                        )
+                                    )
+                                    enum = True
+                                except _EnumerationLimitReached:
+                                    self._gap(gaps, "enumeration_limit_reached")
+                                    break
+                                except (UnicodeDecodeError, ValueError):
+                                    self._gap(gaps, "invalid_format_response")
+                                except OSError:
+                                    self._gap(gaps, "format_enumeration_failed")
+                            if not formats:
+                                result = CaptureModeProbeResult(
+                                    "no_capture_formats_reported",
+                                    (),
+                                    False,
+                                    tuple(dict.fromkeys(gaps)),
+                                    True,
+                                    True,
+                                    enum,
+                                )
+                            else:
+                                complete = not gaps
+                                result = CaptureModeProbeResult(
+                                    "validated" if complete else "validated_with_gaps",
+                                    tuple(formats),
+                                    complete,
+                                    tuple(dict.fromkeys(gaps)),
+                                    True,
+                                    True,
+                                    enum,
+                                )
 
-    def _fail(
-        self, code: str, *, opened: bool, query: bool = False
-    ) -> CaptureModeProbeResult:
+            except OSError:
+                result = CaptureModeProbeResult(
+                    "device_unavailable",
+                    device_was_opened=True,
+                    querycap_was_issued=query,
+                    enumeration_ioctl_was_issued=enum,
+                )
+        finally:
+            try:
+                os.close(fd)
+                closed = True
+            except OSError:
+                closed = False
+        if not closed:
+            return CaptureModeProbeResult(
+                "device_unavailable",
+                result.formats,
+                False,
+                result.partial_reason_codes,
+                True,
+                result.querycap_was_issued,
+                result.enumeration_ioctl_was_issued,
+                False,
+            )
         return CaptureModeProbeResult(
-            code,
-            device_was_opened=opened,
-            querycap_was_issued=query,
-            descriptor_was_closed=opened,
+            result.reason_code,
+            result.formats,
+            result.enumeration_complete,
+            result.partial_reason_codes,
+            True,
+            result.querycap_was_issued,
+            result.enumeration_ioctl_was_issued,
+            True,
         )
+
+    def _gap(self, gaps: list[str], code: str) -> None:
+        if code not in gaps:
+            gaps.append(code)
+
+    def _record(self, records: list[int], gaps: list[str]) -> None:
+        if records[0] >= _MAX_RECORDS:
+            self._gap(gaps, "enumeration_limit_reached")
+            raise _EnumerationLimitReached
+        records[0] += 1
 
     def _call(self, fd: int, request: int, buf: bytearray, budget: list[int]) -> None:
         if budget[0] >= _MAX_IOCTLS:
-            raise ValueError("enumeration_limit_reached")
+            raise _EnumerationLimitReached
         budget[0] += 1
         fcntl.ioctl(fd, request, buf, True)
 
@@ -127,7 +191,7 @@ class LinuxV4L2ModeProbe:
         out: list[CapturePixelFormat] = []
         for index in range(_MAX_FORMATS):
             b = bytearray(64)
-            b[0:4] = index.to_bytes(4, "little")
+            b[:4] = index.to_bytes(4, "little")
             b[4:8] = q.to_bytes(4, "little")
             try:
                 self._call(fd, u.VIDIOC_ENUM_FMT, b, budget)
@@ -135,21 +199,18 @@ class LinuxV4L2ModeProbe:
                 if e.errno == errno.EINVAL:
                     return out
                 raise
-            vals = u._FM.unpack(b)
-            ri, rt, flags, desc, pix, _, *reserved = vals
+            ri, rt, flags, desc, pix, _, *reserved = u._FM.unpack(b)
             if ri != index or rt != q or any(reserved):
                 raise ValueError
             nul = desc.find(b"\0")
             if nul < 0:
                 raise ValueError
             text = desc[:nul].decode("ascii") if nul else None
-            if text is not None and any(ord(c) < 32 or ord(c) == 127 for c in text):
+            if text and any(ord(c) < 32 or ord(c) == 127 for c in text):
                 raise ValueError
             fourcc, be = self._fourcc(pix)
-            if records[0] >= _MAX_RECORDS:
-                gaps.append("enumeration_limit_reached")
-                return out
-            records[0] += 1
+            # Reserve the format record before nested enumeration.
+            self._record(records, gaps)
             sizes = self._sizes(fd, pix, budget, records, gaps)
             out.append(
                 CapturePixelFormat(
@@ -157,12 +218,12 @@ class LinuxV4L2ModeProbe:
                     fourcc,
                     be,
                     text,
-                    bool(flags & 1),
-                    bool(flags & 2),
+                    bool(flags & u.FMT_COMPRESSED),
+                    bool(flags & u.FMT_EMULATED),
                     tuple(sizes),
                 )
             )
-        gaps.append("enumeration_limit_reached")
+        self._gap(gaps, "enumeration_limit_reached")
         return out
 
     def _fourcc(self, p: int) -> tuple[str, bool]:
@@ -185,30 +246,32 @@ class LinuxV4L2ModeProbe:
                 self._call(fd, u.VIDIOC_ENUM_FRAMESIZES, b, budget)
             except OSError as e:
                 if e.errno == errno.EINVAL:
+                    if not out:
+                        self._gap(gaps, "frame_size_enumeration_unavailable")
                     return out
-                gaps.append("frame_size_enumeration_failed")
+                self._gap(gaps, "frame_size_enumeration_failed")
                 return out
-            _, _, kind, *v = u._FS.unpack(b)
-            if any(v[-2:]):
-                raise ValueError
+            ri, rp, kind, *v = u._FS.unpack(b)
+            if ri != index or rp != pix or any(v[-2:]):
+                raise _NestedInvalid("invalid_frame_size_response")
             if kind == 1:
                 w, h = v[:2]
                 if not w or not h:
-                    raise ValueError
-                records[0] += 1
-                ints = self._intervals(fd, pix, w, h, budget, records, gaps)
+                    raise _NestedInvalid("invalid_frame_size_response")
+                self._record(records, gaps)
+                ints, done = self._intervals(fd, pix, w, h, budget, records, gaps)
                 out.append(
                     CaptureFrameSize(
                         "discrete",
                         w,
                         h,
                         intervals=tuple(ints),
-                        intervals_enumerated=True,
+                        intervals_enumerated=done,
                     )
                 )
                 continue
             if index or kind not in {2, 3}:
-                raise ValueError
+                raise _NestedInvalid("invalid_frame_size_response")
             a, bw, sw, c, d, sh = v[:6]
             if (
                 not all((a, bw, c, d))
@@ -216,9 +279,9 @@ class LinuxV4L2ModeProbe:
                 or c > d
                 or (kind == 3 and (not sw or not sh))
             ):
-                raise ValueError
-            records[0] += 1
-            gaps.append("frame_intervals_not_queried_for_range")
+                raise _NestedInvalid("invalid_frame_size_response")
+            self._record(records, gaps)
+            self._gap(gaps, "frame_intervals_not_queried_for_range")
             out.append(
                 CaptureFrameSize(
                     "continuous" if kind == 2 else "stepwise",
@@ -231,7 +294,7 @@ class LinuxV4L2ModeProbe:
                 )
             )
             return out
-        gaps.append("enumeration_limit_reached")
+        self._gap(gaps, "enumeration_limit_reached")
         return out
 
     def _intervals(
@@ -243,7 +306,7 @@ class LinuxV4L2ModeProbe:
         budget: list[int],
         records: list[int],
         gaps: list[str],
-    ) -> list[CaptureFrameInterval]:
+    ) -> tuple[list[CaptureFrameInterval], bool]:
         out: list[CaptureFrameInterval] = []
         for index in range(_MAX_INTERVALS):
             b = bytearray(52)
@@ -255,29 +318,31 @@ class LinuxV4L2ModeProbe:
                 self._call(fd, u.VIDIOC_ENUM_FRAMEINTERVALS, b, budget)
             except OSError as e:
                 if e.errno == errno.EINVAL:
-                    return out
-                gaps.append("frame_interval_enumeration_failed")
-                return out
-            _, _, _, _, kind, *v = u._FI.unpack(b)
-            if any(v[-2:]):
-                raise ValueError
+                    if not out:
+                        self._gap(gaps, "frame_interval_enumeration_unavailable")
+                    return out, bool(out)
+                self._gap(gaps, "frame_interval_enumeration_failed")
+                return out, False
+            ri, rp, rw, rh, kind, *v = u._FI.unpack(b)
+            if ri != index or rp != pix or rw != w or rh != h or any(v[-2:]):
+                raise _NestedInvalid("invalid_frame_interval_response")
             if kind == 1:
                 n, d = v[:2]
                 if not n or not d:
-                    raise ValueError
-                records[0] += 1
+                    raise _NestedInvalid("invalid_frame_interval_response")
+                self._record(records, gaps)
                 out.append(CaptureFrameInterval("discrete", n, d))
                 continue
             if index or kind not in {2, 3}:
-                raise ValueError
+                raise _NestedInvalid("invalid_frame_interval_response")
             mn, md, mx, xd, sn, sd = v[:6]
             if (
                 not all((mn, md, mx, xd))
                 or mn * xd > mx * md
                 or (kind == 3 and (not sn or not sd))
             ):
-                raise ValueError
-            records[0] += 1
+                raise _NestedInvalid("invalid_frame_interval_response")
+            self._record(records, gaps)
             out.append(
                 CaptureFrameInterval(
                     "continuous" if kind == 2 else "stepwise",
@@ -289,6 +354,11 @@ class LinuxV4L2ModeProbe:
                     step_denominator=sd if kind == 3 else None,
                 )
             )
-            return out
-        gaps.append("enumeration_limit_reached")
-        return out
+            return out, True
+        self._gap(gaps, "enumeration_limit_reached")
+        return out, False
+
+
+class _NestedInvalid(ValueError):
+    def __init__(self, code: str):
+        self.code = code
