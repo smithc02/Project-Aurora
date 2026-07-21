@@ -68,7 +68,7 @@ def test_default_plan_is_immutable_ordered_and_disabled() -> None:
 @pytest.mark.parametrize("section", ["wled", "hyperhdr", "capture_device"])
 def test_enabled_settings_are_configured_but_unknown(section: str) -> None:
     value = (
-        {"enabled": True, "identifier": "test"}
+        {"enabled": True, "identifier": "/dev/video0"}
         if section == "capture_device"
         else {"enabled": True, "host": "example.invalid"}
     )

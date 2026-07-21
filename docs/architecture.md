@@ -81,4 +81,11 @@ makes exactly one HTTP GET to fixed `/json-rpc`, URL-encoding only the fixed
 seconds), rejects redirects, and limits responses to 256 KiB. It retains only
 successful server-information status and optional `videomodehdr`; it neither
 changes HyperHDR state nor contacts WLED, starts capture, sends DDP, or starts
-the runtime controller.
+ the runtime controller.
+
+## Capture-device boundary (Milestone 6)
+
+The explicit capture validation command performs bounded local Linux metadata
+inspection of one configured identifier. It never opens the node or issues an
+ioctl, and it neither contacts HyperHDR/WLED nor starts the runtime controller.
+See [capture-device validation](capture-device-validation.md).

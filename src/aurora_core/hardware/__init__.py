@@ -1,7 +1,10 @@
 """Explicit hardware validation services."""
 
+from aurora_core.hardware.capture_device import validate_capture_device
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.models import (
+    CaptureDeviceProbeResult,
+    CaptureDeviceValidationReport,
     HyperHDRServerInfo,
     HyperHDRValidationReport,
     WLEDDeviceInfo,
@@ -17,4 +20,7 @@ __all__ = [
     "expected_led_count",
     "validate_hyperhdr",
     "validate_wled",
+    "CaptureDeviceProbeResult",
+    "CaptureDeviceValidationReport",
+    "validate_capture_device",
 ]

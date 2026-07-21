@@ -16,6 +16,7 @@ ddp:
   enabled: false
 capture_device:
   enabled: false
+  # identifier: "/dev/video0"
 lighting_zones: []
 # Set orientation and starting_corner only after physical installation.
 led_layout: {}

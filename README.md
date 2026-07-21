@@ -51,6 +51,7 @@ uv run aurora --check
 uv run aurora runtime plan --config configs/aurora.example.yaml
 uv run aurora hardware validate wled --config configs/aurora.local.yaml
 uv run aurora hardware validate hyperhdr --config configs/aurora.local.yaml
+uv run aurora hardware validate capture-device --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
+from aurora_core.hardware.capture_device import validate_capture_device
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.wled import validate_wled
 from aurora_core.runtime import build_runtime_plan
@@ -67,6 +68,14 @@ def build_parser() -> argparse.ArgumentParser:
     hyperhdr_parser.add_argument(
         "--timeout", type=float, help="Override HyperHDR validation timeout in seconds."
     )
+    capture_parser = hardware_validate_subparsers.add_parser(
+        "capture-device", help="Validate one Linux V4L2 device node without opening it."
+    )
+    capture_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    capture_parser.add_argument("--log-level", help="Override logging.level.")
+    capture_parser.add_argument(
+        "--identifier", help="Override capture_device.identifier."
+    )
     return parser
 
 
@@ -124,6 +133,31 @@ def _print_hyperhdr_report(report: object) -> None:
         print("No HyperHDR state was changed.")
 
 
+def _print_capture_device_report(report: object) -> None:
+    from aurora_core.hardware.models import CaptureDeviceValidationReport
+
+    assert isinstance(report, CaptureDeviceValidationReport)
+    print(f"Capture-device validation: {report.state.value}")
+    if report.state is ComponentHealthState.HEALTHY:
+        print("device_node: present")
+        print("device_type: character")
+        print("v4l2_registration: present")
+        print("process_read_access: yes")
+        print(f"device_name: {report.device_name}")
+        print("Non-invasive validation completed; the device was not opened.")
+        print(
+            "Capture capability was not queried. Formats, frames, signal, HyperHDR "
+            "ingest, DDP, WLED output, and the complete lighting path were not tested."
+        )
+    elif report.state is ComponentHealthState.DISABLED:
+        print(f"reason: {report.reason_code}")
+        print("No capture-device probe was performed.")
+        print("The capture device was not opened.")
+    else:
+        print(f"reason: {report.reason_code}")
+        print("The capture device was not opened.")
+
+
 def main() -> int:
     """Run the minimal command-line interface without hardware interaction."""
     args = build_parser().parse_args()
@@ -175,6 +209,27 @@ def main() -> int:
             return 1
         _print_hyperhdr_report(hyperhdr_report)
         return 0 if hyperhdr_report.state is ComponentHealthState.HEALTHY else 1
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "capture-device"
+    ):
+        capture_override: dict[str, object] = {}
+        if args.log_level is not None:
+            capture_override["logging"] = {"level": args.log_level}
+        if args.identifier is not None:
+            capture_override["capture_device"] = {"identifier": args.identifier}
+        try:
+            capture_report = validate_capture_device(
+                load_settings(
+                    config_path=args.config, cli_overrides=capture_override or None
+                )
+            )
+        except AuroraConfigurationError:
+            print("Capture-device validation configuration failed.", file=sys.stderr)
+            return 1
+        _print_capture_device_report(capture_report)
+        return 0 if capture_report.state is ComponentHealthState.HEALTHY else 1
     if args.command == "config" and args.config_command == "validate":
         overrides = (
             {"logging": {"level": args.log_level}}
