@@ -15,7 +15,7 @@ ddp:
 capture_device:
   enabled: false
 lighting_zones: []
-led_layout:
-  # Set orientation and starting_corner only after physical installation.
+# Set orientation and starting_corner only after physical installation.
+led_layout: {}
 mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
