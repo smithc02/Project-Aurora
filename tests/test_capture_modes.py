@@ -644,3 +644,56 @@ def test_size_and_interval_invalid_outcomes(monkeypatch: pytest.MonkeyPatch) -> 
     gaps = []
     values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
     assert values == [] and not done and gaps == ["invalid_frame_interval_response"]
+
+
+def test_service_healthy_and_close_failure_classification() -> None:
+    from aurora_core.hardware.models import CaptureFrameInterval, CaptureFrameSize
+
+    settings = load_settings(
+        environment={},
+        cli_overrides={
+            "capture_device": {"enabled": True, "identifier": "/dev/video0"}
+        },
+    )
+    interval = CaptureFrameInterval("discrete", 1, 60)
+    size = CaptureFrameSize(
+        "discrete", 640, 480, intervals=(interval,), intervals_enumerated=True
+    )
+    fmt = CapturePixelFormat(
+        "single_planar", "YUYV", False, None, False, False, (size,)
+    )
+    healthy = CaptureModeProbeResult(
+        "validated", (fmt,), True, (), True, True, True, True
+    )
+    assert (
+        validate_capture_modes(settings, Fake(healthy), platform="linux").state
+        is ComponentHealthState.HEALTHY
+    )
+    failed_close = CaptureModeProbeResult(
+        "validated", (fmt,), True, (), True, True, True, False
+    )
+    assert (
+        validate_capture_modes(settings, Fake(failed_close), platform="linux").state
+        is ComponentHealthState.UNHEALTHY
+    )
+
+
+def test_zero_height_and_interval_denominator_are_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = LinuxV4L2ModeProbe()
+    sizes = [u._FS.pack(0, 1, 1, 640, 0, 0, 0, 0, 0, 0, 0)]
+    monkeypatch.setattr(
+        probe, "_call", lambda fd, r, b, bu: b.__setitem__(slice(None), sizes.pop())
+    )
+    gaps: list[str] = []
+    assert probe._sizes(1, 1, [0], [0], gaps) == [] and gaps == [
+        "invalid_frame_size_response"
+    ]
+    intervals = [u._FI.pack(0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)]
+    monkeypatch.setattr(
+        probe, "_call", lambda fd, r, b, bu: b.__setitem__(slice(None), intervals.pop())
+    )
+    gaps = []
+    values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
+    assert values == [] and not done and gaps == ["invalid_frame_interval_response"]
