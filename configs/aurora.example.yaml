@@ -1,32 +1,21 @@
-# Copy to an untracked user configuration file before use. This file is documentation only.
-# Precedence: command-line overrides, environment variables, user configuration file,
-# then built-in safe defaults.
+# Copy to an untracked user configuration file before use. This is a valid,
+# hardware-free example; integrations stay disabled until explicitly enabled.
+# Precedence: command line, environment variables, YAML, then safe defaults.
 application:
   name: "Project Aurora"
   configuration_profile: "example"
 logging:
   level: "INFO"
 hyperhdr:
-  host: "<hyperhdr-hostname>"
-  port: "<hyperhdr-port>"
+  enabled: false
 wled:
-  host: "<wled-hostname>"
-  port: "<wled-port>"
+  enabled: false
 ddp:
-  host: "<wled-hostname>"
-  port: "<ddp-port>"
+  enabled: false
 capture_device:
-  identifier: "<capture-device-identifier>"
-lighting_zones:
-  - name: "<zone-name>"
-    enabled: false
-    led_count: "<configure-after-physical-measurement>"
-led_layout:
-  orientation: "<configure-after-installation>"
-  starting_corner: "<configure-after-installation>"
+  enabled: false
+lighting_zones: []
+# Set orientation and starting_corner only after physical installation.
+led_layout: {}
 mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
-  host: "<mqtt-hostname>"
-  port: "<mqtt-port>"
-  username: "<mqtt-username>"
-  password: "<mqtt-password>"

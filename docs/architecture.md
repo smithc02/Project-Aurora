@@ -38,3 +38,10 @@ independent zones should be represented as separately named, configurable
 entities with their own mapping and endpoint configuration. LED counts,
 addresses, ports, and layout orientation must be measured and configured, never
 embedded in code or example defaults.
+
+## Configuration boundary
+
+Milestone 2 supplies a validated configuration model for the planned components
+only. It loads safe defaults, an explicitly selected YAML file, `AURORA_`
+environment overrides, and CLI overrides without connecting to a device. The
+configuration model does not establish any hardware or network integration.

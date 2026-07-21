@@ -67,8 +67,8 @@ uv run pytest --cov=aurora_core --cov-report=term-missing
 
 Aurora does not yet communicate with HyperHDR, WLED, capture hardware, or any
 network device. It does not send DDP, process images, operate LEDs, manipulate
-system services, or control mains or power hardware. Configuration loading is
-also intentionally deferred.
+system services, or control mains or power hardware. Configuration validation
+does not implement or test connectivity.
 
 ## Safety
 
@@ -78,12 +78,26 @@ installation guidance. Read [Safety](docs/safety.md) before handling hardware.
 
 ## Roadmap
 
-See [the roadmap](docs/roadmap.md). The next proposed milestone is to define
-and validate a safe configuration model while retaining the no-hardware-control
-boundary.
+See [the roadmap](docs/roadmap.md). A recommended Milestone 3 is to define
+hardware-free configuration consumption boundaries and operational contracts
+before implementing any device communication.
 
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and relevant
 documentation before making changes. Keep contributions small, configurable,
 tested, and free of secrets or personal network information.
+
+## Configuration
+
+Aurora validates configuration only; it does not contact devices or test connectivity.
+Settings are applied in deterministic order: command-line overrides, `AURORA_`
+environment variables, an explicitly supplied YAML file, then safe built-in defaults.
+Nested environment fields use `__`, for example `AURORA_WLED__ENABLED=true` and
+`AURORA_LOGGING__LEVEL=DEBUG`.
+
+Use `aurora config validate --config path/to/aurora.yaml --log-level DEBUG` to
+check an explicit file. Copy `configs/aurora.example.yaml` to an untracked file
+before adding deployment-specific values. MQTT passwords use protected values
+and are not printed by validation output or configuration errors. `.env.example`
+documents safe environment names; Aurora deliberately does not load `.env` files.
