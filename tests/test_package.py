@@ -59,3 +59,44 @@ def test_runtime_plan_is_sanitized_and_uses_environment(monkeypatch, capsys) -> 
     assert "wled: configured, health unknown" in output
     assert "connectivity and hardware were not tested" in output
     assert "do-not-print-this" not in output
+
+
+def test_hardware_validate_disabled_is_network_free(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "aurora",
+            "hardware",
+            "validate",
+            "wled",
+            "--config",
+            "configs/aurora.example.yaml",
+        ],
+    )
+    assert main() == 1
+    output = capsys.readouterr().out
+    assert "WLED validation: disabled" in output
+    assert "No WLED state was changed." in output
+
+
+def test_hardware_validate_output_is_sanitized(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    from aurora_core.hardware.models import WLEDValidationReport
+    from aurora_core.runtime.models import ComponentHealthState, ComponentId
+
+    report = WLEDValidationReport(
+        ComponentId.WLED,
+        ComponentHealthState.HEALTHY,
+        "validated",
+        "safe",
+        "0.15.0",
+        12,
+        None,
+        None,
+    )
+    monkeypatch.setattr("aurora_core.__main__.validate_wled", lambda settings: report)
+    monkeypatch.setattr("sys.argv", ["aurora", "hardware", "validate", "wled"])
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert "firmware_version: 0.15.0" in output
+    assert "no WLED state was changed" in output
+    assert "HyperHDR, capture, DDP" in output

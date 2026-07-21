@@ -19,7 +19,9 @@ from aurora_core.config.models import AuroraSettings
 
 ConfigMapping = Mapping[str, Any]
 
-_ENVIRONMENT_FIELDS: dict[tuple[str, ...], type[bool] | type[int] | type[str]] = {
+_ENVIRONMENT_FIELDS: dict[
+    tuple[str, ...], type[bool] | type[int] | type[float] | type[str]
+] = {
     ("application", "name"): str,
     ("application", "configuration_profile"): str,
     ("logging", "level"): str,
@@ -30,6 +32,7 @@ _ENVIRONMENT_FIELDS: dict[tuple[str, ...], type[bool] | type[int] | type[str]] =
     ("wled", "enabled"): bool,
     ("wled", "host"): str,
     ("wled", "port"): int,
+    ("wled", "validation_timeout_seconds"): float,
     ("ddp", "enabled"): bool,
     ("ddp", "host"): str,
     ("ddp", "port"): int,
@@ -102,6 +105,13 @@ def environment_overrides(source: Mapping[str, str] | None = None) -> dict[str, 
 def _parse_environment_value(variable: str, value: str, target_type: type[Any]) -> Any:
     if target_type is str:
         return value
+    if target_type is float:
+        try:
+            return float(value)
+        except ValueError as error:
+            raise ConfigurationValidationError(
+                f"Invalid float value for environment variable {variable}"
+            ) from error
     if target_type is int:
         try:
             return int(value)

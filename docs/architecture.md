@@ -67,3 +67,8 @@ unhealthy/failed, degraded, unknown (including missing reports), and healthy.
 No automatic reload, file watching, environment rereading, polling, or adapter
 implementation exists. To apply configuration changes, stop the controller and
 create a new settings snapshot, plan, and controller.
+
+
+## Read-only WLED boundary (Milestone 4)
+
+The explicit `aurora hardware validate wled` operator command is the only hardware-facing capability. It makes one GET request to WLED's fixed `/json/info` endpoint, with a finite configured timeout and a 64 KiB response limit. It parses only firmware version and LED count. It does not start the runtime controller, transmit DDP, alter WLED state, or validate HyperHDR or capture hardware. A future runtime adapter requires separate approval.

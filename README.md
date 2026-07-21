@@ -4,7 +4,7 @@
 > ambient-lighting platform for a home theater. Milestones 1 (development
 > environment) and 2 (validated configuration) are complete. Milestone 3 adds
 > hardware-free runtime planning and lifecycle contracts—not lighting-control
-> functionality or device communication.
+> functionality or device communication. Milestone 4 adds an explicit, one-shot, read-only WLED information validation.
 
 ## Architecture summary
 
@@ -48,6 +48,7 @@ environment, and validates the scaffold. See [development documentation](docs/de
 ```bash
 uv run aurora --check
 uv run aurora runtime plan --config configs/aurora.example.yaml
+uv run aurora hardware validate wled --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
@@ -78,8 +79,7 @@ in plan order, and stops successful starts in reverse order. No adapters exist
 yet. Aurora has no automatic configuration reload: stop the controller, load a
 new settings snapshot, build a new plan, and create a new controller.
 
-Aurora does not yet communicate with HyperHDR, WLED, capture hardware, or any
-network device. It does not send DDP, process images, operate LEDs, manipulate
+Aurora can explicitly validate one enabled WLED device with a read-only GET `/json/info`; it never changes WLED state. HyperHDR, capture hardware, DDP, MQTT, and the complete lighting path remain unvalidated and unimplemented. It does not send DDP, process images, operate LEDs, manipulate
 system services, or control mains or power hardware. Configuration validation
 does not implement or test connectivity.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added Milestone 4 explicit, one-shot WLED read-only validation using only GET `/json/info`.
+
 - Added Milestone 3 hardware-free runtime plans, component contracts,
   deterministic lifecycle coordination, health aggregation, and `aurora runtime plan`.
 - Added Milestone 2 validated configuration loading with safe defaults, YAML,

@@ -12,3 +12,8 @@ instructions, fuse ratings, enclosure design, or mains/power-control code.
 
 Stop work and seek qualified electrical guidance when any safety-critical
 hardware detail is uncertain.
+
+
+## Software validation boundary
+
+Milestone 4's WLED command is read-only: it requests only `/json/info`, sends no LED frames, and changes no device or power state. It does not validate electrical installation, wiring, power supplies, HyperHDR, capture hardware, or the full lighting path.

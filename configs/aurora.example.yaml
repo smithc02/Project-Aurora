@@ -10,6 +10,7 @@ hyperhdr:
   enabled: false
 wled:
   enabled: false
+  validation_timeout_seconds: 2.0
 ddp:
   enabled: false
 capture_device:
@@ -19,3 +20,5 @@ lighting_zones: []
 led_layout: {}
 mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
+# Read-only WLED validation uses GET /json/info only when explicitly invoked.
+# wled.validation_timeout_seconds defaults to 2.0 seconds (0.1–10.0).

@@ -5,13 +5,21 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 NonEmptyString = Annotated[str, Field(min_length=1, strict=True)]
 Port = Annotated[int, Field(ge=1, le=65535, strict=True)]
 PositiveInteger = Annotated[int, Field(gt=0, strict=True)]
 StrictBoolean = Annotated[bool, Field(strict=True)]
+ValidationTimeout = Annotated[float, Field(ge=0.1, le=10.0, strict=True)]
 
 
 class LoggingLevel(StrEnum):
@@ -57,7 +65,18 @@ class HyperHDRSettings(EndpointSettings):
 
 
 class WLEDSettings(EndpointSettings):
-    """Description-only WLED settings; no connection is attempted."""
+    """WLED configuration for explicit, read-only information validation only."""
+
+    validation_timeout_seconds: ValidationTimeout = 2.0
+
+    @field_validator("host")
+    @classmethod
+    def host_is_hostname_or_ip_literal(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            token in value for token in ("://", "/", "?", "#", "@")
+        ):
+            raise ValueError("host must be a hostname or IP literal without URL syntax")
+        return value
 
 
 class DDPSettings(EndpointSettings):
