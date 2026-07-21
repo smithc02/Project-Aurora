@@ -155,10 +155,23 @@ def _print_capture_modes_report(report: object) -> None:
                             f"      interval_step: {interval.step_numerator}/"
                             f"{interval.step_denominator} s"
                         )
-    if report.device_was_opened:
-        print("The capture device was closed.")
-    else:
+    if not report.device_was_opened:
         print("No capture device was opened.")
+        print("No ioctl was issued.")
+    elif report.descriptor_was_closed:
+        print("The capture device was closed.")
+        print(
+            f"VIDIOC_QUERYCAP issued: {'yes' if report.querycap_was_issued else 'no'}"
+        )
+        print(
+            "enumeration ioctl issued: "
+            f"{'yes' if report.enumeration_ioctl_was_issued else 'no'}"
+        )
+    else:
+        print(
+            "The capture device was opened, but descriptor closure could not "
+            "be confirmed."
+        )
     print(
         "No format was configured, no input was selected, no buffer was allocated, "
         "no stream was started, and no frame was acquired."

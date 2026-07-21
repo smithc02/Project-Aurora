@@ -93,12 +93,15 @@ class LinuxV4L2ModeProbe:
                             records = [0]
                             for q, label in queues:
                                 try:
+                                    # The next operation is an ENUM_FMT attempt.
+                                    enum = True
                                     formats.extend(
                                         self._formats(
                                             fd, q, label, budget, records, gaps
                                         )
                                     )
-                                    enum = True
+                                except _NestedInvalid as error:
+                                    self._gap(gaps, error.code)
                                 except _EnumerationLimitReached:
                                     self._gap(gaps, "enumeration_limit_reached")
                                     break

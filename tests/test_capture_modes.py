@@ -177,13 +177,13 @@ def test_service_states() -> None:
             Fake(CaptureModeProbeResult("validated", (fmt,), True)),
             platform="linux",
         ).state
-        is ComponentHealthState.HEALTHY
+        is ComponentHealthState.UNHEALTHY
     )
     assert (
         validate_capture_modes(
             settings,
             Fake(
-                CaptureModeProbeResult("validated_with_gaps", (fmt,), False, ("gap",))
+                CaptureModeProbeResult("validated_with_gaps", (fmt,), False, ("gap",), True, True, True, True)
             ),
             platform="linux",
         ).state

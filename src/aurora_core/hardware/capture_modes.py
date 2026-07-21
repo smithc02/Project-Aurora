@@ -38,12 +38,31 @@ def validate_capture_modes(
         )
     except Exception:
         result = CaptureModeProbeResult("format_enumeration_failed")
+    complete = (
+        result.reason_code == "validated"
+        and result.enumeration_complete
+        and bool(result.formats)
+        and not result.partial_reason_codes
+        and result.device_was_opened
+        and result.querycap_was_issued
+        and result.enumeration_ioctl_was_issued
+        and result.descriptor_was_closed
+        and all(
+            fmt.frame_sizes
+            and all(
+                size.kind != "discrete"
+                or (size.intervals_enumerated and bool(size.intervals))
+                for size in fmt.frame_sizes
+            )
+            for fmt in result.formats
+        )
+    )
     state = (
         ComponentHealthState.HEALTHY
-        if result.reason_code == "validated" and result.formats
+        if complete
         else (
             ComponentHealthState.DEGRADED
-            if result.formats
+            if result.formats and result.descriptor_was_closed
             else ComponentHealthState.UNHEALTHY
         )
     )
