@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added Milestone 5 explicit, one-shot HyperHDR read-only server-information
+  validation using only GET `/json-rpc` with the fixed `serverinfo` command.
+
 - Added Milestone 4 explicit, one-shot WLED read-only validation using only GET `/json/info`.
 
 - Added Milestone 3 hardware-free runtime plans, component contracts,

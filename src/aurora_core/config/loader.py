@@ -29,6 +29,7 @@ _ENVIRONMENT_FIELDS: dict[
     ("hyperhdr", "enabled"): bool,
     ("hyperhdr", "host"): str,
     ("hyperhdr", "port"): int,
+    ("hyperhdr", "validation_timeout_seconds"): float,
     ("wled", "enabled"): bool,
     ("wled", "host"): str,
     ("wled", "port"): int,

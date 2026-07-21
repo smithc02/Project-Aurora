@@ -8,6 +8,7 @@ from pathlib import Path
 
 from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
+from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.wled import validate_wled
 from aurora_core.runtime import build_runtime_plan
 from aurora_core.runtime.errors import AuroraRuntimeError
@@ -58,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     wled_parser.add_argument(
         "--timeout", type=float, help="Override WLED validation timeout in seconds."
     )
+    hyperhdr_parser = hardware_validate_subparsers.add_parser(
+        "hyperhdr", help="Validate HyperHDR using GET /json-rpc serverinfo only."
+    )
+    hyperhdr_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    hyperhdr_parser.add_argument("--log-level", help="Override logging.level.")
+    hyperhdr_parser.add_argument(
+        "--timeout", type=float, help="Override HyperHDR validation timeout in seconds."
+    )
     return parser
 
 
@@ -86,6 +95,33 @@ def _print_wled_report(report: object) -> None:
     else:
         print(f"reason: {report.reason_code}")
         print("No WLED state was changed.")
+
+
+def _print_hyperhdr_report(report: object) -> None:
+    from aurora_core.hardware.models import HyperHDRValidationReport
+
+    assert isinstance(report, HyperHDRValidationReport)
+    print(f"HyperHDR validation: {report.state.value}")
+    if report.state is ComponentHealthState.HEALTHY:
+        print("serverinfo_response: valid")
+        hdr_mode = (
+            "not reported"
+            if report.hdr_mode_enabled is None
+            else ("enabled" if report.hdr_mode_enabled else "disabled")
+        )
+        print(f"hdr_mode: {hdr_mode}")
+        print("Read-only validation completed; no HyperHDR state was changed.")
+        print(
+            "Capture input, WLED output, DDP, and the complete lighting path "
+            "were not tested."
+        )
+    elif report.state is ComponentHealthState.DISABLED:
+        print(f"reason: {report.reason_code}")
+        print("No HyperHDR request was made.")
+        print("No HyperHDR state was changed.")
+    else:
+        print(f"reason: {report.reason_code}")
+        print("No HyperHDR state was changed.")
 
 
 def main() -> int:
@@ -118,6 +154,27 @@ def main() -> int:
             return 1
         _print_wled_report(report)
         return 0 if report.state is ComponentHealthState.HEALTHY else 1
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "hyperhdr"
+    ):
+        hyperhdr_override: dict[str, object] = {}
+        if args.log_level is not None:
+            hyperhdr_override["logging"] = {"level": args.log_level}
+        if args.timeout is not None:
+            hyperhdr_override["hyperhdr"] = {"validation_timeout_seconds": args.timeout}
+        try:
+            hyperhdr_report = validate_hyperhdr(
+                load_settings(
+                    config_path=args.config, cli_overrides=hyperhdr_override or None
+                )
+            )
+        except AuroraConfigurationError as error:
+            print(f"HyperHDR validation configuration failed: {error}", file=sys.stderr)
+            return 1
+        _print_hyperhdr_report(hyperhdr_report)
+        return 0 if hyperhdr_report.state is ComponentHealthState.HEALTHY else 1
     if args.command == "config" and args.config_command == "validate":
         overrides = (
             {"logging": {"level": args.log_level}}

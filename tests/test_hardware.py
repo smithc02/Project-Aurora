@@ -7,7 +7,14 @@ import json
 import pytest
 
 from aurora_core.config import AuroraConfigurationError, load_settings
-from aurora_core.hardware.errors import WLEDTimeoutError
+from aurora_core.hardware.errors import (
+    HyperHDRAuthorizationError,
+    HyperHDRResponseTooLargeError,
+    HyperHDRTimeoutError,
+    WLEDTimeoutError,
+)
+from aurora_core.hardware.hyperhdr import parse_hyperhdr_server_info, validate_hyperhdr
+from aurora_core.hardware.hyperhdr_transport import _serverinfo_url
 from aurora_core.hardware.transport import _info_url
 from aurora_core.hardware.wled import expected_led_count, parse_wled_info, validate_wled
 from aurora_core.runtime.models import ComponentHealthState
@@ -18,6 +25,19 @@ class FakeTransport:
         self.result, self.calls = result, 0
 
     def fetch_info(self, *, host: str, port: int, timeout_seconds: float) -> bytes:
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class FakeHyperHDRTransport:
+    def __init__(self, result: bytes | Exception) -> None:
+        self.result, self.calls = result, 0
+
+    def fetch_server_info(
+        self, *, host: str, port: int, timeout_seconds: float
+    ) -> bytes:
         self.calls += 1
         if isinstance(self.result, Exception):
             raise self.result
@@ -128,6 +148,144 @@ def test_timeout_cli_precedence() -> None:
         cli_overrides={"wled": {"validation_timeout_seconds": 4.0}},
     )
     assert configured.wled.validation_timeout_seconds == 4.0
+
+
+def test_hyperhdr_timeout_hosts_and_precedence() -> None:
+    assert load_settings(environment={}).hyperhdr.validation_timeout_seconds == 2.0
+    configured = load_settings(
+        environment={"AURORA_HYPERHDR__VALIDATION_TIMEOUT_SECONDS": "3.0"},
+        cli_overrides={"hyperhdr": {"validation_timeout_seconds": 4.0}},
+    )
+    assert configured.hyperhdr.validation_timeout_seconds == 4.0
+    for value in (0.0, -1.0, 10.1, True):
+        with pytest.raises(AuroraConfigurationError):
+            load_settings(
+                environment={},
+                cli_overrides={"hyperhdr": {"validation_timeout_seconds": value}},
+            )
+    for host in ("192.0.2.1", "2001:db8::1", "hyperhdr.local", "localhost"):
+        assert (
+            load_settings(
+                environment={},
+                cli_overrides={"hyperhdr": {"enabled": True, "host": host}},
+            ).hyperhdr.host
+            == host
+        )
+    with pytest.raises(AuroraConfigurationError, match="Invalid float"):
+        load_settings(
+            environment={"AURORA_HYPERHDR__VALIDATION_TIMEOUT_SECONDS": "nope"}
+        )
+
+
+def test_hyperhdr_parser_and_validation_are_sanitized() -> None:
+    body = (
+        b'{"command":"serverinfo","success":true,"info":{"videomodehdr":1,'
+        b'"ip":"192.0.2.1","components":["secret"]}}'
+    )
+    info = parse_hyperhdr_server_info(body)
+    assert info.server_info_received and info.hdr_mode_enabled is True
+    assert "192.0.2.1" not in repr(info)
+    for value, expected in ((True, True), (False, False), (0, False), ("bad", None)):
+        assert (
+            parse_hyperhdr_server_info(
+                json.dumps({"success": True, "info": {"videomodehdr": value}}).encode()
+            ).hdr_mode_enabled
+            is expected
+        )
+    for body in (
+        b"[]",
+        b"{",
+        b'{"success":true}',
+        b'{"success":false,"info":{}}',
+        b'{"success":true,"info":[],"command":"serverinfo"}',
+        b'{"success":true,"info":{},"command":"bad"}',
+    ):
+        with pytest.raises(ValueError):
+            parse_hyperhdr_server_info(body)
+    transport = FakeHyperHDRTransport(b'{"success":true,"info":{}}')
+    settings = load_settings(
+        environment={},
+        cli_overrides={"hyperhdr": {"enabled": True, "host": "hyperhdr.local"}},
+    )
+    report = validate_hyperhdr(settings, transport)
+    assert report.state is ComponentHealthState.HEALTHY and transport.calls == 1
+    assert "hyperhdr.local" not in repr(report)
+
+
+def test_hyperhdr_disabled_and_failures_are_safe() -> None:
+    transport = FakeHyperHDRTransport(b"{}")
+    assert (
+        validate_hyperhdr(load_settings(environment={}), transport).state
+        is ComponentHealthState.DISABLED
+    )
+    assert transport.calls == 0
+    settings = load_settings(
+        environment={},
+        cli_overrides={"hyperhdr": {"enabled": True, "host": "hyperhdr.local"}},
+    )
+    for error, code in (
+        (HyperHDRTimeoutError("do-not-print-this"), "timeout"),
+        (HyperHDRAuthorizationError(), "authorization_required"),
+        (HyperHDRResponseTooLargeError(), "response_too_large"),
+    ):
+        report = validate_hyperhdr(settings, FakeHyperHDRTransport(error))
+        assert report.reason_code == code and "do-not-print-this" not in repr(report)
+
+
+def test_hyperhdr_fixed_url_and_production_transport(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from aurora_core.hardware.hyperhdr_transport import (
+        UrllibHyperHDRServerInfoTransport,
+    )
+
+    assert _serverinfo_url("2001:db8::1", 8090).startswith(
+        "http://[2001:db8::1]:8090/json-rpc?request="
+    )
+    captured: dict[str, object] = {}
+
+    class Response:
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.closed = True
+
+        def getcode(self) -> int:
+            return 200
+
+        def read(self, amount: int) -> bytes:
+            captured["amount"] = amount
+            return b'{"success":true,"info":{}}'
+
+    response = Response()
+
+    class Opener:
+        def open(self, request: object, timeout: float) -> Response:
+            captured["request"], captured["timeout"] = request, timeout
+            return response
+
+    monkeypatch.setattr(
+        "aurora_core.hardware.hyperhdr_transport.build_opener", lambda handler: Opener()
+    )
+    assert (
+        UrllibHyperHDRServerInfoTransport()
+        .fetch_server_info(host="2001:db8::1", port=8090, timeout_seconds=1.5)
+        .startswith(b"{")
+    )
+    request = captured["request"]
+    assert (
+        response.closed
+        and captured["timeout"] == 1.5
+        and request.get_method() == "GET"
+        and request.data is None
+    )  # type: ignore[union-attr]
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(request.full_url)  # type: ignore[union-attr]
+    assert parsed.path == "/json-rpc" and json.loads(
+        parse_qs(parsed.query)["request"][0]
+    ) == {"command": "serverinfo"}
 
 
 def test_disabled_transport_is_not_called() -> None:
