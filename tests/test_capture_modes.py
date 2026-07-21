@@ -697,3 +697,77 @@ def test_zero_height_and_interval_denominator_are_invalid(
     gaps = []
     values, done = probe._intervals(1, 1, 1, 1, [0], [0], gaps)
     assert values == [] and not done and gaps == ["invalid_frame_interval_response"]
+
+
+def test_service_complete_health_and_close_failure() -> None:
+    from aurora_core.hardware.models import CaptureFrameInterval, CaptureFrameSize
+
+    settings = load_settings(
+        environment={},
+        cli_overrides={
+            "capture_device": {
+                "enabled": True,
+                "identifier": "/dev/video0",
+            }
+        },
+    )
+
+    interval = CaptureFrameInterval("discrete", 1, 60)
+    size = CaptureFrameSize(
+        "discrete",
+        1920,
+        1080,
+        intervals=(interval,),
+        intervals_enumerated=True,
+    )
+    fmt = CapturePixelFormat(
+        "single_planar",
+        "YUYV",
+        False,
+        None,
+        False,
+        False,
+        (size,),
+    )
+
+    healthy_result = CaptureModeProbeResult(
+        "validated",
+        (fmt,),
+        True,
+        (),
+        True,
+        True,
+        True,
+        True,
+    )
+    healthy_report = validate_capture_modes(
+        settings,
+        Fake(healthy_result),
+        platform="linux",
+    )
+
+    assert healthy_report.state is ComponentHealthState.HEALTHY
+    assert (
+        healthy_report.format_count,
+        healthy_report.frame_size_count,
+        healthy_report.frame_interval_count,
+    ) == (1, 1, 1)
+
+    close_failure_result = CaptureModeProbeResult(
+        "device_unavailable",
+        (fmt,),
+        False,
+        (),
+        True,
+        True,
+        True,
+        False,
+    )
+    close_failure_report = validate_capture_modes(
+        settings,
+        Fake(close_failure_result),
+        platform="linux",
+    )
+
+    assert close_failure_report.state is ComponentHealthState.UNHEALTHY
+    assert not close_failure_report.descriptor_was_closed
