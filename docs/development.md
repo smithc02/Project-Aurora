@@ -50,3 +50,15 @@ defaults. Nested environment names use `__`, such as `AURORA_MQTT__USERNAME` and
 
 Use an untracked configuration file for real deployment values. Passwords are
 protected from repr output and are excluded from user-facing validation errors.
+
+## Runtime-plan validation
+
+```bash
+uv run aurora runtime plan --config configs/aurora.example.yaml
+```
+
+This reuses configuration precedence (CLI > environment > YAML > defaults) and
+prints a deterministic sanitized summary. It does not print endpoint details or
+passwords, start components, instantiate a controller, test connectivity, or
+verify hardware. Configuration snapshots are immutable runtime inputs; reload
+and file watching are intentionally absent in this milestone.

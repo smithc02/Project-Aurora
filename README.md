@@ -1,10 +1,10 @@
 # Project Aurora
 
 > **Status: pre-alpha.** Project Aurora is an open-source, Raspberry Pi-based
-> ambient-lighting platform for a home theater. This repository is currently at
-> **Milestone 1: Repository and Development Environment Scaffold**; it contains
-> packaging, quality tooling, documentation, and configuration conventions—not
-> lighting-control functionality.
+> ambient-lighting platform for a home theater. Milestones 1 (development
+> environment) and 2 (validated configuration) are complete. Milestone 3 adds
+> hardware-free runtime planning and lifecycle contracts—not lighting-control
+> functionality or device communication.
 
 ## Architecture summary
 
@@ -47,6 +47,7 @@ environment, and validates the scaffold. See [development documentation](docs/de
 
 ```bash
 uv run aurora --check
+uv run aurora runtime plan --config configs/aurora.example.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
@@ -63,7 +64,19 @@ uv run pytest --cov=aurora_core --cov-report=term-missing
 - `scripts/` — reproducible bootstrap and validation commands.
 - `.github/` — CI, issue forms, and pull-request template.
 
-## Current limitations
+## Runtime foundation and current limitations
+
+`aurora runtime plan` creates a sanitized immutable `RuntimePlan` from the
+validated configuration snapshot. It lists the fixed order `capture_device`,
+`hyperhdr`, `wled`, `ddp`, then `mqtt`; it summarizes zones and layout without
+printing endpoints or credentials. “Configured” means validation supplied the
+minimum descriptive fields, **not** that a device is reachable or healthy.
+
+Future adapters will implement a narrow synchronous start/stop/health contract.
+The runtime controller accepts only injected adapters, starts enabled components
+in plan order, and stops successful starts in reverse order. No adapters exist
+yet. Aurora has no automatic configuration reload: stop the controller, load a
+new settings snapshot, build a new plan, and create a new controller.
 
 Aurora does not yet communicate with HyperHDR, WLED, capture hardware, or any
 network device. It does not send DDP, process images, operate LEDs, manipulate
@@ -78,9 +91,7 @@ installation guidance. Read [Safety](docs/safety.md) before handling hardware.
 
 ## Roadmap
 
-See [the roadmap](docs/roadmap.md). A recommended Milestone 3 is to define
-hardware-free configuration consumption boundaries and operational contracts
-before implementing any device communication.
+See [the roadmap](docs/roadmap.md) for completed and planned milestones.
 
 ## Contributing
 
