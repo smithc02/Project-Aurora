@@ -1,20 +1,22 @@
 # Project Aurora
 
 > **Status: pre-alpha.** Project Aurora is an open-source, Raspberry Pi-based
-> ambient-lighting platform for a home theater. Milestones 1 through 9 establish
+> ambient-lighting platform for a home theater. Milestones 1 through 10 establish
 > validated configuration, hardware-free runtime contracts, read-only device
-> information checks, and bounded capture validation. Milestone 10 adds one
-> explicit operator-only DDP output check: one static low-intensity frame followed
-> immediately by one blackout frame. Runtime lighting control remains deferred.
+> information checks, bounded capture validation, and one explicit operator-only
+> DDP output check. Milestone 11 defines the operator-controlled single-zone
+> baseline proof and deployment runbook; it does not claim that the physical path
+> has passed. Runtime lighting control remains deferred.
 
 ## Architecture summary
 
 The direct PS5-to-TV HDMI path remains independent from Aurora so it can retain
 4K120, VRR, HDR, eARC, and Atmos. A splitter's secondary 1080p60 output feeds a
-capture card and Raspberry Pi 5 running HyperHDR. HyperHDR will ultimately send
-real-time frames using DDP over Ethernet to WLED on a QuinLED Dig-Quad. MQTT is
-reserved for later automation, configuration, and telemetry, never frame data.
-See [the architecture](docs/architecture.md) for the full flow.
+capture card and Raspberry Pi 5 running HyperHDR. HyperHDR remains the baseline
+capture, color-extraction, and real-time DDP component; WLED on a QuinLED
+Dig-Quad controls the LEDs. MQTT is reserved for later automation,
+configuration, and telemetry, never frame data. See
+[the architecture](docs/architecture.md) for the full flow.
 
 ## Initial hardware stack
 
@@ -53,6 +55,7 @@ uv run aurora hardware validate wled --config configs/aurora.local.yaml
 uv run aurora hardware validate hyperhdr --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-device --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-capability --config configs/aurora.local.yaml
+uv run aurora hardware validate capture-modes --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-frame --config configs/aurora.local.yaml
 uv run aurora hardware validate ddp-output --config configs/aurora.local.yaml
 uv run ruff check .
@@ -99,6 +102,13 @@ No runtime adapter, continuous image processing, MQTT frame transport, system
 service manipulation, or mains/power control is implemented. Configuration
 validation alone does not implement or test connectivity.
 
+Milestone 11 adds no runtime behavior. Its
+[single-zone baseline proof and deployment runbook](docs/single-zone-baseline-proof.md)
+combines the existing validation boundaries with operator-observed direct HDMI,
+HyperHDR, WLED, single-zone, stop, and recovery evidence. Only a completed
+private evidence record can establish `PROVEN` under the recorded conditions;
+the repository documentation does not claim the physical path has passed.
+
 ## Safety
 
 The planned power supply has exposed mains-voltage terminals. Keep all AC work
@@ -107,7 +117,9 @@ installation guidance. Read [Safety](docs/safety.md) before handling hardware.
 
 ## Roadmap
 
-See [the roadmap](docs/roadmap.md) for completed and planned milestones.
+See [the roadmap](docs/roadmap.md) for completed and planned milestones, and the
+[Milestone 11 single-zone baseline runbook](docs/single-zone-baseline-proof.md)
+for its operator evidence requirements.
 
 ## Contributing
 
