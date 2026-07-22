@@ -71,7 +71,12 @@ create a new settings snapshot, plan, and controller.
 
 ## Read-only WLED boundary (Milestone 4)
 
-The explicit `aurora hardware validate wled` operator command is the only hardware-facing capability. It makes one GET request to WLED's fixed `/json/info` endpoint, with a finite configured timeout and a 64 KiB response limit. It parses only firmware version and LED count. It does not start the runtime controller, transmit DDP, alter WLED state, or validate HyperHDR or capture hardware. A future runtime adapter requires separate approval.
+The explicit `aurora hardware validate wled` operator command makes one GET
+request to WLED's fixed `/json/info` endpoint, with a finite configured timeout
+and a 64 KiB response limit. It parses only firmware version and LED count. It
+does not start the runtime controller, transmit DDP, alter WLED state, or validate
+HyperHDR or capture hardware. A future runtime adapter requires separate
+approval.
 
 ## Read-only HyperHDR boundary (Milestone 5)
 
@@ -109,3 +114,34 @@ hardware-free. See [capture mode enumeration](capture-mode-enumeration.md).
 Milestone 9 adds a separate operator-only `capture-frame` boundary. It permits
 only capability/current-format queries plus one bounded read/write frame attempt
 on one configured target; it never streams, transmits, or retains frame data.
+
+## Bounded DDP output boundary (Milestone 10)
+
+`aurora hardware validate ddp-output` is a separate, explicit operator action,
+not a runtime adapter. Configuration must enable DDP and provide its host, and
+exactly one enabled `lighting_zones` entry must provide 1–512 LEDs. The service
+constructs and validates the complete test and blackout packet plans before it
+resolves the configured destination once or creates one UDP socket.
+
+The command submits at most one static RGB(0, 0, 16) frame and then enters the
+blackout phase exactly once. Blackout is attempted after socket creation even if
+test submission fails. One two-second monotonic transmission/send deadline is
+established before resolution, so resolution and socket creation consume the
+remaining send budget and no `sendto` call is permitted after it expires. The
+standard-library `getaddrinfo` call is blocking and cannot be forcibly
+interrupted by this implementation; neither resolution nor total command
+wall-clock duration is claimed to be capped at two seconds. If resolution
+returns after the deadline, the socket is still created, no test packet is sent,
+and the blackout phase is entered under the same expired deadline. There is no
+retry or address fallback, at most two datagrams per frame, and at most four send
+calls. Resolution accepts exactly one unique IPv4 or IPv6 unicast UDP
+destination; discovery, broadcast, multicast, scanning, and mDNS browsing are
+absent.
+
+The socket is closed after blackout and no later network operation is permitted.
+A blackout failure overrides test and cleanup outcomes. Successful submission of
+both frames with unconfirmed socket closure is degraded; an earlier test failure
+remains unhealthy even when blackout succeeds. UDP submission has no receipt
+acknowledgment and makes no claim about WLED receipt, LEDs, or the complete
+lighting path. Runtime and continuous DDP transmission remain unimplemented. See
+[bounded DDP output validation](ddp-output-validation.md).

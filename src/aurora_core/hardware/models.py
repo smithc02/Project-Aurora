@@ -42,6 +42,55 @@ class HyperHDRValidationReport:
 
 
 @dataclass(frozen=True, slots=True)
+class DDPOutputProbeResult:
+    """Sanitized metadata from one bounded DDP test-and-blackout attempt."""
+
+    reason_code: str
+    socket_was_created: bool = False
+    socket_was_closed: bool = False
+    led_count: int | None = None
+    frame_payload_bytes: int = 0
+    test_packets_planned: int = 0
+    test_packets_sent: int = 0
+    blackout_packets_planned: int = 0
+    blackout_packets_sent: int = 0
+    test_frame_completed: bool = False
+    blackout_attempted: bool = False
+    blackout_completed: bool = False
+    cleanup_completed: bool = False
+    broadcast_was_used: bool = False
+    multicast_was_used: bool = False
+    discovery_was_used: bool = False
+    retry_was_used: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DDPOutputValidationReport:
+    """Endpoint-free public report for bounded operator-only DDP validation."""
+
+    component_id: ComponentId
+    state: ComponentHealthState
+    reason_code: str
+    message: str
+    socket_was_created: bool = False
+    socket_was_closed: bool = False
+    led_count: int | None = None
+    frame_payload_bytes: int = 0
+    test_packets_planned: int = 0
+    test_packets_sent: int = 0
+    blackout_packets_planned: int = 0
+    blackout_packets_sent: int = 0
+    test_frame_completed: bool = False
+    blackout_attempted: bool = False
+    blackout_completed: bool = False
+    cleanup_completed: bool = False
+    broadcast_was_used: bool = False
+    multicast_was_used: bool = False
+    discovery_was_used: bool = False
+    retry_was_used: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CaptureDeviceProbeResult:
     reason_code: str
     device_node_present: bool = False

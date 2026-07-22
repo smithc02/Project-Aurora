@@ -14,6 +14,7 @@ wled:
   validation_timeout_seconds: 2.0
 ddp:
   enabled: false
+  # port defaults to the standard DDP port, 4048
 capture_device:
   enabled: false
   # identifier: "/dev/video0"

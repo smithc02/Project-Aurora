@@ -1,13 +1,11 @@
 # Project Aurora
 
 > **Status: pre-alpha.** Project Aurora is an open-source, Raspberry Pi-based
-> ambient-lighting platform for a home theater. Milestones 1 (development
-> environment) and 2 (validated configuration) are complete. Milestone 3 adds
-> hardware-free runtime planning and lifecycle contracts—not lighting-control
-> functionality or device communication. Milestones 4 and 5 add explicit,
-> one-shot, read-only WLED and HyperHDR information validation.
-> Milestone 7 adds explicit query-only Linux V4L2 capability validation; it
-> acquires no frame and changes no capture settings.
+> ambient-lighting platform for a home theater. Milestones 1 through 9 establish
+> validated configuration, hardware-free runtime contracts, read-only device
+> information checks, and bounded capture validation. Milestone 10 adds one
+> explicit operator-only DDP output check: one static low-intensity frame followed
+> immediately by one blackout frame. Runtime lighting control remains deferred.
 
 ## Architecture summary
 
@@ -56,6 +54,7 @@ uv run aurora hardware validate hyperhdr --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-device --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-capability --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-frame --config configs/aurora.local.yaml
+uv run aurora hardware validate ddp-output --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
@@ -64,7 +63,7 @@ uv run pytest --cov=aurora_core --cov-report=term-missing
 
 ## Repository layout
 
-- `src/aurora_core/` — deliberately minimal, hardware-free Python package.
+- `src/aurora_core/` — core package and explicit bounded validation services.
 - `tests/` — package startup and packaging checks.
 - `configs/` — safe example configuration and future integration notes.
 - `docs/` — architecture, installation, safety, and project guidance.
@@ -86,9 +85,19 @@ in plan order, and stops successful starts in reverse order. No adapters exist
 yet. Aurora has no automatic configuration reload: stop the controller, load a
 new settings snapshot, build a new plan, and create a new controller.
 
-Aurora can explicitly validate one enabled WLED device with a read-only GET `/json/info` and an enabled HyperHDR server with one GET `/json-rpc` request containing only `serverinfo`; neither command changes device state. Capture hardware, DDP, MQTT, and the complete lighting path remain unvalidated and unimplemented. It does not send DDP, process images, operate LEDs, manipulate
-system services, or control mains or power hardware. Configuration validation
-does not implement or test connectivity.
+Aurora can explicitly validate one enabled WLED device with a read-only GET
+`/json/info` and an enabled HyperHDR server with one GET `/json-rpc` request
+containing only `serverinfo`; neither command changes device state. Separate
+operator-only capture commands provide bounded local validation. The explicit
+`ddp-output` command is the sole DDP transmitter: it can submit one fixed
+low-intensity RGB frame followed immediately by one blackout frame, with no
+animation or retry. UDP provides no receipt acknowledgment, so this does not
+prove WLED receipt, physical LED output, or the complete lighting path. See
+[bounded DDP output validation](docs/ddp-output-validation.md).
+
+No runtime adapter, continuous image processing, MQTT frame transport, system
+service manipulation, or mains/power control is implemented. Configuration
+validation alone does not implement or test connectivity.
 
 ## Safety
 
@@ -108,7 +117,7 @@ tested, and free of secrets or personal network information.
 
 ## Configuration
 
-Aurora validates configuration only; it does not contact devices or test connectivity.
+Aurora's configuration loader does not contact devices or test connectivity.
 Settings are applied in deterministic order: command-line overrides, `AURORA_`
 environment variables, an explicitly supplied YAML file, then safe built-in defaults.
 Nested environment fields use `__`, for example `AURORA_WLED__ENABLED=true` and
@@ -127,3 +136,10 @@ configuration, and acquires no frame. See [capture mode enumeration](docs/captur
 
 Milestone 9 adds explicit bounded read/write single-frame validation with no
 streaming I/O or frame retention. See [capture-frame validation](docs/capture-frame-validation.md).
+
+Milestone 10 adds the explicit operator-only `aurora hardware validate
+ddp-output` command. It uses the configured DDP endpoint and exactly one enabled
+lighting zone, sends at most one fixed low-intensity frame and one best-effort
+blackout frame, and never runs automatically. It has no host, port, LED-count,
+color, packet-size, destination-ID, or timeout CLI override. Runtime DDP remains
+unimplemented.
