@@ -2,6 +2,7 @@
 
 from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
+from aurora_core.hardware.capture_frame import validate_capture_frame
 from aurora_core.hardware.capture_modes import validate_capture_modes
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.models import (
@@ -31,4 +32,5 @@ __all__ = [
     "CaptureCapabilityValidationReport",
     "validate_capture_capability",
     "validate_capture_modes",
+    "validate_capture_frame",
 ]

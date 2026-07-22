@@ -170,3 +170,48 @@ class CaptureModeValidationReport:
     querycap_was_issued: bool = False
     enumeration_ioctl_was_issued: bool = False
     descriptor_was_closed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFrameProbeResult:
+    """Metadata-only result of one bounded read/write capture attempt."""
+
+    reason_code: str
+    device_was_opened: bool = False
+    descriptor_was_closed: bool = False
+    capability_query_succeeded: bool = False
+    current_format_query_succeeded: bool = False
+    acquisition_method: str | None = None
+    poll_was_attempted: bool = False
+    frame_read_was_attempted: bool = False
+    frame_received: bool = False
+    frame_byte_count: int | None = None
+    current_width: int | None = None
+    current_height: int | None = None
+    current_sizeimage: int | None = None
+    frame_buffer_wipe_completed: bool = False
+    cleanup_completed: bool = False
+    streaming_io_was_used: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFrameValidationReport:
+    component_id: ComponentId
+    state: ComponentHealthState
+    reason_code: str
+    message: str
+    device_was_opened: bool = False
+    descriptor_was_closed: bool = False
+    capability_query_succeeded: bool = False
+    current_format_query_succeeded: bool = False
+    acquisition_method: str | None = None
+    poll_was_attempted: bool = False
+    frame_read_was_attempted: bool = False
+    frame_received: bool = False
+    frame_byte_count: int | None = None
+    current_width: int | None = None
+    current_height: int | None = None
+    current_sizeimage: int | None = None
+    frame_buffer_wipe_completed: bool = False
+    cleanup_completed: bool = False
+    streaming_io_was_used: bool = False

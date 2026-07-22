@@ -11,7 +11,8 @@
 7. **Milestone 7 (completed):** explicit query-only Linux V4L2 capability
    validation using one `VIDIOC_QUERYCAP` ioctl.
 8. **Milestone 8 (completed):** explicit bounded query-only Linux V4L2 format, size, and frame-interval enumeration.
-9. **Future, separate milestone:** frame acquisition only after separate approval.
+9. **Milestone 9 (completed on this branch):** bounded single-frame V4L2
+   read/write validation with mandatory buffer wiping.
 10. **Future, separate milestone:** DDP transmission only after separate approval;
     runtime adapters remain deferred.
 11. Multi-zone orchestration remains deferred until the baseline path is proven.

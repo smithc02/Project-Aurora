@@ -55,6 +55,7 @@ uv run aurora hardware validate wled --config configs/aurora.local.yaml
 uv run aurora hardware validate hyperhdr --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-device --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-capability --config configs/aurora.local.yaml
+uv run aurora hardware validate capture-frame --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
@@ -123,3 +124,6 @@ Milestone 8 adds the explicit Linux-only `aurora hardware validate capture-modes
 command for bounded query-only V4L2 format, size, and interval reporting. It
 opens the configured node only for that command, changes no capture
 configuration, and acquires no frame. See [capture mode enumeration](docs/capture-mode-enumeration.md).
+
+Milestone 9 adds explicit bounded read/write single-frame validation with no
+streaming I/O or frame retention. See [capture-frame validation](docs/capture-frame-validation.md).

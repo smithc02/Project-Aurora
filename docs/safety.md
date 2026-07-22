@@ -33,3 +33,7 @@ Milestone 8's `capture-modes` command is query-only and non-streaming. It can
 open one configured V4L2 node as required by V4L2, but configures no format and
 acquires no frame; it does not test HDMI signal, HyperHDR, DDP, WLED, LEDs, or
 the electrical installation.
+
+Milestone 9's `capture-frame` command is an explicit bounded read/write test,
+not runtime capture. It uses one transient buffer, wipes it before release, and
+does not use V4L2 streaming or network operations.
