@@ -192,10 +192,44 @@ def _print_capture_frame_report(report: object) -> None:
 
     assert isinstance(report, CaptureFrameValidationReport)
     print(f"Capture-frame validation: {report.state.value}")
+    print(f"state: {report.state.value}")
     print(f"reason: {report.reason_code}")
+    print(f"acquisition_method: {report.acquisition_method or 'none'}")
+    print(
+        "capability_query_succeeded: "
+        f"{'yes' if report.capability_query_succeeded else 'no'}"
+    )
+    print(
+        "current_format_query_succeeded: "
+        f"{'yes' if report.current_format_query_succeeded else 'no'}"
+    )
+    print(f"poll_attempted: {'yes' if report.poll_was_attempted else 'no'}")
+    print(f"frame_read_attempted: {'yes' if report.frame_read_was_attempted else 'no'}")
     print(f"frame_received: {'yes' if report.frame_received else 'no'}")
-    print("streaming_io_was_used: no")
+    if report.frame_byte_count is not None:
+        print(f"frame_byte_count: {report.frame_byte_count}")
+    if report.current_width is not None:
+        print(f"current_width: {report.current_width}")
+    if report.current_height is not None:
+        print(f"current_height: {report.current_height}")
+    if report.current_sizeimage is not None:
+        print(f"current_sizeimage: {report.current_sizeimage}")
+    print(
+        "frame_buffer_wipe_confirmed: "
+        f"{'yes' if report.frame_buffer_wipe_completed else 'no'}"
+    )
+    print(
+        "descriptor_closure_confirmed: "
+        f"{'yes' if report.descriptor_was_closed else 'no'}"
+    )
+    print(f"cleanup_completed: {'yes' if report.cleanup_completed else 'no'}")
+    print(f"streaming_io_was_used: {'yes' if report.streaming_io_was_used else 'no'}")
     print("No frame content was retained, printed, or transmitted.")
+    print(
+        "One transient userspace frame buffer may have been allocated and wiped. "
+        "No V4L2 streaming-buffer negotiation, queueing, mapping, or streaming "
+        "ioctl was performed."
+    )
     print(
         "HDMI signal, HyperHDR ingest, DDP, WLED output, LEDs, and the "
         "complete lighting path were not tested."
