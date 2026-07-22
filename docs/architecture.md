@@ -145,3 +145,27 @@ remains unhealthy even when blackout succeeds. UDP submission has no receipt
 acknowledgment and makes no claim about WLED receipt, LEDs, or the complete
 lighting path. Runtime and continuous DDP transmission remain unimplemented. See
 [bounded DDP output validation](ddp-output-validation.md).
+
+## Single-zone baseline proof boundary (Milestone 11)
+
+Milestone 11 defines an operator-controlled proof and deployment runbook for the
+existing single-zone architecture. It does not replace or add components to the
+direct PS5-to-TV path, the secondary capture path, HyperHDR, WLED, or the one
+configured lighting zone. Aurora remains outside the direct high-bandwidth path,
+whose intended 4K120, VRR, HDR, eARC, and Atmos behavior must be observed
+independently by the operator.
+
+Project Aurora contributes only its existing configuration, read-only/query-only,
+and bounded one-shot validation commands plus the documentation needed to record
+evidence. HyperHDR continues to own capture, screen-color extraction, and the
+operator-controlled live real-time color test through its supported configuration
+and interface. No Project Aurora runtime adapter or continuous transmitter is
+introduced.
+
+The baseline is considered proven only when every mandatory runbook gate has
+recorded operator evidence under the stated test conditions. The documentation
+itself does not claim that the physical path has passed, and software cannot
+verify physical LED output, direct-path video/audio properties, wiring, or
+electrical safety. Multi-zone orchestration and custom runtime transmission
+remain deferred to separately approved future work. See the
+[single-zone baseline proof and deployment runbook](single-zone-baseline-proof.md).

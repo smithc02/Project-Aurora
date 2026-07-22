@@ -69,3 +69,13 @@ failures. Successful UDP submission does not validate WLED receipt, physical LED
 output, wiring, power delivery, or the complete lighting path. Observe the
 installation safely and retain an independent safe means to remove low-voltage
 LED power; Aurora still contains no mains-power control.
+
+Milestone 11's
+[single-zone baseline proof](single-zone-baseline-proof.md) is an attended
+operator runbook, not electrical installation approval. It requires electrical
+inspection, safe shutdown access, direct-path independence, and a known off/black
+starting state as preconditions. Its stop conditions apply immediately to
+unexpected heat, smell, smoke, noise, sparking, unstable power, wiring movement,
+direct-path degradation, unintended LED output, or uncertain device attribution.
+The runbook cannot guarantee physical darkness and does not authorize unsafe
+electrical access, unattended execution, or new software control behavior.
