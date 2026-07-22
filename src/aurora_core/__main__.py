@@ -12,6 +12,7 @@ from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
 from aurora_core.hardware.capture_frame import validate_capture_frame
 from aurora_core.hardware.capture_modes import validate_capture_modes
+from aurora_core.hardware.ddp_output import validate_ddp_output
 from aurora_core.hardware.hyperhdr import validate_hyperhdr
 from aurora_core.hardware.wled import validate_wled
 from aurora_core.runtime import build_runtime_plan
@@ -22,7 +23,7 @@ APPLICATION_NAME = "Project Aurora"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Create the hardware-free Aurora command-line parser."""
+    """Create the Aurora command-line parser."""
     parser = argparse.ArgumentParser(description="Project Aurora scaffold")
     parser.add_argument(
         "--version", action="store_true", help="Print the version and exit."
@@ -104,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
     frame_parser.add_argument(
         "--identifier", help="Override capture_device.identifier."
     )
+    ddp_output_parser = hardware_validate_subparsers.add_parser(
+        "ddp-output",
+        help="Submit one bounded low-intensity DDP frame and one blackout frame.",
+    )
+    ddp_output_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
+    ddp_output_parser.add_argument("--log-level", help="Override logging.level.")
     return parser
 
 
@@ -236,6 +243,47 @@ def _print_capture_frame_report(report: object) -> None:
     )
 
 
+def _print_ddp_output_report(report: object) -> None:
+    from aurora_core.hardware.models import DDPOutputValidationReport
+
+    assert isinstance(report, DDPOutputValidationReport)
+    print(f"DDP output validation: {report.state.value}")
+    print(f"state: {report.state.value}")
+    print(f"reason: {report.reason_code}")
+    print(
+        "led_count: "
+        f"{report.led_count if report.led_count is not None else 'not available'}"
+    )
+    print(f"frame_payload_bytes: {report.frame_payload_bytes}")
+    print(f"test_packets_planned: {report.test_packets_planned}")
+    print(f"test_packets_sent: {report.test_packets_sent}")
+    print(f"blackout_packets_planned: {report.blackout_packets_planned}")
+    print(f"blackout_packets_sent: {report.blackout_packets_sent}")
+    print(f"test_frame_completed: {'yes' if report.test_frame_completed else 'no'}")
+    print(f"blackout_attempted: {'yes' if report.blackout_attempted else 'no'}")
+    print(f"blackout_completed: {'yes' if report.blackout_completed else 'no'}")
+    print(f"socket_closure_confirmed: {'yes' if report.socket_was_closed else 'no'}")
+    print(f"cleanup_completed: {'yes' if report.cleanup_completed else 'no'}")
+    print(f"discovery_was_used: {'yes' if report.discovery_was_used else 'no'}")
+    print(f"broadcast_was_used: {'yes' if report.broadcast_was_used else 'no'}")
+    print(f"multicast_was_used: {'yes' if report.multicast_was_used else 'no'}")
+    print(f"retry_was_used: {'yes' if report.retry_was_used else 'no'}")
+    _print_ddp_output_safety()
+
+
+def _print_ddp_output_safety() -> None:
+    print(
+        "At most one low-intensity DDP test frame and one blackout frame were "
+        "attempted. No animation loop, discovery, broadcast, multicast, HTTP "
+        "mutation, MQTT, HyperHDR, capture, or runtime-controller operation was "
+        "performed."
+    )
+    print(
+        "UDP submission does not verify WLED receipt, LED output, or the complete "
+        "lighting path."
+    )
+
+
 def _print_wled_report(report: object) -> None:
     from aurora_core.hardware.models import WLEDValidationReport
 
@@ -361,7 +409,7 @@ def _print_capture_capability_report(report: object) -> None:
 
 
 def main() -> int:
-    """Run the minimal command-line interface without hardware interaction."""
+    """Run the Project Aurora command-line interface."""
     args = build_parser().parse_args()
     if args.version:
         print(f"{APPLICATION_NAME} {__version__}")
@@ -369,6 +417,26 @@ def main() -> int:
     if args.check:
         print(f"{APPLICATION_NAME} {__version__}: package startup check passed")
         return 0
+    if (
+        args.command == "hardware"
+        and args.hardware_command == "validate"
+        and args.hardware_component == "ddp-output"
+    ):
+        ddp_override: dict[str, object] = {}
+        if args.log_level is not None:
+            ddp_override["logging"] = {"level": args.log_level}
+        try:
+            ddp_report = validate_ddp_output(
+                load_settings(
+                    config_path=args.config, cli_overrides=ddp_override or None
+                )
+            )
+        except AuroraConfigurationError:
+            print("DDP output validation configuration failed.", file=sys.stderr)
+            _print_ddp_output_safety()
+            return 1
+        _print_ddp_output_report(ddp_report)
+        return 0 if ddp_report.state is ComponentHealthState.HEALTHY else 1
     if (
         args.command == "hardware"
         and args.hardware_command == "validate"

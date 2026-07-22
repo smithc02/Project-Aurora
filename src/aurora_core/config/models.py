@@ -83,7 +83,9 @@ class WLEDSettings(EndpointSettings):
 
 
 class DDPSettings(EndpointSettings):
-    """Description-only DDP settings; no transmission is attempted."""
+    """DDP endpoint used only by explicit bounded output validation."""
+
+    port: Port | None = 4048
 
 
 class CaptureDeviceSettings(AuroraModel):

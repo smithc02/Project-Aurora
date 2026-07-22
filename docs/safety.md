@@ -37,3 +37,35 @@ the electrical installation.
 Milestone 9's `capture-frame` command is an explicit bounded read/write test,
 not runtime capture. It uses one transient buffer, wipes it before release, and
 does not use V4L2 streaming or network operations.
+
+Milestone 10's `ddp-output` command is an explicit operator-only output action,
+not a read-only check. When DDP is enabled and exactly one 1–512 LED zone is
+configured, it can cause connected LEDs to display one static low-intensity blue
+frame. It immediately enters a best-effort full-blackout phase, including after
+a test-frame failure, but UDP delivery and blackout are not acknowledged. Do not
+assume the LEDs are dark merely because the command returned.
+
+One two-second monotonic transmission/send deadline is established before
+resolution, so resolution and socket creation consume the remaining send budget
+and no DDP `sendto` call is permitted after it expires. The standard-library
+resolver is blocking and cannot be forcibly interrupted; neither resolution nor
+total command wall-clock duration is claimed to be capped at two seconds. If the
+resolver returns after the deadline, no test packet is sent after socket creation
+and blackout is still entered under the expired deadline. The command permits at
+most two datagrams per frame and four sends total, and no retry, loop, discovery,
+broadcast, multicast, HTTP mutation, MQTT, HyperHDR, capture, or
+runtime-controller operation. Socket acquisition establishes ownership and the
+blackout-and-close responsibility before the socket is exposed to any test-frame
+operation. Even Ctrl-C immediately after acquisition and before the test phase
+enters bounded best-effort blackout cleanup before the sole close attempt. Ctrl-C
+during transmission defers the original
+`KeyboardInterrupt` only long enough to stop further test packets, make bounded
+best-effort attempts for remaining distinct blackout segments, and attempt
+socket close once; the interrupt is then re-raised. Interrupted sends count
+against the four-send budget and are never retried. This cleanup does not
+guarantee blackout delivery or physical darkness. A blackout failure always
+produces an unhealthy result and takes precedence over test or socket-close
+failures. Successful UDP submission does not validate WLED receipt, physical LED
+output, wiring, power delivery, or the complete lighting path. Observe the
+installation safely and retain an independent safe means to remove low-voltage
+LED power; Aurora still contains no mains-power control.
