@@ -11,8 +11,9 @@
 7. **Milestone 7 (completed):** explicit query-only Linux V4L2 capability
    validation using one `VIDIOC_QUERYCAP` ioctl.
 8. **Milestone 8 (completed):** explicit bounded query-only Linux V4L2 format, size, and frame-interval enumeration.
-9. **Milestone 9 (completed):** bounded single-frame V4L2
-   read/write validation with mandatory buffer wiping.
+9. **Milestone 9 (completed):** bounded single-frame V4L2 validation with
+   read/write acquisition preferred, one-buffer MMAP fallback for
+   streaming-only devices, and mandatory buffer wiping and cleanup.
 10. **Milestone 10 (completed):** explicit operator-only bounded
     DDP output validation using one low-intensity frame followed by one blackout
     frame. Runtime DDP integration and continuous transmission remain deferred.

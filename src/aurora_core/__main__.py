@@ -98,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--identifier", help="Override capture_device.identifier."
     )
     frame_parser = hardware_validate_subparsers.add_parser(
-        "capture-frame", help="Bounded single-frame V4L2 read/write validation."
+        "capture-frame", help="Bounded single-frame V4L2 validation."
     )
     frame_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
     frame_parser.add_argument("--log-level", help="Override logging.level.")
@@ -231,12 +231,36 @@ def _print_capture_frame_report(report: object) -> None:
     )
     print(f"cleanup_completed: {'yes' if report.cleanup_completed else 'no'}")
     print(f"streaming_io_was_used: {'yes' if report.streaming_io_was_used else 'no'}")
+    if report.streaming_io_was_used:
+        print(
+            "buffer_negotiation_succeeded: "
+            f"{'yes' if report.buffer_negotiation_succeeded else 'no'}"
+        )
+        print(f"buffer_was_mapped: {'yes' if report.buffer_was_mapped else 'no'}")
+        print(f"buffer_was_queued: {'yes' if report.buffer_was_queued else 'no'}")
+        print(f"stream_was_started: {'yes' if report.stream_was_started else 'no'}")
+        print(
+            "frame_dequeue_attempted: "
+            f"{'yes' if report.frame_dequeue_was_attempted else 'no'}"
+        )
+        print(f"stream_was_stopped: {'yes' if report.stream_was_stopped else 'no'}")
+        print(f"buffer_was_unmapped: {'yes' if report.buffer_was_unmapped else 'no'}")
+        print(
+            f"buffers_were_released: {'yes' if report.buffers_were_released else 'no'}"
+        )
     print("No frame content was retained, printed, or transmitted.")
-    print(
-        "One transient userspace frame buffer may have been allocated and wiped. "
-        "No V4L2 streaming-buffer negotiation, queueing, mapping, or streaming "
-        "ioctl was performed."
-    )
+    if report.streaming_io_was_used:
+        print(
+            "One bounded V4L2 MMAP acquisition may have requested driver "
+            "buffers, mapped and queued exactly one buffer, dequeued at most "
+            "one frame, then wiped, unmapped, and released resources."
+        )
+    else:
+        print(
+            "One transient userspace frame buffer may have been allocated and "
+            "wiped. No V4L2 streaming-buffer negotiation, queueing, mapping, or "
+            "streaming ioctl was performed."
+        )
     print(
         "HDMI signal, HyperHDR ingest, DDP, WLED output, LEDs, and the "
         "complete lighting path were not tested."

@@ -112,8 +112,13 @@ enumeration. It does not configure capture or acquire frames; runtime remains
 hardware-free. See [capture mode enumeration](capture-mode-enumeration.md).
 
 Milestone 9 adds a separate operator-only `capture-frame` boundary. It permits
-only capability/current-format queries plus one bounded read/write frame attempt
-on one configured target; it never streams, transmits, or retains frame data.
+capability and current-format queries plus one bounded frame acquisition on one
+configured target. Read/write capture is preferred. When the device does not
+support read/write I/O, the command may fall back to a bounded single-planar
+MMAP path that requests driver buffers, maps and queues exactly one buffer,
+starts the stream, dequeues at most one frame, and then stops, wipes, unmaps,
+releases, and closes all resources. It never performs continuous capture,
+transmits frame data, or retains frame content.
 
 ## Bounded DDP output boundary (Milestone 10)
 
