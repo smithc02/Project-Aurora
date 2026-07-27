@@ -342,12 +342,15 @@ process is using the selected node.
 <untracked-local-config>`. Record only the sanitized result and reported current
 format metadata.
 
-**Expected evidence:** One bounded read/write frame attempt under the reported
-current format, followed by mandatory transient-buffer wiping and descriptor
-cleanup.
+**Expected evidence:** One bounded frame acquisition under the reported current
+format using the reported `readwrite` or `mmap` acquisition method, followed by
+mandatory transient-buffer wiping and descriptor cleanup. When MMAP is used,
+the report must also confirm stream stop, buffer unmap, and driver-buffer
+release.
 
 **Pass criteria:** The command reports `healthy`, confirms a bounded frame was
-received, confirms buffer wiping, and confirms descriptor closure.
+received, confirms buffer wiping, confirms descriptor closure, and confirms all
+cleanup fields required by the reported acquisition method.
 
 **Fail criteria:** `disabled`, `degraded`, or `unhealthy`; a current-format
 mismatch; an unconfirmed wipe or close; or any result that cannot be attributed

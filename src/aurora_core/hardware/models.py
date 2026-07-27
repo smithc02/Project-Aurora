@@ -223,7 +223,7 @@ class CaptureModeValidationReport:
 
 @dataclass(frozen=True, slots=True)
 class CaptureFrameProbeResult:
-    """Metadata-only result of one bounded read/write capture attempt."""
+    """Metadata-only result of one bounded capture-frame attempt."""
 
     reason_code: str
     device_was_opened: bool = False
@@ -241,6 +241,14 @@ class CaptureFrameProbeResult:
     frame_buffer_wipe_completed: bool = False
     cleanup_completed: bool = False
     streaming_io_was_used: bool = False
+    buffer_negotiation_succeeded: bool = False
+    buffer_was_mapped: bool = False
+    buffer_was_queued: bool = False
+    stream_was_started: bool = False
+    frame_dequeue_was_attempted: bool = False
+    stream_was_stopped: bool = False
+    buffer_was_unmapped: bool = False
+    buffers_were_released: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,3 +272,11 @@ class CaptureFrameValidationReport:
     frame_buffer_wipe_completed: bool = False
     cleanup_completed: bool = False
     streaming_io_was_used: bool = False
+    buffer_negotiation_succeeded: bool = False
+    buffer_was_mapped: bool = False
+    buffer_was_queued: bool = False
+    stream_was_started: bool = False
+    frame_dequeue_was_attempted: bool = False
+    stream_was_stopped: bool = False
+    buffer_was_unmapped: bool = False
+    buffers_were_released: bool = False

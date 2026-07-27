@@ -2,78 +2,150 @@
 
 `aurora hardware validate capture-frame --config configs/aurora.local.yaml` is
 an explicit operator-only check of one configured V4L2 identifier. It is not a
-runtime adapter and does not start the controller.
+runtime adapter and does not start the Project Aurora controller.
 
 ## Compatibility and permitted operations
 
-The command is gated to Linux on a verified little-endian LP64 ABI: pointers
-must be exactly 64 bits, and the private `v4l2_format` layout must match the
-208-byte Linux UAPI request used here. An unsupported platform, pointer width,
-or byte order fails before target resolution, opening, or any ioctl.
+The command is gated to Linux on a verified little-endian LP64 ABI. Pointers
+must be exactly 64 bits, and the private V4L2 layouts and ioctl numbers used by
+the probe must match the Linux UAPI definitions validated by automated tests.
 
-Only `VIDIOC_QUERYCAP` and the 208-byte single-planar `VIDIOC_G_FMT` request are
-permitted. Both requests share one four-call probe budget. Every actual ioctl,
-including one interrupted by `EINTR`, consumes that shared budget; `G_FMT` can
-use only calls left by `QUERYCAP`, and a fifth ioctl is never issued. Exhausting
-the budget ends normal probe work so that only cleanup remains.
+The command resolves only the configured identifier. It does not scan or
+discover other video devices.
 
-The probe uses one monotonic deadline for both ioctl requests, polling, and the
-frame read. The deadline is checked immediately before every actual ioctl,
-poll, and `readv` attempt, including retries after `EINTR`. Polling receives a
-bounded positive millisecond timeout while any positive duration remains; an
-already expired deadline never causes `poll(0)` or a first frame read. Deadline
-expiration stops normal operations but never skips cleanup. If an operation has
-already returned `EINTR`, an expired deadline prevents its retry and preserves
-that operation's interrupted-budget result rather than reporting ordinary
-deadline expiration.
+Acquisition is adaptive:
 
-Acquisition is read/write-only: one validated target, one descriptor, one
-capability query, one current-format query, one bounded mutable `bytearray`, one
-poll registration, and at most one successful `readv` frame. The read uses one
-iovec referencing that sole mutable bytearray. There is no `os.read` fallback
-and no second acquisition.
+1. attempt the bounded read/write path;
+2. preserve every result other than `readwrite_io_not_supported`; and
+3. only when read/write capability is absent, close that probe descriptor and
+   perform the bounded single-planar MMAP path.
 
-V4L2 streaming-buffer negotiation, buffer queueing, mmap, USERPTR, DMABUF,
-stream-on, stream-off, format changes, enumeration, discovery, network
-activity, DDP, MQTT, HyperHDR, WLED, and runtime-controller activity are
-prohibited.
+Neither path changes the selected input or capture format.
 
-## Buffer handling and cleanup
+## Read/write acquisition path
 
-The buffer size comes only from a validated driver-reported `sizeimage` between
-1 byte and 8 MiB. Width and height must each be between 1 and 8192. Frame bytes
-are never retained, serialized, printed, logged, or transmitted.
+The read/write path performs:
 
-After allocation, cleanup always follows this order, including deadline and
-operation failures:
+1. one descriptor open;
+2. `VIDIOC_QUERYCAP`;
+3. `VIDIOC_G_FMT`;
+4. allocation of one bounded mutable userspace buffer;
+5. one poll registration;
+6. at most one successful `readv` frame;
+7. complete buffer wiping and verification; and
+8. descriptor closure.
 
-1. overwrite every byte in the transient buffer;
-2. verify that every byte is zero;
-3. release the cleanup memoryview;
-4. drop the mutable bytearray reference;
-5. close the descriptor exactly once; and
-6. construct the immutable metadata-only result.
+The capability and format requests share a four-call ioctl budget. Every ioctl
+attempt, including one interrupted by `EINTR`, consumes that budget.
 
-No ioctl, poll, or read is allowed after cleanup begins. A wipe failure takes
-precedence over the primary result. Without a valid frame, an unconfirmed close
-is reported as a descriptor-close failure. With a valid, confirmed-wiped frame,
-an unconfirmed close is reported as `frame_received_cleanup_unconfirmed`.
-Otherwise the primary sanitized reason is preserved.
+The frame read uses one iovec referencing the sole mutable bytearray. There is
+no `os.read` fallback and no second frame acquisition.
+
+## MMAP acquisition path
+
+The MMAP fallback requires single-planar capture and
+`V4L2_CAP_STREAMING`. It performs a bounded sequence:
+
+1. open the configured node;
+2. query capabilities and the current format;
+3. request one MMAP buffer with `VIDIOC_REQBUFS`;
+4. reject a zero returned count or an excessive driver buffer count;
+5. query only buffer index zero;
+6. map only buffer index zero;
+7. queue only buffer index zero;
+8. start the capture stream;
+9. poll for one frame;
+10. dequeue at most one frame;
+11. stop the stream;
+12. wipe and verify the complete mapped buffer;
+13. unmap the buffer;
+14. release all driver buffers with `REQBUFS(count=0)`; and
+15. close the descriptor.
+
+The driver may report more buffers than requested, but the probe accepts no
+more than the configured safety limit and maps or queues only index zero.
+
+The normal MMAP path has one shared fourteen-call ioctl budget. Cleanup ioctls
+are separately bounded to at most two attempts each so an interrupted
+`STREAMOFF` or buffer-release request cannot create an unbounded retry loop.
+
+## Deadline and polling
+
+Both acquisition paths use one two-second monotonic deadline for normal probe
+work. The deadline is checked before normal ioctl, poll, read, and dequeue
+attempts.
+
+Polling always receives a positive bounded millisecond timeout while time
+remains. An expired deadline never causes `poll(0)` or begins a new frame
+operation.
+
+Deadline expiration stops normal acquisition but does not skip cleanup.
+Cleanup remains bounded even after the normal deadline expires.
+
+## Frame and buffer bounds
+
+Driver-reported width and height must each be between 1 and 8192.
+
+The current-format `sizeimage` must be between 1 byte and 8 MiB. A dequeued or
+read frame byte count must be in the inclusive range `1..sizeimage`.
+
+The mapped buffer length must be positive and no greater than the separate
+MMAP safety limit. The dequeued byte count may not exceed either `sizeimage` or
+the mapped buffer length.
+
+Frame bytes are never retained, serialized, printed, logged, or transmitted.
+
+## Cleanup
+
+Read/write cleanup overwrites and verifies every byte in the userspace buffer,
+releases its memoryview and reference, and closes the descriptor.
+
+MMAP cleanup stops the stream when it was started, wipes the complete mapped
+buffer after device writes have stopped, unmaps it, releases driver buffers,
+and closes the descriptor.
+
+When `STREAMOFF` cannot be confirmed, the descriptor is closed before the
+mapped memory is wiped so the device cannot continue writing while cleanup
+modifies the mapping.
+
+Cleanup failures override an otherwise successful acquisition with a sanitized
+reason such as:
+
+- `frame_buffer_wipe_failed`
+- `stream_stop_failed`
+- `buffer_unmap_failed`
+- `buffer_release_failed`
+- `descriptor_close_failed`
+- `frame_received_cleanup_unconfirmed`
+
+No frame content, device path, file descriptor, raw errno text, or driver
+response bytes are included in the public report.
 
 ## Health rules
 
-`HEALTHY` requires `validated`, read/write acquisition, a received frame with a
-present byte count and current width, height, and `sizeimage`, a byte count in
-the inclusive range `1..sizeimage`, a confirmed buffer wipe, confirmed
-descriptor closure, completed cleanup, and no streaming I/O.
+`HEALTHY` requires:
 
-`DEGRADED` is reserved for `frame_received_cleanup_unconfirmed`: the same valid
-bounded read/write frame metadata and confirmed wipe must be present, descriptor
-closure must be unconfirmed, cleanup must be incomplete, and no streaming I/O
-may have occurred. All other enabled results are `UNHEALTHY`. Internally
-inconsistent metadata is sanitized to `unexpected_probe_failure`, while the
-actual `streaming_io_was_used` flag remains visible in the public report.
+- reason `validated`;
+- acquisition method `readwrite` or `mmap`;
+- one received frame with bounded metadata;
+- a confirmed complete buffer wipe;
+- confirmed descriptor closure; and
+- complete cleanup for the selected acquisition method.
 
-All automated coverage uses injected seams and synthetic doubles only.
-Compatibility of `readv` with a particular target remains a future explicit
-manual hardware check.
+For read/write acquisition, no streaming operation may be reported.
+
+For MMAP acquisition, the report must confirm buffer negotiation, mapping,
+queueing, stream start, dequeue attempt, stream stop, unmap, driver-buffer
+release, and descriptor closure.
+
+`DEGRADED` is reserved for a valid received and wiped frame where descriptor
+closure cannot be confirmed.
+
+All other enabled results are `UNHEALTHY`. Internally inconsistent metadata is
+sanitized to `unexpected_probe_failure`, while safety-relevant public fields
+remain visible.
+
+Automated coverage uses injected seams and synthetic doubles. Compatibility
+with a physical capture device remains an explicit attended operator check and
+does not by itself prove live HDMI signal validity, visual correctness,
+continuous stability, HyperHDR ingest, or LED output.
