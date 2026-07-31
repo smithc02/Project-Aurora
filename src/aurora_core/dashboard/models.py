@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
 
 
 class HealthStatus(StrEnum):
@@ -25,7 +24,8 @@ class ComponentHealth:
     message: str
     checked_at: str
     latency_ms: float
-    details: dict[str, Any] = field(default_factory=dict)
+    details: dict[str, object] = field(default_factory=dict)
+    last_successful_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,8 +36,9 @@ class HealthReport:
     checked_at: str
     service_uptime_seconds: float
     components: tuple[ComponentHealth, ...]
+    schema_version: int = 1
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
         return asdict(self)
 
@@ -49,6 +50,8 @@ def utc_now_iso() -> str:
 
 def overall_status(components: tuple[ComponentHealth, ...]) -> HealthStatus:
     """Return the worst component status."""
+    if not components:
+        return HealthStatus.UNAVAILABLE
     statuses = {component.status for component in components}
     if HealthStatus.UNAVAILABLE in statuses:
         return HealthStatus.UNAVAILABLE

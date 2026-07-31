@@ -17,12 +17,16 @@
 10. **Milestone 10 (completed):** explicit operator-only bounded
     DDP output validation using one low-intensity frame followed by one blackout
     frame. Runtime DDP integration and continuous transmission remain deferred.
-11. **Milestone 11 (planned):** operator-controlled single-zone baseline-path
-    proof and deployment runbook using the existing validation boundaries and
-    HyperHDR-owned live color path. Completion requires recorded operator
-    evidence and does not claim the physical path has already passed. See the
+11. **Milestone 11 (documentation completed; physical proof operator-owned):**
+    operator-controlled single-zone baseline-path proof and deployment runbook
+    using the existing validation boundaries and HyperHDR-owned live color path.
+    The repository does not claim the physical path has passed. See the
     [single-zone baseline proof](single-zone-baseline-proof.md).
+12. **Milestone 12 (completed):** local read-only health dashboard with bounded,
+    non-overlapping WLED, HyperHDR, capture metadata, and Raspberry Pi checks,
+    plus a stable JSON endpoint. See the
+    [health dashboard guide](health-dashboard.md).
 
 Multi-zone configuration and orchestration remain deferred to separately
 approved future work after the single-zone baseline is proven. They are not part
-of Milestone 11.
+of Milestone 12.

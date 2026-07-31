@@ -14,6 +14,11 @@ def test_safe_defaults_load() -> None:
     settings = load_settings(environment={})
     assert settings.application.name == "Project Aurora"
     assert not settings.wled.enabled
+    assert settings.wled.expected_led_count is None
+    assert settings.wled.expected_active_led_count is None
+    assert settings.wled.expected_skipped_leds is None
+    assert settings.dashboard.bind_host == "localhost"
+    assert settings.dashboard.port == 8080
     assert settings.lighting_zones == ()
 
 
@@ -67,6 +72,17 @@ def test_missing_requested_file_is_rejected(tmp_path: Path) -> None:
         {"logging": {"level": "VERBOSE"}},
         {"wled": {"host": ""}},
         {"lighting_zones": [{"name": ""}]},
+        {"dashboard": {"bind_host": "http://bad"}},
+        {"dashboard": {"port": 0}},
+        {"dashboard": {"refresh_seconds": 0}},
+        {"dashboard": {"memory_warning_percent": 100.1}},
+        {
+            "wled": {
+                "expected_led_count": 8,
+                "expected_active_led_count": 7,
+                "expected_skipped_leds": 2,
+            }
+        },
     ],
 )
 def test_invalid_settings_are_rejected(data: dict[str, object]) -> None:
@@ -125,3 +141,20 @@ def test_deep_merge_does_not_mutate_inputs() -> None:
 
 def test_settings_model_is_pydantic_settings_model() -> None:
     assert AuroraSettings.model_config["env_prefix"] == "AURORA_"
+
+
+def test_dashboard_and_expected_led_environment_values_are_validated() -> None:
+    settings = load_settings(
+        environment={
+            "AURORA_DASHBOARD__BIND_HOST": "dashboard.local",
+            "AURORA_DASHBOARD__PORT": "9090",
+            "AURORA_DASHBOARD__REFRESH_SECONDS": "10",
+            "AURORA_WLED__EXPECTED_LED_COUNT": "8",
+            "AURORA_WLED__EXPECTED_ACTIVE_LED_COUNT": "6",
+            "AURORA_WLED__EXPECTED_SKIPPED_LEDS": "2",
+        }
+    )
+    assert settings.dashboard.bind_host == "dashboard.local"
+    assert settings.dashboard.port == 9090
+    assert settings.dashboard.refresh_seconds == 10
+    assert settings.wled.expected_led_count == 8

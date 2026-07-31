@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 from aurora_core.config.models import AuroraSettings, LightingZoneSettings
 from aurora_core.hardware.errors import WLEDTransportError
-from aurora_core.hardware.models import WLEDDeviceInfo, WLEDValidationReport
+from aurora_core.hardware.models import WLEDDeviceInfo, WLEDState, WLEDValidationReport
 from aurora_core.hardware.transport import UrllibWLEDInfoTransport, WLEDInfoTransport
 from aurora_core.runtime.models import ComponentHealthState, ComponentId
 
@@ -32,7 +32,39 @@ def parse_wled_info(body: bytes) -> WLEDDeviceInfo:
     count = leds.get("count")
     if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
         raise ValueError("invalid_response")
-    return WLEDDeviceInfo(version, count)
+    return WLEDDeviceInfo(
+        firmware_version=version,
+        led_count=count,
+        uptime_seconds=_optional_nonnegative_int(payload.get("uptime")),
+        current_milliamps=_optional_nonnegative_int(leds.get("pwr")),
+        current_limit_milliamps=_optional_nonnegative_int(leds.get("maxpwr")),
+    )
+
+
+def parse_wled_state(body: bytes) -> WLEDState:
+    """Parse only non-mutating state fields used by the dashboard."""
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid_json") from error
+    if not isinstance(payload, Mapping):
+        raise ValueError("invalid_response")
+    output_on = payload.get("on")
+    brightness = payload.get("bri")
+    if (
+        not isinstance(output_on, bool)
+        or isinstance(brightness, bool)
+        or not isinstance(brightness, int)
+        or not 0 <= brightness <= 255
+    ):
+        raise ValueError("invalid_response")
+    return WLEDState(output_on=output_on, brightness=brightness)
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def validate_wled(
@@ -73,26 +105,34 @@ def validate_wled(
             reason,
             "WLED returned an invalid information response.",
         )
-    expected = expected_led_count(settings.lighting_zones)
+    expected = settings.wled.expected_led_count
+    if expected is None:
+        expected = expected_led_count(settings.lighting_zones)
     matches = None if expected is None else info.led_count == expected
     if matches is False:
         return WLEDValidationReport(
-            ComponentId.WLED,
-            ComponentHealthState.DEGRADED,
-            "led_count_mismatch",
-            "WLED LED count does not match enabled zones.",
-            info.firmware_version,
-            info.led_count,
-            expected,
-            False,
+            component_id=ComponentId.WLED,
+            state=ComponentHealthState.DEGRADED,
+            reason_code="led_count_mismatch",
+            message="WLED LED count does not match configured expectations.",
+            firmware_version=info.firmware_version,
+            reported_led_count=info.led_count,
+            expected_led_count=expected,
+            led_count_matches=False,
+            uptime_seconds=info.uptime_seconds,
+            current_milliamps=info.current_milliamps,
+            current_limit_milliamps=info.current_limit_milliamps,
         )
     return WLEDValidationReport(
-        ComponentId.WLED,
-        ComponentHealthState.HEALTHY,
-        "validated",
-        "Read-only WLED validation succeeded.",
-        info.firmware_version,
-        info.led_count,
-        expected,
-        matches,
+        component_id=ComponentId.WLED,
+        state=ComponentHealthState.HEALTHY,
+        reason_code="validated",
+        message="Read-only WLED validation succeeded.",
+        firmware_version=info.firmware_version,
+        reported_led_count=info.led_count,
+        expected_led_count=expected,
+        led_count_matches=matches,
+        uptime_seconds=info.uptime_seconds,
+        current_milliamps=info.current_milliamps,
+        current_limit_milliamps=info.current_limit_milliamps,
     )

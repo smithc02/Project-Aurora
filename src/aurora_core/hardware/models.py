@@ -11,6 +11,17 @@ from aurora_core.runtime.models import ComponentHealthState, ComponentId
 class WLEDDeviceInfo:
     firmware_version: str
     led_count: int
+    uptime_seconds: int | None = None
+    current_milliamps: int | None = None
+    current_limit_milliamps: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WLEDState:
+    """Sanitized fields from WLED's read-only state response."""
+
+    output_on: bool
+    brightness: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,12 +34,18 @@ class WLEDValidationReport:
     reported_led_count: int | None = None
     expected_led_count: int | None = None
     led_count_matches: bool | None = None
+    uptime_seconds: int | None = None
+    current_milliamps: int | None = None
+    current_limit_milliamps: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class HyperHDRServerInfo:
     server_info_received: bool
     hdr_mode_enabled: bool | None
+    instance_running: bool | None = None
+    grabber_active: bool | None = None
+    led_output_active: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +56,9 @@ class HyperHDRValidationReport:
     message: str
     server_info_received: bool = False
     hdr_mode_enabled: bool | None = None
+    instance_running: bool | None = None
+    grabber_active: bool | None = None
+    led_output_active: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

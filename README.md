@@ -6,7 +6,8 @@
 > information checks, bounded capture validation, and one explicit operator-only
 > DDP output check. Milestone 11 defines the operator-controlled single-zone
 > baseline proof and deployment runbook; it does not claim that the physical path
-> has passed. Runtime lighting control remains deferred.
+> has passed. Milestone 12 adds a local read-only health dashboard. Runtime
+> lighting control remains deferred.
 
 ## Architecture summary
 
@@ -58,6 +59,7 @@ uv run aurora hardware validate capture-capability --config configs/aurora.local
 uv run aurora hardware validate capture-modes --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-frame --config configs/aurora.local.yaml
 uv run aurora hardware validate ddp-output --config configs/aurora.local.yaml
+uv run aurora-dashboard --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
@@ -102,6 +104,12 @@ No runtime adapter, continuous image processing, MQTT frame transport, system
 service manipulation, or mains/power control is implemented. Configuration
 validation alone does not implement or test connectivity.
 
+Milestone 12's [read-only health dashboard](docs/health-dashboard.md) reuses the
+bounded WLED, HyperHDR, and capture metadata validators, adds one fixed WLED
+state GET, and collects local host metrics. Concurrent requests share one
+single-flight snapshot and cannot overlap hardware polls. The dashboard has no
+controls and performs no DDP, service, capture-configuration, or power mutation.
+
 Milestone 11 adds no runtime behavior. Its
 [single-zone baseline proof and deployment runbook](docs/single-zone-baseline-proof.md)
 combines the existing validation boundaries with operator-observed direct HDMI,
@@ -117,9 +125,10 @@ installation guidance. Read [Safety](docs/safety.md) before handling hardware.
 
 ## Roadmap
 
-See [the roadmap](docs/roadmap.md) for completed and planned milestones, and the
+See [the roadmap](docs/roadmap.md) for completed and planned milestones, the
 [Milestone 11 single-zone baseline runbook](docs/single-zone-baseline-proof.md)
-for its operator evidence requirements.
+for its operator evidence requirements, and the
+[Milestone 12 dashboard guide](docs/health-dashboard.md) for local deployment.
 
 ## Contributing
 

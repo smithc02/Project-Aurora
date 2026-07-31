@@ -73,20 +73,22 @@ create a new settings snapshot, plan, and controller.
 
 The explicit `aurora hardware validate wled` operator command makes one GET
 request to WLED's fixed `/json/info` endpoint, with a finite configured timeout
-and a 64 KiB response limit. It parses only firmware version and LED count. It
-does not start the runtime controller, transmit DDP, alter WLED state, or validate
-HyperHDR or capture hardware. A future runtime adapter requires separate
-approval.
+and a 64 KiB response limit. Its public sanitized report retains firmware
+version, LED count, uptime, and current-limit observations when reported. It
+does not start the runtime controller, transmit DDP, alter WLED state, or
+validate HyperHDR or capture hardware. A future runtime adapter requires
+separate approval.
 
 ## Read-only HyperHDR boundary (Milestone 5)
 
 `aurora hardware validate hyperhdr` is a separate explicit operator command. It
 makes exactly one HTTP GET to fixed `/json-rpc`, URL-encoding only the fixed
 `{"command":"serverinfo"}` request. It has a finite timeout (default 2.0
-seconds), rejects redirects, and limits responses to 256 KiB. It retains only
-successful server-information status and optional `videomodehdr`; it neither
-changes HyperHDR state nor contacts WLED, starts capture, sends DDP, or starts
- the runtime controller.
+seconds), rejects redirects, and limits responses to 256 KiB. Its sanitized
+report retains successful server-information status, optional `videomodehdr`,
+and selected instance, grabber, and LED-output booleans when reported; it
+neither changes HyperHDR state nor contacts WLED, starts capture, sends DDP, or
+starts the runtime controller.
 
 ## Capture-device boundary (Milestone 6)
 
@@ -174,3 +176,22 @@ verify physical LED output, direct-path video/audio properties, wiring, or
 electrical safety. Multi-zone orchestration and custom runtime transmission
 remain deferred to separately approved future work. See the
 [single-zone baseline proof and deployment runbook](single-zone-baseline-proof.md).
+
+## Read-only health dashboard boundary (Milestone 12)
+
+The dashboard consumes one immutable validated `AuroraSettings` snapshot. It
+reuses the existing WLED information, HyperHDR serverinfo, and non-opening V4L2
+metadata validators. Its only additional device request is a fixed, bounded
+WLED `GET /json/state`; it introduces no POST, DDP, capture ioctl, runtime
+adapter, service operation, or power operation.
+
+Independent collectors run concurrently, but one shared service serializes
+snapshot creation and caches each result for the configured refresh interval.
+Page and API requests therefore do not create overlapping hardware polls.
+Collector exceptions and offline components are isolated into sanitized health
+records that contain no endpoint or capture-path configuration.
+
+Capture activity is inferred only from HyperHDR's sanitized grabber component
+flag when present. The dashboard does not acquire a frame, prove frame freshness,
+inspect the splitter, or claim the complete physical path is healthy. See the
+[health dashboard guide](health-dashboard.md).

@@ -63,6 +63,17 @@ passwords, start components, instantiate a controller, test connectivity, or
 verify hardware. Configuration snapshots are immutable runtime inputs; reload
 and file watching are intentionally absent in this milestone.
 
+## Read-only health dashboard
+
+```bash
+uv run aurora-dashboard --config configs/aurora.local.yaml
+```
+
+The dashboard reuses the validated configuration and bounded read-only hardware
+checks. It defaults to a loopback-only bind. See the
+[health dashboard guide](health-dashboard.md) before enabling trusted-LAN or
+systemd access.
+
 
 ## Manual WLED validation
 

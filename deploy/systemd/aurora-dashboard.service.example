@@ -1,0 +1,26 @@
+# Example only. Review and copy outside the repository; Aurora never installs,
+# enables, starts, stops, or restarts this unit.
+[Unit]
+Description=Project Aurora read-only health dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/project-aurora
+ExecStart=/opt/project-aurora/.venv/bin/aurora-dashboard --config /etc/project-aurora/aurora.yaml
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
