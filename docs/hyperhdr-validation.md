@@ -20,9 +20,11 @@ printed.
 `healthy` means the read-only serverinfo API returned JSON with `success: true`
 and an object `info`; `unhealthy` means transport or schema failure; `disabled`
 means no request was made. Optional `info.videomodehdr` boolean or integer 0/1
-is summarized as `hdr_mode`; it is a reported server setting, not proof that an
-HDR signal is captured. Authentication-required responses are unhealthy because
-authentication is not implemented.
+is summarized as `hdr_mode`. Selected instance, video-grabber, and LED-device
+booleans are also retained when present for dashboard observation. All are
+reported server settings, not proof that a fresh signal is captured.
+Authentication-required responses are unhealthy because authentication is not
+implemented.
 
 Successful validation proves only that the read-only serverinfo API responded.
 It does not prove capture-card operation, HDMI input or signal, HDR detection,

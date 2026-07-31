@@ -12,6 +12,10 @@ hyperhdr:
 wled:
   enabled: false
   validation_timeout_seconds: 2.0
+  # Set measured values only in an untracked deployment configuration.
+  # expected_led_count:
+  # expected_active_led_count:
+  # expected_skipped_leds:
 ddp:
   enabled: false
   # port defaults to the standard DDP port, 4048
@@ -21,6 +25,14 @@ capture_device:
 lighting_zones: []
 # Set orientation and starting_corner only after physical installation.
 led_layout: {}
+dashboard:
+  # Loopback-only by default. Opt into a trusted-LAN bind explicitly.
+  bind_host: "localhost"
+  port: 8080
+  refresh_seconds: 5
+  cpu_temperature_warning_c: 80.0
+  memory_warning_percent: 90.0
+  storage_warning_percent: 90.0
 mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
 # Read-only WLED validation uses GET /json/info only when explicitly invoked.

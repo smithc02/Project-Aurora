@@ -41,7 +41,42 @@ def parse_hyperhdr_server_info(body: bytes) -> HyperHDRServerInfo:
         hdr_mode_enabled = bool(value)
     else:
         hdr_mode_enabled = None
-    return HyperHDRServerInfo(True, hdr_mode_enabled)
+    component_states: dict[str, bool] = {}
+    components = info.get("components")
+    if isinstance(components, list):
+        for component in components:
+            if not isinstance(component, Mapping):
+                continue
+            name = component.get("name")
+            enabled = component.get("enabled")
+            if isinstance(name, str) and isinstance(enabled, bool):
+                component_states[name.upper()] = enabled
+    grabber_active = component_states.get("VIDEOGRABBER")
+    if grabber_active is None:
+        grabber_active = component_states.get("GRABBER")
+    led_output_active = component_states.get("LEDDEVICE")
+
+    instance_running: bool | None = None
+    instances = info.get("instance")
+    if not isinstance(instances, list):
+        instances = info.get("instances")
+    if isinstance(instances, list):
+        running_values = tuple(
+            instance.get("running")
+            for instance in instances
+            if isinstance(instance, Mapping)
+            and isinstance(instance.get("running"), bool)
+        )
+        if running_values:
+            instance_running = any(running_values)
+
+    return HyperHDRServerInfo(
+        server_info_received=True,
+        hdr_mode_enabled=hdr_mode_enabled,
+        instance_running=instance_running,
+        grabber_active=grabber_active,
+        led_output_active=led_output_active,
+    )
 
 
 def validate_hyperhdr(
@@ -85,10 +120,13 @@ def validate_hyperhdr(
             "HyperHDR returned an invalid server information response.",
         )
     return HyperHDRValidationReport(
-        ComponentId.HYPERHDR,
-        ComponentHealthState.HEALTHY,
-        "validated",
-        "Read-only HyperHDR validation succeeded.",
-        info.server_info_received,
-        info.hdr_mode_enabled,
+        component_id=ComponentId.HYPERHDR,
+        state=ComponentHealthState.HEALTHY,
+        reason_code="validated",
+        message="Read-only HyperHDR validation succeeded.",
+        server_info_received=info.server_info_received,
+        hdr_mode_enabled=info.hdr_mode_enabled,
+        instance_running=info.instance_running,
+        grabber_active=info.grabber_active,
+        led_output_active=info.led_output_active,
     )

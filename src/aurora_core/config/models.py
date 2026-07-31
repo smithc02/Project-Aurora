@@ -19,8 +19,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 NonEmptyString = Annotated[str, Field(min_length=1, strict=True)]
 Port = Annotated[int, Field(ge=1, le=65535, strict=True)]
 PositiveInteger = Annotated[int, Field(gt=0, strict=True)]
+NonNegativeInteger = Annotated[int, Field(ge=0, strict=True)]
 StrictBoolean = Annotated[bool, Field(strict=True)]
 ValidationTimeout = Annotated[float, Field(ge=0.1, le=10.0, strict=True)]
+RefreshInterval = Annotated[int, Field(ge=1, le=3600, strict=True)]
+WarningPercentage = Annotated[float, Field(ge=0.0, le=100.0, strict=True)]
+TemperatureWarning = Annotated[float, Field(ge=0.0, le=120.0, strict=True)]
 
 
 class LoggingLevel(StrEnum):
@@ -80,6 +84,25 @@ class WLEDSettings(EndpointSettings):
     """WLED configuration for explicit, read-only information validation only."""
 
     validation_timeout_seconds: ValidationTimeout = 2.0
+    expected_led_count: PositiveInteger | None = None
+    expected_active_led_count: PositiveInteger | None = None
+    expected_skipped_leds: NonNegativeInteger | None = None
+
+    @model_validator(mode="after")
+    def expected_led_counts_are_consistent(self) -> WLEDSettings:
+        if (
+            self.expected_led_count is not None
+            and self.expected_active_led_count is not None
+            and self.expected_skipped_leds is not None
+        ):
+            if (
+                self.expected_active_led_count + self.expected_skipped_leds
+                != self.expected_led_count
+            ):
+                raise ValueError(
+                    "expected active and skipped LEDs must total expected LED count"
+                )
+        return self
 
 
 class DDPSettings(EndpointSettings):
@@ -132,6 +155,28 @@ class LEDLayoutSettings(AuroraModel):
     starting_corner: NonEmptyString | None = None
 
 
+class DashboardServerSettings(AuroraModel):
+    """Validated settings for the read-only local dashboard server."""
+
+    bind_host: NonEmptyString = "localhost"
+    port: Port = 8080
+    refresh_seconds: RefreshInterval = 5
+    cpu_temperature_warning_c: TemperatureWarning = 80.0
+    memory_warning_percent: WarningPercentage = 90.0
+    storage_warning_percent: WarningPercentage = 90.0
+
+    @field_validator("bind_host")
+    @classmethod
+    def bind_host_has_no_url_syntax(cls, value: str) -> str:
+        if any(token in value for token in ("://", "/", "?", "#", "@")) or any(
+            ord(character) <= 32 or ord(character) == 127 for character in value
+        ):
+            raise ValueError(
+                "bind_host must be a hostname or IP literal without URL syntax"
+            )
+        return value
+
+
 class MQTTSettings(EndpointSettings):
     username: NonEmptyString | None = None
     password: SecretStr | None = None
@@ -154,4 +199,5 @@ class AuroraSettings(BaseSettings):
     capture_device: CaptureDeviceSettings = Field(default_factory=CaptureDeviceSettings)
     lighting_zones: tuple[LightingZoneSettings, ...] = ()
     led_layout: LEDLayoutSettings = Field(default_factory=LEDLayoutSettings)
+    dashboard: DashboardServerSettings = Field(default_factory=DashboardServerSettings)
     mqtt: MQTTSettings = Field(default_factory=MQTTSettings)

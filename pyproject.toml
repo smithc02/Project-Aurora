@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 aurora = "aurora_core.__main__:main"
+aurora-dashboard = "aurora_core.dashboard.server:main"
 
 [dependency-groups]
 dev = [

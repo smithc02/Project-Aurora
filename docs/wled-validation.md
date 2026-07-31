@@ -9,14 +9,21 @@ uv run aurora hardware validate wled \
 
 It is not run automatically or in CI. The operator supplies an enabled WLED host in an untracked configuration file. The validator sends exactly one unauthenticated `GET /json/info` request, follows no redirects, uses the configured finite timeout (default 2.0 seconds; 0.1–10.0), and accepts at most 64 KiB. It does not print hosts, ports, URLs, IPs, MAC addresses, IDs, credentials, or response bodies.
 
-Only `ver` and `leds.count` are retained. The reported LED count is compared with the sum of all enabled zones only when every enabled zone provides `led_count`; otherwise it is not evaluated. Healthy means valid information and either no complete expected count or a match. Degraded means a valid response with a mismatch. Unhealthy indicates transport or response failure. Disabled means WLED is disabled and no request was made.
+Only sanitized fields are retained: required `ver` and `leds.count`, plus
+optional integer uptime, estimated-current, and current-limit observations. The
+reported LED count is first compared with `wled.expected_led_count` when it is
+configured. Otherwise, the previous behavior is retained: use the sum of all
+enabled zones only when every enabled zone provides `led_count`. Healthy means
+valid information and either no complete expected count or a match. Degraded
+means a valid response with a mismatch. Unhealthy indicates transport or
+response failure. Disabled means WLED is disabled and no request was made.
 
 Example sanitized result:
 
 ```text
 WLED validation: healthy
 firmware_version: 0.15.0
-reported_led_count: 120
+reported_led_count: 12
 expected_led_count: not configured
 led_count_match: not evaluated
 Read-only validation completed; no WLED state was changed.
