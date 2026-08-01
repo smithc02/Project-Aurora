@@ -6,8 +6,10 @@
 > information checks, bounded capture validation, and one explicit operator-only
 > DDP output check. Milestone 11 defines the operator-controlled single-zone
 > baseline proof and deployment runbook; it does not claim that the physical path
-> has passed. Milestone 12 adds a local read-only health dashboard. Runtime
-> lighting control remains deferred.
+> has passed. Milestone 12 added a local read-only health dashboard. Milestone 13
+> turns that dashboard into a unified, responsive portal while preserving the
+> same read-only health service and version 1 API. Runtime lighting control,
+> room mapping, and spatial intelligence remain deferred.
 
 ## Architecture summary
 
@@ -110,6 +112,13 @@ state GET, and collects local host metrics. Concurrent requests share one
 single-flight snapshot and cannot overlap hardware polls. The dashboard has no
 controls and performs no DDP, service, capture-configuration, or power mutation.
 
+Milestone 13's [unified portal](docs/unified-portal.md) presents that same cached,
+sanitized snapshot across Overview, WLED, HyperHDR, Capture, System, Room Map,
+and Spatial Intelligence pages. The final two routes are explicitly inactive
+future-feature previews. The existing `aurora-dashboard` command and
+`GET /api/health` schema version 1 remain unchanged. The portal has no mutation
+handlers, authentication claim, persistence, frame capture, or control plane.
+
 Milestone 11 adds no runtime behavior. Its
 [single-zone baseline proof and deployment runbook](docs/single-zone-baseline-proof.md)
 combines the existing validation boundaries with operator-observed direct HDMI,
@@ -129,6 +138,8 @@ See [the roadmap](docs/roadmap.md) for completed and planned milestones, the
 [Milestone 11 single-zone baseline runbook](docs/single-zone-baseline-proof.md)
 for its operator evidence requirements, and the
 [Milestone 12 dashboard guide](docs/health-dashboard.md) for local deployment.
+See the [Milestone 13 unified portal guide](docs/unified-portal.md) for the route
+map, read-only boundary, and future control-plane requirements.
 
 ## Contributing
 

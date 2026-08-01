@@ -65,6 +65,22 @@ exposed through internet-facing port forwarding.
 The responsive status page is `/`; the machine-readable endpoint is
 `GET /api/health`. Both return successfully even when dependencies are offline.
 
+## Milestone 13 presentation
+
+Milestone 12 remains the origin of the read-only health collectors, stable API,
+and deployment command described in this guide. Milestone 13 changes only the
+human-facing presentation: `/` is now the Overview page in a branded portal,
+with native read-only detail pages at `/wled`, `/hyperhdr`, `/capture`, and
+`/system`. `/room-map` and `/spatial-intelligence` are clearly labeled inactive
+previews of future work.
+
+Every portal page uses the same Milestone 12 `HealthService` and cached
+single-flight snapshot. Navigation does not create a separate collector path or
+direct device request. `uv run aurora-dashboard --config <config-file>` remains
+the launch command, and `GET /api/health` retains its version 1 schema and field
+meanings. See the [unified portal guide](unified-portal.md) for presentation and
+future-boundary details.
+
 ## Bounded checks
 
 - WLED: the existing hardened `GET /json/info` validator plus one fixed

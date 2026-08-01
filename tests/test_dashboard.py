@@ -182,7 +182,10 @@ def test_page_renders_offline_component_and_escapes_text() -> None:
             _component(
                 "wled",
                 HealthStatus.UNAVAILABLE,
-                details={"unsafe": "<script>"},
+                details={
+                    "firmware_version": "<script>",
+                    "configured_host": "SHOULD_NOT_RENDER",
+                },
             ),
         ),
     )
@@ -190,6 +193,7 @@ def test_page_renders_offline_component_and_escapes_text() -> None:
     assert "Project Aurora" in page
     assert "&lt;safe test&gt;" in page
     assert "&lt;script&gt;" in page
+    assert "SHOULD_NOT_RENDER" not in page
     assert '<meta http-equiv="refresh" content="5">' in page
     assert "No successful observation" in page
 
@@ -585,7 +589,7 @@ def test_http_api_and_page_remain_available_during_partial_failure() -> None:
     handler.do_GET()
     page = responses[-1][0].decode()
     assert responses[-1][1] == "text/html; charset=utf-8"
-    assert "Hyperhdr" in page
+    assert "HyperHDR" in page
     assert "unavailable" in page
 
     headers: dict[str, str] = {}
