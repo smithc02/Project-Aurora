@@ -16,6 +16,8 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from aurora_core.security.passwords import PasswordHashError, validate_password_hash
+
 NonEmptyString = Annotated[str, Field(min_length=1, strict=True)]
 Port = Annotated[int, Field(ge=1, le=65535, strict=True)]
 PositiveInteger = Annotated[int, Field(gt=0, strict=True)]
@@ -25,6 +27,11 @@ ValidationTimeout = Annotated[float, Field(ge=0.1, le=10.0, strict=True)]
 RefreshInterval = Annotated[int, Field(ge=1, le=3600, strict=True)]
 WarningPercentage = Annotated[float, Field(ge=0.0, le=100.0, strict=True)]
 TemperatureWarning = Annotated[float, Field(ge=0.0, le=120.0, strict=True)]
+AuthenticationUsername = Annotated[str, Field(min_length=1, max_length=64, strict=True)]
+SessionTTLMinutes = Annotated[int, Field(ge=5, le=1440, strict=True)]
+MaximumSessions = Annotated[int, Field(ge=1, le=64, strict=True)]
+LoginAttemptLimit = Annotated[int, Field(ge=1, le=20, strict=True)]
+LoginAttemptWindow = Annotated[int, Field(ge=30, le=3600, strict=True)]
 
 
 class LoggingLevel(StrEnum):
@@ -155,8 +162,52 @@ class LEDLayoutSettings(AuroraModel):
     starting_corner: NonEmptyString | None = None
 
 
+class DashboardAuthenticationSettings(AuroraModel):
+    """Fail-closed settings for the separate protected control plane."""
+
+    enabled: StrictBoolean = False
+    username: AuthenticationUsername | None = None
+    password_hash: SecretStr | None = None
+    session_ttl_minutes: SessionTTLMinutes = 480
+    maximum_sessions: MaximumSessions = 16
+    secure_cookie: StrictBoolean = False
+    login_attempt_limit: LoginAttemptLimit = 5
+    login_attempt_window_seconds: LoginAttemptWindow = 300
+
+    @field_validator("username")
+    @classmethod
+    def username_uses_bounded_operator_grammar(cls, value: str | None) -> str | None:
+        if (
+            value is not None
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value) is None
+        ):
+            raise ValueError("username must use the supported operator-name grammar")
+        return value
+
+    @field_validator("password_hash")
+    @classmethod
+    def password_hash_is_supported(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        try:
+            validate_password_hash(value.get_secret_value())
+        except PasswordHashError as error:
+            raise ValueError(
+                "password_hash must use a supported bounded format"
+            ) from error
+        return value
+
+    @model_validator(mode="after")
+    def enabled_authentication_has_credentials(self) -> DashboardAuthenticationSettings:
+        if self.enabled and (self.username is None or self.password_hash is None):
+            raise ValueError(
+                "username and password_hash are required when authentication is enabled"
+            )
+        return self
+
+
 class DashboardServerSettings(AuroraModel):
-    """Validated settings for the read-only local dashboard server."""
+    """Validated settings for the public portal and protected control plane."""
 
     bind_host: NonEmptyString = "localhost"
     port: Port = 8080
@@ -164,6 +215,9 @@ class DashboardServerSettings(AuroraModel):
     cpu_temperature_warning_c: TemperatureWarning = 80.0
     memory_warning_percent: WarningPercentage = 90.0
     storage_warning_percent: WarningPercentage = 90.0
+    authentication: DashboardAuthenticationSettings = Field(
+        default_factory=DashboardAuthenticationSettings
+    )
 
     @field_validator("bind_host")
     @classmethod

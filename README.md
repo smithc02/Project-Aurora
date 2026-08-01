@@ -6,10 +6,11 @@
 > information checks, bounded capture validation, and one explicit operator-only
 > DDP output check. Milestone 11 defines the operator-controlled single-zone
 > baseline proof and deployment runbook; it does not claim that the physical path
-> has passed. Milestone 12 added a local read-only health dashboard. Milestone 13
-> turns that dashboard into a unified, responsive portal while preserving the
-> same read-only health service and version 1 API. Runtime lighting control,
-> room mapping, and spatial intelligence remain deferred.
+> has passed. Milestone 12 added a local read-only health dashboard, and
+> Milestone 13 turned it into a unified, responsive portal. Milestone 14 adds a
+> fail-closed authenticated control-plane foundation while preserving the same
+> public read-only health service and version 1 API. Device control, room
+> mapping, and spatial intelligence remain deferred.
 
 ## Architecture summary
 
@@ -61,6 +62,7 @@ uv run aurora hardware validate capture-capability --config configs/aurora.local
 uv run aurora hardware validate capture-modes --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-frame --config configs/aurora.local.yaml
 uv run aurora hardware validate ddp-output --config configs/aurora.local.yaml
+uv run aurora security hash-password
 uv run aurora-dashboard --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
@@ -116,8 +118,18 @@ Milestone 13's [unified portal](docs/unified-portal.md) presents that same cache
 sanitized snapshot across Overview, WLED, HyperHDR, Capture, System, Room Map,
 and Spatial Intelligence pages. The final two routes are explicitly inactive
 future-feature previews. The existing `aurora-dashboard` command and
-`GET /api/health` schema version 1 remain unchanged. The portal has no mutation
-handlers, authentication claim, persistence, frame capture, or control plane.
+`GET /api/health` schema version 1 remain unchanged. The public portal pages
+have no mutation handlers, persistence, frame capture, or device control.
+
+Milestone 14's
+[control-plane security foundation](docs/control-plane-security.md) adds optional
+local authentication, bounded in-memory sessions, CSRF-protected logout,
+attempt limiting, sanitized security audit events, and protected status routes.
+Authentication is disabled by default and protected routes fail closed while it
+is disabled. When enabled, `/controls` and `/api/control/status` report that
+mutations are disabled and no operations are available. Login and control-plane
+requests do not poll hardware. No WLED, HyperHDR, DDP, service, power,
+configuration, room-zone, capture, or AI control is implemented.
 
 Milestone 11 adds no runtime behavior. Its
 [single-zone baseline proof and deployment runbook](docs/single-zone-baseline-proof.md)
@@ -139,7 +151,9 @@ See [the roadmap](docs/roadmap.md) for completed and planned milestones, the
 for its operator evidence requirements, and the
 [Milestone 12 dashboard guide](docs/health-dashboard.md) for local deployment.
 See the [Milestone 13 unified portal guide](docs/unified-portal.md) for the route
-map, read-only boundary, and future control-plane requirements.
+map and read-only boundary, and the
+[Milestone 14 control-plane security guide](docs/control-plane-security.md) for
+authentication configuration, session behavior, deployment, and recovery.
 
 ## Contributing
 
@@ -153,13 +167,19 @@ Aurora's configuration loader does not contact devices or test connectivity.
 Settings are applied in deterministic order: command-line overrides, `AURORA_`
 environment variables, an explicitly supplied YAML file, then safe built-in defaults.
 Nested environment fields use `__`, for example `AURORA_WLED__ENABLED=true` and
-`AURORA_LOGGING__LEVEL=DEBUG`.
+`AURORA_LOGGING__LEVEL=DEBUG`. Dashboard authentication uses the same syntax and
+is disabled by default.
 
 Use `aurora config validate --config path/to/aurora.yaml --log-level DEBUG` to
 check an explicit file. Copy `configs/aurora.example.yaml` to an untracked file
 before adding deployment-specific values. MQTT passwords use protected values
 and are not printed by validation output or configuration errors. `.env.example`
 documents safe environment names; Aurora deliberately does not load `.env` files.
+Generate a versioned password hash interactively with
+`uv run aurora security hash-password`; never pass plaintext on the command line
+or commit an operator name or hash. Prefer protected process environment values
+or the separately protected systemd environment file documented in the
+[control-plane security guide](docs/control-plane-security.md).
 
 Milestone 8 adds the explicit Linux-only `aurora hardware validate capture-modes`
 command for bounded query-only V4L2 format, size, and interval reporting. It

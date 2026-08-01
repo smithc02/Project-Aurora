@@ -206,16 +206,49 @@ the configured cache interval. Locally bundled CSS supplies responsive and
 accessible presentation without a web or frontend framework, remote asset, or
 browser-side device request.
 
-The portal server accepts GET requests for native pages, its local stylesheet,
-and the existing schema-version-1 health endpoint. State-changing HTTP methods
-receive method-not-allowed responses. Unknown detail keys, configured endpoints,
-capture identifiers, raw responses, exceptions, credentials, and other
-installation values are not rendered. Content security, anti-framing,
-no-referrer, no-sniff, and no-store response headers reinforce the local
-read-only boundary without requiring TLS or breaking ordinary trusted-LAN HTTP.
+The public portal accepts GET requests for native pages, its local stylesheet,
+and the existing schema-version-1 health endpoint. State-changing requests to
+public health routes receive method-not-allowed responses; Milestone 14's
+separate login and logout boundary is described below. Unknown detail keys,
+configured endpoints, capture identifiers, raw responses, exceptions,
+credentials, and other installation values are not rendered. Content security,
+anti-framing, no-referrer, no-sniff, and no-store response headers reinforce the
+local read-only boundary without requiring TLS or breaking ordinary trusted-LAN
+HTTP.
 
 Room Map and Spatial Intelligence are descriptive preview routes only. They add
 no zone model, capture analysis, AI dependency, persistence, or output path. A
 future control plane must be separately authenticated, typed, bounded, audited,
 and kept outside the health-snapshot service. See the
 [unified portal architecture](unified-portal.md).
+
+## Authenticated control-plane boundary (Milestone 14)
+
+Milestone 14 adds a `ControlPlaneService` beside, not inside, the public
+`HealthService`. The public portal and `GET /api/health` retain the same cached
+single-flight collectors and schema-version-1 model. Authentication pages,
+protected status routes, logout, and local static assets do not obtain a health
+snapshot and cannot construct or invoke a hardware adapter.
+
+Authentication configuration defaults to disabled. Disabled authentication
+makes the protected boundary unavailable; it never grants access. When enabled,
+credentials are verified against a bounded versioned password hash and a
+thread-safe process-local service creates absolute-lifetime sessions. Cookies
+contain only opaque random identifiers while the server retains identifier
+digests, the bounded operator name, expiration metadata, and a per-session CSRF
+token. Session and login-attempt state is memory-only and disappears on restart.
+
+`POST /login` and CSRF-protected `POST /logout` are the only accepted POST
+routes. Strict media type, length, body-size, encoding, field, and redirect
+allowlists precede credential or CSRF processing. Protected HTML requests use a
+login redirect, while protected API requests fail with JSON `401`. Fixed,
+sanitized audit events record security outcomes without raw request, credential,
+cookie, token, client, endpoint, or exception data.
+
+The control capability contract reports mutations disabled and registers no
+operations or executor. Non-executable metadata documents the required typed
+input, explicit timeout, allowlisted adapter, audit, CSRF, and confirmation
+boundaries for later separately reviewed operations. It cannot forward an
+arbitrary URL, API path, JSON object, shell command, or device payload. No
+device-control capability exists in Milestone 14. See the
+[control-plane security guide](control-plane-security.md).

@@ -1,7 +1,7 @@
 # Example only. Review and copy outside the repository; Aurora never installs,
 # enables, starts, stops, or restarts this unit.
 [Unit]
-Description=Project Aurora read-only health dashboard
+Description=Project Aurora local portal
 After=network-online.target
 Wants=network-online.target
 
@@ -10,6 +10,8 @@ Type=simple
 User=aurora
 Group=aurora
 WorkingDirectory=/opt/project-aurora
+# Store authentication values in this separately protected, untracked file.
+EnvironmentFile=-/etc/project-aurora/dashboard-auth.env
 ExecStart=/opt/project-aurora/.venv/bin/aurora-dashboard --config /etc/project-aurora/aurora.yaml
 NoNewPrivileges=true
 PrivateTmp=true

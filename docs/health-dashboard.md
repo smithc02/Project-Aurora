@@ -59,8 +59,10 @@ then safe defaults.
 
 The default bind host is `localhost`, so the dashboard is local to the Pi. To
 make it available on a trusted LAN, explicitly pass `--host 0.0.0.0` and apply
-host firewall rules. The service has no authentication or TLS and must not be
-exposed through internet-facing port forwarding.
+host firewall rules. The public health routes remain unauthenticated, and the
+service has no TLS. Optional Milestone 14 authentication protects only the
+separate control-plane status boundary. Do not expose the service through
+internet-facing port forwarding.
 
 The responsive status page is `/`; the machine-readable endpoint is
 `GET /api/health`. Both return successfully even when dependencies are offline.
@@ -80,6 +82,17 @@ direct device request. `uv run aurora-dashboard --config <config-file>` remains
 the launch command, and `GET /api/health` retains its version 1 schema and field
 meanings. See the [unified portal guide](unified-portal.md) for presentation and
 future-boundary details.
+
+## Milestone 14 security boundary
+
+Milestone 14 preserves the original health collectors, single-flight cache,
+portal routes, command, and `GET /api/health` schema version 1. It adds optional
+authentication only for `/controls` and `/api/control/status`, plus login and
+logout routes. Those requests do not poll health or contact hardware, and no
+control operation is registered. Authentication is disabled by default; in
+that state the protected routes fail closed rather than becoming public. See the
+[control-plane security guide](control-plane-security.md) for configuration and
+deployment.
 
 ## Bounded checks
 
@@ -163,5 +176,7 @@ unit itself.
   a resolver stall can exceed them.
 - Health history is limited to the in-process last-success timestamp. There is
   no metrics database, alerting, automatic recovery, or multi-zone control.
-- The dashboard is intentionally read-only and unauthenticated. Put remote
-  access behind separately managed authentication and TLS if it is ever needed.
+- The public health dashboard is intentionally read-only and unauthenticated.
+  Milestone 14 authentication protects only its separate status-only control
+  boundary. Put any remote access behind separately managed authentication and
+  TLS if it is ever needed.
