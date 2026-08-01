@@ -195,3 +195,27 @@ Capture activity is inferred only from HyperHDR's sanitized grabber component
 flag when present. The dashboard does not acquire a frame, prove frame freshness,
 inspect the splitter, or claim the complete physical path is healthy. See the
 [health dashboard guide](health-dashboard.md).
+
+## Unified read-only portal boundary (Milestone 13)
+
+Milestone 13 adds a route-aware presentation layer in front of the unchanged
+Milestone 12 `HealthService`. Overview and component pages obtain one report
+from that shared service and render only component-specific allowlisted fields.
+No route constructs a device transport, calls a collector directly, or bypasses
+the configured cache interval. Locally bundled CSS supplies responsive and
+accessible presentation without a web or frontend framework, remote asset, or
+browser-side device request.
+
+The portal server accepts GET requests for native pages, its local stylesheet,
+and the existing schema-version-1 health endpoint. State-changing HTTP methods
+receive method-not-allowed responses. Unknown detail keys, configured endpoints,
+capture identifiers, raw responses, exceptions, credentials, and other
+installation values are not rendered. Content security, anti-framing,
+no-referrer, no-sniff, and no-store response headers reinforce the local
+read-only boundary without requiring TLS or breaking ordinary trusted-LAN HTTP.
+
+Room Map and Spatial Intelligence are descriptive preview routes only. They add
+no zone model, capture analysis, AI dependency, persistence, or output path. A
+future control plane must be separately authenticated, typed, bounded, audited,
+and kept outside the health-snapshot service. See the
+[unified portal architecture](unified-portal.md).
