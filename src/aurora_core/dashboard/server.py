@@ -11,13 +11,35 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from aurora_core.config import AuroraConfigurationError, load_settings
 from aurora_core.config.models import AuroraSettings
+from aurora_core.control_plane.audit import AuditReason
+from aurora_core.control_plane.contracts import CONTROL_CAPABILITIES
+from aurora_core.control_plane.cookies import (
+    cleared_session_cookie,
+    read_session_cookie,
+    session_cookie,
+)
+from aurora_core.control_plane.forms import (
+    LOGIN_BODY_LIMIT,
+    LOGOUT_BODY_LIMIT,
+    FormError,
+    parse_form,
+    safe_next_path,
+    validate_form_headers,
+)
+from aurora_core.control_plane.rendering import render_controls, render_login
+from aurora_core.control_plane.service import ControlPlaneService, LoginStatus
+from aurora_core.control_plane.sessions import SessionContext
 from aurora_core.dashboard.assets import PORTAL_CSS, PORTAL_CSS_PATH
 from aurora_core.dashboard.models import HealthReport
-from aurora_core.dashboard.portal import PORTAL_PATHS, render_portal
+from aurora_core.dashboard.portal import (
+    PORTAL_PATHS,
+    ControlNavigationLink,
+    render_portal,
+)
 from aurora_core.dashboard.service import HealthService
 
 
@@ -37,9 +59,11 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         service: HealthService,
         refresh_seconds: int,
+        control_plane: ControlPlaneService,
     ) -> None:
         self.health_service = service
         self.refresh_seconds = refresh_seconds
+        self.control_plane = control_plane
         super().__init__(server_address, DashboardHandler)
 
 
@@ -69,7 +93,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'self'; "
-            "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         )
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -88,6 +112,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == PORTAL_CSS_PATH:
             self._send(PORTAL_CSS, "text/css; charset=utf-8")
             return
+        if path == "/login":
+            self._get_login()
+            return
+        if path == "/controls":
+            self._get_controls()
+            return
+        if path == "/api/control/status":
+            self._get_control_status()
+            return
         if path not in PORTAL_PATHS and path != "/api/health":
             self._send(
                 b"not found\n",
@@ -105,20 +138,222 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ).encode()
             self._send(body, "application/json; charset=utf-8")
             return
-        page = render_portal(report, path, server.refresh_seconds).encode()
+        control_link = self._portal_control_link()
+        page = render_portal(
+            report,
+            path,
+            server.refresh_seconds,
+            control_link=control_link,
+        ).encode()
         self._send(page, "text/html; charset=utf-8")
+
+    def _get_login(self) -> None:
+        control = self._control_plane()
+        if control is None or not control.authentication_enabled:
+            page = render_login(
+                authentication_enabled=False,
+                next_path="/controls",
+            ).encode()
+            self._send(
+                page,
+                "text/html; charset=utf-8",
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+        _, session = self._request_session(control)
+        if session is not None:
+            self._redirect("/controls")
+            return
+        page = render_login(
+            authentication_enabled=True,
+            next_path=self._query_next_path(),
+        ).encode()
+        self._send(page, "text/html; charset=utf-8")
+
+    def _get_controls(self) -> None:
+        control = self._control_plane()
+        if control is None or not control.authentication_enabled:
+            if control is not None:
+                control.audit_page_denied(AuditReason.AUTHENTICATION_DISABLED)
+            self._control_unavailable(html=True)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            control.audit_page_denied()
+            self._redirect("/login?next=%2Fcontrols")
+            return
+        self._send(
+            render_controls(session).encode(),
+            "text/html; charset=utf-8",
+        )
+
+    def _get_control_status(self) -> None:
+        control = self._control_plane()
+        if control is None or not control.authentication_enabled:
+            if control is not None:
+                control.audit_api_denied(AuditReason.AUTHENTICATION_DISABLED)
+            self._control_unavailable(html=False)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            control.audit_api_denied()
+            self._send_json(
+                {
+                    "schema_version": 1,
+                    "authenticated": False,
+                    "error": "authentication_required",
+                },
+                HTTPStatus.UNAUTHORIZED,
+            )
+            return
+        self._send_json(CONTROL_CAPABILITIES.to_dict())
 
     def _method_not_allowed(self) -> None:
         self.close_connection = True
+        path = urlsplit(getattr(self, "path", "")).path
+        if path == "/login":
+            allowed = "GET, POST"
+        elif path == "/logout":
+            allowed = "POST"
+        else:
+            allowed = "GET"
         self._send(
             b"method not allowed\n",
             "text/plain; charset=utf-8",
             HTTPStatus.METHOD_NOT_ALLOWED,
-            {"Allow": "GET"},
+            {"Allow": allowed},
         )
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        path = urlsplit(getattr(self, "path", "")).path
+        if path == "/login":
+            self._post_login()
+            return
+        if path == "/logout":
+            self._post_logout()
+            return
         self._method_not_allowed()
+
+    def _post_login(self) -> None:
+        control = self._control_plane()
+        if control is None or not control.authentication_enabled:
+            self.close_connection = True
+            self._control_unavailable(html=True)
+            return
+        fields, error = self._read_form(
+            maximum_body_bytes=LOGIN_BODY_LIMIT,
+            allowed_fields=frozenset({"username", "password", "next"}),
+            required_fields=frozenset({"username", "password"}),
+        )
+        if error is not None or fields is None:
+            active_error = error or FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+            control.audit_malformed_request(active_error.reason)
+            self._send(
+                render_login(
+                    authentication_enabled=True,
+                    next_path="/controls",
+                    error_message="Unable to process the authentication request.",
+                ).encode(),
+                "text/html; charset=utf-8",
+                active_error.status,
+            )
+            return
+        if len(fields["username"]) > 64 or len(fields["password"]) > 1024:
+            control.audit_malformed_request(AuditReason.MALFORMED_FORM)
+            self._send(
+                render_login(
+                    authentication_enabled=True,
+                    next_path="/controls",
+                    error_message="Unable to process the authentication request.",
+                ).encode(),
+                "text/html; charset=utf-8",
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        prior_token, _ = self._request_session(control)
+        result = control.authenticate(
+            fields["username"],
+            fields["password"],
+            self._client_identifier(),
+            prior_session_token=prior_token,
+        )
+        if result.status is LoginStatus.SUCCESS:
+            assert result.created_session is not None
+            cookie = session_cookie(
+                result.created_session.token,
+                max_age_seconds=control.session_ttl_seconds,
+                secure=control.secure_cookie,
+            )
+            self._redirect(
+                safe_next_path(fields.get("next")),
+                cookie=cookie,
+            )
+            return
+        status = (
+            HTTPStatus.TOO_MANY_REQUESTS
+            if result.status is LoginStatus.RATE_LIMITED
+            else HTTPStatus.UNAUTHORIZED
+        )
+        self._send(
+            render_login(
+                authentication_enabled=True,
+                next_path=safe_next_path(fields.get("next")),
+                error_message="Authentication failed.",
+            ).encode(),
+            "text/html; charset=utf-8",
+            status,
+        )
+
+    def _post_logout(self) -> None:
+        control = self._control_plane()
+        if control is None or not control.authentication_enabled:
+            self.close_connection = True
+            if control is not None:
+                control.audit_page_denied(AuditReason.AUTHENTICATION_DISABLED)
+            self._control_unavailable(html=True)
+            return
+        session_token, session = self._request_session(control)
+        if session_token is None or session is None:
+            self.close_connection = True
+            control.audit_page_denied()
+            self._send(
+                b"Authentication required.\n",
+                "text/plain; charset=utf-8",
+                HTTPStatus.UNAUTHORIZED,
+                {"Set-Cookie": cleared_session_cookie(secure=control.secure_cookie)},
+            )
+            return
+        fields, error = self._read_form(
+            maximum_body_bytes=LOGOUT_BODY_LIMIT,
+            allowed_fields=frozenset({"csrf_token"}),
+        )
+        if error is not None or fields is None:
+            active_error = error or FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+            control.audit_malformed_request(active_error.reason)
+            self._send(
+                b"Unable to process the authentication request.\n",
+                "text/plain; charset=utf-8",
+                active_error.status,
+            )
+            return
+        if not control.logout(session_token, session, fields.get("csrf_token")):
+            self._send(
+                b"Unable to process the authentication request.\n",
+                "text/plain; charset=utf-8",
+                HTTPStatus.FORBIDDEN,
+            )
+            return
+        self._redirect(
+            "/",
+            cookie=cleared_session_cookie(secure=control.secure_cookie),
+        )
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self._method_not_allowed()
@@ -128,6 +363,138 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self._method_not_allowed()
+
+    def _control_plane(self) -> ControlPlaneService | None:
+        return getattr(self.server, "control_plane", None)
+
+    def _portal_control_link(self) -> ControlNavigationLink | None:
+        control = self._control_plane()
+        if control is None or not control.authentication_enabled:
+            return None
+        _, session = self._request_session(control)
+        return (
+            ControlNavigationLink.CONTROLS
+            if session is not None
+            else ControlNavigationLink.LOGIN
+        )
+
+    def _request_session(
+        self,
+        control: ControlPlaneService,
+    ) -> tuple[str | None, SessionContext | None]:
+        cookie = read_session_cookie(self._header("Cookie"))
+        if cookie.malformed:
+            control.audit_malformed_cookie()
+            return None, None
+        return cookie.token, control.resolve_session(cookie.token)
+
+    def _read_form(
+        self,
+        *,
+        maximum_body_bytes: int,
+        allowed_fields: frozenset[str],
+        required_fields: frozenset[str] = frozenset(),
+    ) -> tuple[dict[str, str] | None, FormError | None]:
+        length, error = validate_form_headers(
+            content_types=self._header_values("Content-Type"),
+            content_lengths=self._header_values("Content-Length"),
+            transfer_encoding=self._header("Transfer-Encoding"),
+            maximum_body_bytes=maximum_body_bytes,
+        )
+        if error is not None or length is None:
+            self.close_connection = True
+            return None, error
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self.close_connection = True
+            return None, FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+        fields = parse_form(
+            body,
+            allowed_fields=allowed_fields,
+            required_fields=required_fields,
+        )
+        if fields is None:
+            return None, FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+        return fields, None
+
+    def _query_next_path(self) -> str:
+        try:
+            query = parse_qs(
+                urlsplit(self.path).query,
+                keep_blank_values=True,
+                max_num_fields=4,
+            )
+        except ValueError:
+            return "/controls"
+        values = query.get("next")
+        candidate = values[0] if values is not None and len(values) == 1 else None
+        return safe_next_path(candidate)
+
+    def _client_identifier(self) -> str:
+        address = getattr(self, "client_address", None)
+        if isinstance(address, tuple) and address:
+            return str(address[0])
+        return "unidentified-client"
+
+    def _header(self, name: str) -> str | None:
+        headers = getattr(self, "headers", None)
+        return None if headers is None else headers.get(name)
+
+    def _header_values(self, name: str) -> list[str] | None:
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return None
+        values = headers.get_all(name)
+        return None if values is None else list(values)
+
+    def _redirect(self, location: str, *, cookie: str | None = None) -> None:
+        headers = {"Location": location}
+        if cookie is not None:
+            headers["Set-Cookie"] = cookie
+        self._send(
+            b"",
+            "text/plain; charset=utf-8",
+            HTTPStatus.SEE_OTHER,
+            headers,
+        )
+
+    def _send_json(
+        self,
+        payload: Mapping[str, object],
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
+        body = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode()
+        self._send(body, "application/json; charset=utf-8", status)
+
+    def _control_unavailable(self, *, html: bool) -> None:
+        if html:
+            body = render_login(
+                authentication_enabled=False,
+                next_path="/controls",
+            ).encode()
+            self._send(
+                body,
+                "text/html; charset=utf-8",
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+        self._send_json(
+            {
+                "schema_version": 1,
+                "error": "control_plane_unavailable",
+            },
+            HTTPStatus.NOT_FOUND,
+        )
 
     def log_message(self, format: str, *args: object) -> None:
         """Suppress routine request logging."""
@@ -174,10 +541,16 @@ def build_server(
     settings: AuroraSettings,
     *,
     service: HealthService | None = None,
+    control_plane: ControlPlaneService | None = None,
     port: int | None = None,
 ) -> DashboardHTTPServer:
     """Build a server without starting its request loop."""
     active_service = HealthService(settings) if service is None else service
+    active_control_plane = (
+        ControlPlaneService(settings.dashboard.authentication)
+        if control_plane is None
+        else control_plane
+    )
     address = (
         settings.dashboard.bind_host,
         settings.dashboard.port if port is None else port,
@@ -191,6 +564,7 @@ def build_server(
         address,
         active_service,
         settings.dashboard.refresh_seconds,
+        active_control_plane,
     )
 
 

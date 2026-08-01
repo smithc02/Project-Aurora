@@ -33,6 +33,15 @@ dashboard:
   cpu_temperature_warning_c: 80.0
   memory_warning_percent: 90.0
   storage_warning_percent: 90.0
+  authentication:
+    # Fail closed: protected routes are unavailable while disabled.
+    enabled: false
+    # Supply username and password_hash through the process environment when enabled.
+    session_ttl_minutes: 480
+    maximum_sessions: 16
+    secure_cookie: false
+    login_attempt_limit: 5
+    login_attempt_window_seconds: 300
 mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
 # Read-only WLED validation uses GET /json/info only when explicitly invoked.

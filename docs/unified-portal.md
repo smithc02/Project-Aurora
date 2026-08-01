@@ -3,7 +3,9 @@
 Milestone 13 converts the Milestone 12 health dashboard into Project Aurora's
 responsive landing portal. It is a presentation and architecture milestone: the
 portal makes the existing sanitized health snapshot easier to navigate while
-remaining unauthenticated, dependency-free, local, and completely read-only.
+remaining dependency-free, local, and completely read-only. Milestone 13 itself
+was unauthenticated; Milestone 14 later adds a separate optional protected
+status boundary without changing these public pages.
 
 Run it with the existing command:
 
@@ -29,6 +31,12 @@ and installations require no configuration change.
 | `/api/health` | Unchanged machine-readable health response, schema version 1. |
 | `/static/portal.css` | Locally bundled portal presentation. |
 
+Milestone 14 adds separate authentication routes at `GET`/`POST /login` and
+`POST /logout`, plus protected status routes at `GET /controls` and
+`GET /api/control/status`. When authentication is enabled, the portal shell
+renders Login or Controls navigation according to server-side session state.
+When it is disabled, those protected routes remain unavailable.
+
 Every HTML page has a semantic header, primary navigation, current page title,
 overall health indicator, component status where applicable, snapshot time,
 service uptime, keyboard focus treatment, and a skip link. CSS adapts the page
@@ -49,10 +57,12 @@ interval reuses the same snapshot. Individual component failures remain isolated
 and render as degraded or unavailable states; one offline component cannot take
 the portal or another component page offline.
 
-The portal adds no POST, PUT, PATCH, or DELETE operation. Those methods return
-`405 Method Not Allowed` and do not poll hardware. There are no forms, mutation
-endpoints, arbitrary JSON inputs, configuration writes, service commands, power
-commands, DDP output, frame capture, persistence, or outbound internet access.
+The Milestone 13 portal added no state-changing operation. Milestone 14 accepts
+POST only for login and CSRF-protected logout in a separate authentication
+boundary; every other unsupported mutation method still returns `405 Method Not
+Allowed`. There are no device mutation endpoints, arbitrary JSON inputs,
+configuration writes, service commands, power commands, DDP output, frame
+capture, persistence, or outbound internet access.
 
 ## Sanitized-data policy
 
@@ -72,12 +82,18 @@ caching of health responses.
 The server intentionally does not implement TLS. Keep it on the local host or a
 trusted, firewall-controlled LAN as documented in the health-dashboard guide.
 
-## Future control-plane boundary
+## Control-plane boundary after Milestone 14
 
-Health collection and presentation are not a control plane. Future
-state-changing controls must be designed as a separate authenticated boundary
-and must not turn the health snapshot API into a mutation or forwarding channel.
-Before any mutation can be introduced, the design requires at minimum:
+Health collection and presentation are not a control plane. Milestone 14 creates
+a separate fail-closed authenticated foundation with process-local sessions,
+CSRF-protected logout, attempt limiting, and sanitized audit events. It exposes
+only protected status pages and registers no mutation. Authentication and status
+requests do not use the health snapshot or contact a device. See the
+[control-plane security guide](control-plane-security.md).
+
+Future state-changing controls must remain inside that boundary and must not
+turn the health snapshot API into a mutation or forwarding channel. Before an
+operation can be introduced, the design requires at minimum:
 
 - local authentication;
 - protected sessions;
@@ -118,7 +134,7 @@ must not rewrite control logic. Standard ambient operation remains the fallback.
 See the [roadmap](roadmap.md) for the staged Milestone 14–25 progression and a
 worked spatial-continuation example.
 
-## Milestone 13 non-goals
+## Milestone 13 non-goals and later status
 
 Milestone 13 does not implement authentication, sessions, CSRF tokens, device
 controls, WLED configuration, HyperHDR mutations, DDP transmission, service
@@ -127,3 +143,8 @@ TLS, remote access, frame capture, computer vision, AI, room calibration,
 multi-zone orchestration, spatial effects, or game/content profiles. Preview
 pages communicate architectural intent only; they are not feature stubs or
 control surfaces.
+
+Milestone 14 now supplies authentication, sessions, CSRF-protected logout, and
+mutation-safety contracts, but none of the device, service, output, persistence,
+room, or AI capabilities deferred by Milestone 13. The public portal routes and
+health snapshot remain read-only and backward compatible.

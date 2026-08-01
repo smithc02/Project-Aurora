@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
 
@@ -66,6 +67,14 @@ PORTAL_PAGES = (
 
 PORTAL_PAGE_BY_PATH = {page.path: page for page in PORTAL_PAGES}
 PORTAL_PATHS = frozenset(PORTAL_PAGE_BY_PATH)
+
+
+class ControlNavigationLink(StrEnum):
+    """Server-selected control-plane navigation state."""
+
+    LOGIN = "login"
+    CONTROLS = "controls"
+
 
 ValueFormatter = Callable[[object], str]
 MetricSpec = tuple[str, str, ValueFormatter]
@@ -284,7 +293,10 @@ def _component_state(
     return component.status, component.message
 
 
-def _navigation(active_path: str) -> str:
+def _navigation(
+    active_path: str,
+    control_link: ControlNavigationLink | None,
+) -> str:
     links = []
     for page in PORTAL_PAGES:
         current = ' aria-current="page"' if page.path == active_path else ""
@@ -292,6 +304,10 @@ def _navigation(active_path: str) -> str:
             f'<li><a href="{_escape(page.path)}"{current}>'
             f"{_escape(page.navigation_label)}</a></li>"
         )
+    if control_link is ControlNavigationLink.LOGIN:
+        links.append('<li><a href="/login">Login</a></li>')
+    elif control_link is ControlNavigationLink.CONTROLS:
+        links.append('<li><a href="/controls">Controls</a></li>')
     return (
         '<nav class="primary-nav" aria-label="Primary navigation">'
         f"<ul>{''.join(links)}</ul></nav>"
@@ -443,7 +459,13 @@ def _page_content(report: HealthReport, path: str) -> str:
     return _preview(path)
 
 
-def render_portal(report: HealthReport, path: str, refresh_seconds: int) -> str:
+def render_portal(
+    report: HealthReport,
+    path: str,
+    refresh_seconds: int,
+    *,
+    control_link: ControlNavigationLink | None = None,
+) -> str:
     """Render one allowlisted portal route from a shared sanitized snapshot."""
     page = PORTAL_PAGE_BY_PATH[path]
     content = _page_content(report, path)
@@ -471,7 +493,7 @@ def render_portal(report: HealthReport, path: str, refresh_seconds: int) -> str:
           {_badge(report.status, label=f"Overall {report.status.value}")}
         </div>
       </div>
-      {_navigation(path)}
+      {_navigation(path, control_link)}
     </div>
   </header>
   <main id="main-content" tabindex="-1">

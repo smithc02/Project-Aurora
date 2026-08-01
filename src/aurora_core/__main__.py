@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from aurora_core.hardware.wled import validate_wled
 from aurora_core.runtime import build_runtime_plan
 from aurora_core.runtime.errors import AuroraRuntimeError
 from aurora_core.runtime.models import ComponentHealthState
+from aurora_core.security.passwords import PasswordHashError, hash_password
 
 APPLICATION_NAME = "Project Aurora"
 
@@ -46,6 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
     plan_parser.add_argument("--log-level", help="Override logging.level.")
+    security_parser = subparsers.add_parser(
+        "security", help="Local security utility commands."
+    )
+    security_subparsers = security_parser.add_subparsers(dest="security_command")
+    security_subparsers.add_parser(
+        "hash-password",
+        help="Prompt twice and print one versioned password hash.",
+    )
     hardware_parser = subparsers.add_parser(
         "hardware", help="Explicit hardware validation commands."
     )
@@ -440,6 +450,23 @@ def main() -> int:
         return 0
     if args.check:
         print(f"{APPLICATION_NAME} {__version__}: package startup check passed")
+        return 0
+    if args.command == "security" and args.security_command == "hash-password":
+        try:
+            password = getpass.getpass("Password: ")
+            confirmation = getpass.getpass("Confirm password: ")
+        except (EOFError, KeyboardInterrupt):
+            print("Password hashing was cancelled.", file=sys.stderr)
+            return 1
+        if password != confirmation:
+            print("Passwords did not match.", file=sys.stderr)
+            return 1
+        try:
+            encoded_hash = hash_password(password)
+        except PasswordHashError:
+            print("Password length is outside the supported range.", file=sys.stderr)
+            return 1
+        print(encoded_hash)
         return 0
     if (
         args.command == "hardware"

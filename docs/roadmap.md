@@ -36,10 +36,16 @@
     snapshot and retain `GET /api/health` schema version 1. Room Map and Spatial
     Intelligence are inactive previews only. See the
     [unified portal guide](unified-portal.md).
+14. **Milestone 14 (completed): Authenticated control-plane and mutation-safety
+    foundation.** Optional fail-closed local authentication, process-memory
+    sessions, CSRF-protected logout, bounded login attempts, sanitized audit
+    events, and an empty typed operation boundary protect status-only control
+    routes. Public health behavior and API schema version 1 remain unchanged;
+    no device controls exist. See the
+    [control-plane security guide](control-plane-security.md).
 
 ## Planned progression
 
-14. **Milestone 14: Authenticated control-plane and mutation-safety foundation.**
 15. **Milestone 15: Bounded WLED lighting controls.**
 16. **Milestone 16: Bounded HyperHDR controls.**
 17. **Milestone 17: Profiles, configuration backup, validation, and rollback.**
@@ -91,4 +97,4 @@ The following boundaries are mandatory for that future work:
 - Standard ambient operation must remain available as a fallback.
 
 No spatial-intelligence implementation, AI dependency, frame-analysis loop,
-room-zone output, or learning system exists in Milestone 13.
+room-zone output, or learning system exists in Milestone 14.
