@@ -2,12 +2,44 @@
 
 from __future__ import annotations
 
+import os
+from functools import cache
 from pathlib import Path
 
 import pytest
 
 from aurora_core.config import AuroraConfigurationError, deep_merge, load_settings
-from aurora_core.config.models import AuroraSettings
+from aurora_core.config.models import AuroraSettings, WLEDOperation
+from aurora_core.security.passwords import hash_password
+
+
+def _clear_aurora_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("AURORA_"):
+            monkeypatch.delenv(name, raising=False)
+
+
+def _write_enabled_wled_yaml(tmp_path: Path) -> Path:
+    path = tmp_path / "aurora.yaml"
+    path.write_text(
+        "wled:\n"
+        "  enabled: true\n"
+        "  host: yaml-device.invalid\n"
+        "  controls:\n"
+        "    enabled: false\n"
+        "    allowed_operations:\n"
+        "      - wled.power_off\n"
+        "    timeout_seconds: 1.0\n"
+        "    maximum_brightness: 64\n"
+        "    operation_limit: 2\n"
+        "    operation_window_seconds: 5\n"
+    )
+    return path
+
+
+@cache
+def _authentication_hash() -> str:
+    return hash_password("environment-test-password", salt=bytes(range(16)))
 
 
 def test_safe_defaults_load() -> None:
@@ -139,8 +171,14 @@ def test_deep_merge_does_not_mutate_inputs() -> None:
     assert override["wled"] == {"enabled": True}
 
 
-def test_settings_model_is_pydantic_settings_model() -> None:
-    assert AuroraSettings.model_config["env_prefix"] == "AURORA_"
+def test_settings_model_does_not_read_environment_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    monkeypatch.setenv("AURORA_LOGGING__LEVEL", "DEBUG")
+
+    assert AuroraSettings().logging.level == "INFO"
+    assert load_settings().logging.level == "DEBUG"
 
 
 def test_dashboard_and_expected_led_environment_values_are_validated() -> None:
@@ -158,3 +196,136 @@ def test_dashboard_and_expected_led_environment_values_are_validated() -> None:
     assert settings.dashboard.port == 9090
     assert settings.dashboard.refresh_seconds == 10
     assert settings.wled.expected_led_count == 8
+
+
+def test_real_environment_wled_allowlist_overrides_yaml(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    path = _write_enabled_wled_yaml(tmp_path)
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__ENABLED", "true")
+    monkeypatch.setenv(
+        "AURORA_WLED__CONTROLS__ALLOWED_OPERATIONS",
+        "wled.power_on,wled.power_off,wled.brightness_set",
+    )
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__TIMEOUT_SECONDS", "2.0")
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__MAXIMUM_BRIGHTNESS", "255")
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__OPERATION_LIMIT", "20")
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__OPERATION_WINDOW_SECONDS", "60")
+
+    settings = load_settings(config_path=path)
+
+    assert settings.wled.controls.enabled
+    assert settings.wled.controls.allowed_operations == (
+        WLEDOperation.POWER_ON,
+        WLEDOperation.POWER_OFF,
+        WLEDOperation.BRIGHTNESS_SET,
+    )
+    assert settings.wled.controls.timeout_seconds == 2.0
+    assert settings.wled.controls.maximum_brightness == 255
+    assert settings.wled.controls.operation_limit == 20
+    assert settings.wled.controls.operation_window_seconds == 60
+
+
+def test_real_environment_empty_wled_allowlist_is_empty_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    path = _write_enabled_wled_yaml(tmp_path)
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__ALLOWED_OPERATIONS", "")
+
+    settings = load_settings(config_path=path)
+
+    assert settings.wled.controls.allowed_operations == ()
+
+
+@pytest.mark.parametrize(
+    "allowlist",
+    (
+        "wled.unknown",
+        "wled.power_on,wled.power_on",
+        "wled.power_on,,wled.power_off",
+        "wled.power_on, ,wled.power_off",
+    ),
+)
+def test_real_environment_invalid_wled_allowlists_fail_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    allowlist: str,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    path = _write_enabled_wled_yaml(tmp_path)
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__ALLOWED_OPERATIONS", allowlist)
+
+    with pytest.raises(AuroraConfigurationError):
+        load_settings(config_path=path)
+
+
+def test_real_dashboard_authentication_environment_is_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    monkeypatch.setenv("AURORA_DASHBOARD__AUTHENTICATION__ENABLED", "true")
+    monkeypatch.setenv(
+        "AURORA_DASHBOARD__AUTHENTICATION__USERNAME", "environment_operator"
+    )
+    monkeypatch.setenv(
+        "AURORA_DASHBOARD__AUTHENTICATION__PASSWORD_HASH", _authentication_hash()
+    )
+
+    settings = load_settings()
+
+    assert settings.dashboard.authentication.enabled
+    assert settings.dashboard.authentication.username == "environment_operator"
+    assert settings.dashboard.authentication.password_hash is not None
+
+
+def test_yaml_only_wled_allowlist_still_loads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    path = _write_enabled_wled_yaml(tmp_path)
+
+    settings = load_settings(config_path=path)
+
+    assert settings.wled.controls.allowed_operations == (WLEDOperation.POWER_OFF,)
+    assert settings.wled.controls.maximum_brightness == 64
+
+
+def test_cli_overrides_real_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    path = _write_enabled_wled_yaml(tmp_path)
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__MAXIMUM_BRIGHTNESS", "200")
+
+    settings = load_settings(
+        config_path=path,
+        cli_overrides={"wled": {"controls": {"maximum_brightness": 128}}},
+    )
+
+    assert settings.wled.controls.maximum_brightness == 128
+
+
+def test_real_environment_validation_errors_do_not_echo_values_or_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_aurora_environment(monkeypatch)
+    path = _write_enabled_wled_yaml(tmp_path)
+    malformed_allowlist = "private-operation-canary,wled.power_off"
+    secret = "private-environment-secret-canary"
+    monkeypatch.setenv("AURORA_WLED__CONTROLS__ALLOWED_OPERATIONS", malformed_allowlist)
+    monkeypatch.setenv("AURORA_MQTT__PASSWORD", secret)
+
+    with pytest.raises(AuroraConfigurationError) as error:
+        load_settings(config_path=path)
+
+    message = str(error.value)
+    assert malformed_allowlist not in message
+    assert "private-operation-canary" not in message
+    assert secret not in message

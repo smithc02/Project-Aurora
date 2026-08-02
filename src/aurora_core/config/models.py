@@ -14,7 +14,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aurora_core.security.passwords import PasswordHashError, validate_password_hash
 
@@ -276,14 +275,8 @@ class MQTTSettings(EndpointSettings):
     password: SecretStr | None = None
 
 
-class AuroraSettings(BaseSettings):
+class AuroraSettings(AuroraModel):
     """Complete validated Aurora configuration with safe, disabled defaults."""
-
-    model_config = SettingsConfigDict(
-        extra="forbid",
-        env_prefix="AURORA_",
-        env_nested_delimiter="__",
-    )
 
     application: ApplicationSettings = Field(default_factory=ApplicationSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)

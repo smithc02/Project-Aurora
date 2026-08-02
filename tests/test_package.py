@@ -1,5 +1,7 @@
 """Tests for the minimal Aurora package scaffold."""
 
+import os
+
 from aurora_core import __version__
 from aurora_core.__main__ import APPLICATION_NAME, main
 
@@ -47,6 +49,34 @@ def test_config_validate_error_does_not_expose_password(
     )
     assert main() == 1
     assert "not-a-real-secret" not in capsys.readouterr().err
+
+
+def test_config_validate_uses_real_wled_control_environment(
+    monkeypatch, capsys, tmp_path
+) -> None:  # type: ignore[no-untyped-def]
+    for name in tuple(os.environ):
+        if name.startswith("AURORA_"):
+            monkeypatch.delenv(name, raising=False)
+    path = tmp_path / "aurora.yaml"
+    path.write_text("wled:\n  enabled: true\n  host: device.invalid\n")
+    environment = {
+        "AURORA_WLED__CONTROLS__ENABLED": "true",
+        "AURORA_WLED__CONTROLS__ALLOWED_OPERATIONS": (
+            "wled.power_on,wled.power_off,wled.brightness_set"
+        ),
+        "AURORA_WLED__CONTROLS__TIMEOUT_SECONDS": "2.0",
+        "AURORA_WLED__CONTROLS__MAXIMUM_BRIGHTNESS": "255",
+        "AURORA_WLED__CONTROLS__OPERATION_LIMIT": "20",
+        "AURORA_WLED__CONTROLS__OPERATION_WINDOW_SECONDS": "60",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        "sys.argv", ["aurora", "config", "validate", "--config", str(path)]
+    )
+
+    assert main() == 0
+    assert "Configuration is valid" in capsys.readouterr().out
 
 
 def test_runtime_plan_is_sanitized_and_uses_environment(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]

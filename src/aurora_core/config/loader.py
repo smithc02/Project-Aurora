@@ -172,8 +172,6 @@ def load_settings(
     if cli_overrides is not None:
         merged = deep_merge(merged, cli_overrides)
     try:
-        # model_validate deliberately validates only our merged sources. BaseSettings'
-        # constructor source order would otherwise put YAML init values above env.
         return AuroraSettings.model_validate(merged)
     except ValidationError as error:
         raise ConfigurationValidationError(_safe_validation_message(error)) from error
