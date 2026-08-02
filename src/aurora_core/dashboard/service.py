@@ -55,21 +55,25 @@ class HealthService:
         self._collectors = collectors
         self._clock = clock
         self._started_at = clock()
-        self._lock = Lock()
+        self._collection_lock = Lock()
+        self._state_lock = Lock()
         self._cached_report: HealthReport | None = None
         self._cached_at: float | None = None
+        self._invalidation_generation = 0
         self._last_successes: dict[str, str] = {}
 
     def get_health(self) -> HealthReport:
         """Return a recent snapshot, collecting at most one at a time."""
-        with self._lock:
+        with self._collection_lock:
             now = self._clock()
-            if (
-                self._cached_report is not None
-                and self._cached_at is not None
-                and now - self._cached_at < self._settings.dashboard.refresh_seconds
-            ):
-                return self._cached_report
+            with self._state_lock:
+                if (
+                    self._cached_report is not None
+                    and self._cached_at is not None
+                    and now - self._cached_at < self._settings.dashboard.refresh_seconds
+                ):
+                    return self._cached_report
+                collection_generation = self._invalidation_generation
 
             report = collect_health(
                 self._settings,
@@ -84,9 +88,18 @@ class HealthService:
                 status=overall_status(components),
                 components=components,
             )
-            self._cached_report = report
-            self._cached_at = self._clock()
+            with self._state_lock:
+                if collection_generation == self._invalidation_generation:
+                    self._cached_report = report
+                    self._cached_at = self._clock()
             return report
+
+    def invalidate(self) -> None:
+        """Discard the cache without polling or waiting for an active sweep."""
+        with self._state_lock:
+            self._invalidation_generation += 1
+            self._cached_report = None
+            self._cached_at = None
 
     def _with_last_success(self, component: ComponentHealth) -> ComponentHealth:
         if component.last_successful_at is not None:

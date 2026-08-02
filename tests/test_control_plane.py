@@ -598,7 +598,7 @@ def test_authenticated_controls_and_status_are_sanitized_and_hardware_free() -> 
     assert b"test_operator" in page
     assert b"Mutations enabled" in page and b">No<" in page
     assert b"Available operations" in page and b">None<" in page
-    assert b"No controls are active" in page
+    assert b"Strict control boundary" in page
     assert b"WLED" in page and b"HyperHDR" in page
     session_token = _cookie_value(login_headers["Set-Cookie"])
     assert session_token.encode() not in page

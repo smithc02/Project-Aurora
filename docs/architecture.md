@@ -238,17 +238,54 @@ contain only opaque random identifiers while the server retains identifier
 digests, the bounded operator name, expiration metadata, and a per-session CSRF
 token. Session and login-attempt state is memory-only and disappears on restart.
 
-`POST /login` and CSRF-protected `POST /logout` are the only accepted POST
-routes. Strict media type, length, body-size, encoding, field, and redirect
+At Milestone 14, `POST /login` and CSRF-protected `POST /logout` were the only
+accepted POST routes. Strict media type, length, body-size, encoding, field, and redirect
 allowlists precede credential or CSRF processing. Protected HTML requests use a
 login redirect, while protected API requests fail with JSON `401`. Fixed,
 sanitized audit events record security outcomes without raw request, credential,
 cookie, token, client, endpoint, or exception data.
 
-The control capability contract reports mutations disabled and registers no
-operations or executor. Non-executable metadata documents the required typed
+Milestone 14's control capability contract reported mutations disabled and
+registered no operations or executor. Non-executable metadata documented the required typed
 input, explicit timeout, allowlisted adapter, audit, CSRF, and confirmation
 boundaries for later separately reviewed operations. It cannot forward an
 arbitrary URL, API path, JSON object, shell command, or device payload. No
 device-control capability exists in Milestone 14. See the
 [control-plane security guide](control-plane-security.md).
+
+## Bounded WLED control boundary (Milestone 15)
+
+Milestone 15 extends the protected control plane with exactly three code-owned
+contracts: `wled.power_on`, `wled.power_off`, and `wled.brightness_set`.
+Effective capabilities are the deterministic intersection of those contracts,
+dashboard authentication, the separately enabled WLED control configuration,
+and the configured operation allowlist. Existing configurations therefore stay
+read-only.
+
+The browser selects only one fixed route and route-specific form fields. It
+cannot supply an operation identifier, destination, method, API path, headers,
+or JSON object. Authentication and per-session CSRF validation precede strict
+typed input validation. Power-off also requires fixed, separate confirmation.
+The brightness model accepts only an absolute integer from 1 through the
+configured maximum and never changes power implicitly.
+
+A dedicated synchronous adapter generates one fixed-shape JSON payload and
+performs exactly one POST to WLED's fixed `/json/state` resource. Redirects are
+rejected, the response is bounded, the timeout is finite, and no retry or
+automatic rollback occurs. The returned direct state object must contain the
+requested Boolean power state or exact integer brightness before success is
+verified. All failures become fixed sanitized reason codes.
+
+A nonblocking lock permits at most one WLED mutation at a time, and a separate
+bounded monotonic limiter restricts attempts without storing raw client
+identifiers. Only verified success invalidates the existing `HealthService`
+cache. Generation-aware invalidation itself performs no poll and preserves the
+single-flight collector guarantee even when a health sweep is active. Protected
+WLED presentation uses that same snapshot rather than a second read path.
+
+Audit events contain only a fixed event, fixed reason, schema version, and
+allowlisted operation identifier. No brightness, state, endpoint, body,
+response, credential, cookie, session, CSRF token, client identifier, or raw
+exception is recorded. The public portal and `GET /api/health` remain read-only
+and retain health schema version 1. See the
+[bounded WLED control guide](wled-controls.md).

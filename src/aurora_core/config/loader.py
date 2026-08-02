@@ -20,7 +20,8 @@ from aurora_core.config.models import AuroraSettings
 ConfigMapping = Mapping[str, Any]
 
 _ENVIRONMENT_FIELDS: dict[
-    tuple[str, ...], type[bool] | type[int] | type[float] | type[str]
+    tuple[str, ...],
+    type[bool] | type[int] | type[float] | type[str] | type[tuple[str, ...]],
 ] = {
     ("application", "name"): str,
     ("application", "configuration_profile"): str,
@@ -37,6 +38,12 @@ _ENVIRONMENT_FIELDS: dict[
     ("wled", "expected_led_count"): int,
     ("wled", "expected_active_led_count"): int,
     ("wled", "expected_skipped_leds"): int,
+    ("wled", "controls", "enabled"): bool,
+    ("wled", "controls", "allowed_operations"): tuple,
+    ("wled", "controls", "timeout_seconds"): float,
+    ("wled", "controls", "maximum_brightness"): int,
+    ("wled", "controls", "operation_limit"): int,
+    ("wled", "controls", "operation_window_seconds"): int,
     ("ddp", "enabled"): bool,
     ("ddp", "host"): str,
     ("ddp", "port"): int,
@@ -137,6 +144,10 @@ def _parse_environment_value(variable: str, value: str, target_type: type[Any]) 
             raise ConfigurationValidationError(
                 f"Invalid integer value for environment variable {variable}"
             ) from error
+    if target_type is tuple:
+        if not value.strip():
+            return ()
+        return tuple(part.strip() for part in value.split(","))
     normalized = value.strip().lower()
     if normalized in {"1", "true", "yes", "on"}:
         return True
@@ -161,8 +172,6 @@ def load_settings(
     if cli_overrides is not None:
         merged = deep_merge(merged, cli_overrides)
     try:
-        # model_validate deliberately validates only our merged sources. BaseSettings'
-        # constructor source order would otherwise put YAML init values above env.
         return AuroraSettings.model_validate(merged)
     except ValidationError as error:
         raise ConfigurationValidationError(_safe_validation_message(error)) from error

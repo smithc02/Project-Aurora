@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import socket
 import sys
 from collections.abc import Mapping
@@ -14,9 +15,9 @@ from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
 from aurora_core.config import AuroraConfigurationError, load_settings
-from aurora_core.config.models import AuroraSettings
+from aurora_core.config.models import AuroraSettings, WLEDOperation
 from aurora_core.control_plane.audit import AuditReason
-from aurora_core.control_plane.contracts import CONTROL_CAPABILITIES
+from aurora_core.control_plane.contracts import ControlCapabilities
 from aurora_core.control_plane.cookies import (
     cleared_session_cookie,
     read_session_cookie,
@@ -25,14 +26,25 @@ from aurora_core.control_plane.cookies import (
 from aurora_core.control_plane.forms import (
     LOGIN_BODY_LIMIT,
     LOGOUT_BODY_LIMIT,
+    WLED_CONTROL_BODY_LIMIT,
     FormError,
     parse_form,
     safe_next_path,
     validate_form_headers,
 )
-from aurora_core.control_plane.rendering import render_controls, render_login
+from aurora_core.control_plane.rendering import (
+    render_controls,
+    render_login,
+    render_wled_controls,
+)
 from aurora_core.control_plane.service import ControlPlaneService, LoginStatus
 from aurora_core.control_plane.sessions import SessionContext
+from aurora_core.control_plane.wled_service import (
+    WLEDControlAvailability,
+    WLEDControlResult,
+    WLEDControlService,
+    WLEDControlStatus,
+)
 from aurora_core.dashboard.assets import PORTAL_CSS, PORTAL_CSS_PATH
 from aurora_core.dashboard.models import HealthReport
 from aurora_core.dashboard.portal import (
@@ -41,6 +53,36 @@ from aurora_core.dashboard.portal import (
     render_portal,
 )
 from aurora_core.dashboard.service import HealthService
+
+_BRIGHTNESS_FORM_VALUE = re.compile(r"[1-9][0-9]{0,2}")
+_WLED_POST_OPERATIONS = {
+    "/controls/wled/power-on": WLEDOperation.POWER_ON,
+    "/controls/wled/power-off": WLEDOperation.POWER_OFF,
+    "/controls/wled/brightness": WLEDOperation.BRIGHTNESS_SET,
+}
+_WLED_NOTICE_VALUES = frozenset(
+    {"verified", "denied", "invalid", "rate_limited", "busy", "failed", "unverified"}
+)
+
+
+def _parse_brightness(value: str | None) -> int | None:
+    if value is None or _BRIGHTNESS_FORM_VALUE.fullmatch(value) is None:
+        return None
+    parsed = int(value)
+    return parsed if 1 <= parsed <= 255 else None
+
+
+def _result_notice(result: WLEDControlResult) -> str:
+    if result.reason is AuditReason.INVALID_BRIGHTNESS:
+        return "invalid"
+    return {
+        WLEDControlStatus.VERIFIED: "verified",
+        WLEDControlStatus.DENIED: "denied",
+        WLEDControlStatus.RATE_LIMITED: "rate_limited",
+        WLEDControlStatus.BUSY: "busy",
+        WLEDControlStatus.FAILED: "failed",
+        WLEDControlStatus.UNVERIFIED: "unverified",
+    }[result.status]
 
 
 def _render_page(report: HealthReport, refresh_seconds: int) -> str:
@@ -60,10 +102,12 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         service: HealthService,
         refresh_seconds: int,
         control_plane: ControlPlaneService,
+        wled_controls: WLEDControlService,
     ) -> None:
         self.health_service = service
         self.refresh_seconds = refresh_seconds
         self.control_plane = control_plane
+        self.wled_controls = wled_controls
         super().__init__(server_address, DashboardHandler)
 
 
@@ -109,6 +153,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlsplit(self.path).path
+        if path in _WLED_POST_OPERATIONS:
+            self._method_not_allowed()
+            return
         if path == PORTAL_CSS_PATH:
             self._send(PORTAL_CSS, "text/css; charset=utf-8")
             return
@@ -117,6 +164,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/controls":
             self._get_controls()
+            return
+        if path == "/controls/wled":
+            self._get_wled_controls()
             return
         if path == "/api/control/status":
             self._get_control_status()
@@ -182,8 +232,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             control.audit_page_denied()
             self._redirect("/login?next=%2Fcontrols")
             return
+        wled = self._wled_control_plane()
         self._send(
-            render_controls(session).encode(),
+            render_controls(
+                session,
+                capabilities=(
+                    ControlCapabilities() if wled is None else wled.capabilities()
+                ),
+                wled_availability=(
+                    WLEDControlAvailability.CONTROLS_DISABLED
+                    if wled is None
+                    else wled.availability
+                ),
+            ).encode(),
+            "text/html; charset=utf-8",
+        )
+
+    def _get_wled_controls(self) -> None:
+        control = self._control_plane()
+        wled = self._wled_control_plane()
+        if control is None or not control.authentication_enabled or wled is None:
+            if control is not None:
+                control.audit_page_denied(AuditReason.AUTHENTICATION_DISABLED)
+            self._control_unavailable(html=True)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            control.audit_page_denied()
+            self._redirect("/login?next=%2Fcontrols%2Fwled")
+            return
+        server = cast(DashboardHTTPServer, self.server)
+        report = server.health_service.get_health()
+        component = next(
+            (item for item in report.components if item.name == "wled"),
+            None,
+        )
+        self._send(
+            render_wled_controls(
+                session,
+                component=component,
+                availability=wled.availability,
+                operations=wled.available_operations,
+                maximum_brightness=wled.maximum_brightness,
+                notice=self._wled_notice(),
+            ).encode(),
             "text/html; charset=utf-8",
         )
 
@@ -206,14 +298,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 HTTPStatus.UNAUTHORIZED,
             )
             return
-        self._send_json(CONTROL_CAPABILITIES.to_dict())
+        wled = self._wled_control_plane()
+        capabilities = ControlCapabilities() if wled is None else wled.capabilities()
+        self._send_json(capabilities.to_dict())
 
     def _method_not_allowed(self) -> None:
         self.close_connection = True
         path = urlsplit(getattr(self, "path", "")).path
         if path == "/login":
             allowed = "GET, POST"
-        elif path == "/logout":
+        elif path == "/logout" or path in _WLED_POST_OPERATIONS:
             allowed = "POST"
         else:
             allowed = "GET"
@@ -232,7 +326,83 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/logout":
             self._post_logout()
             return
+        operation = _WLED_POST_OPERATIONS.get(path)
+        if operation is not None:
+            self._post_wled_operation(operation)
+            return
         self._method_not_allowed()
+
+    def _post_wled_operation(self, operation: WLEDOperation) -> None:
+        control = self._control_plane()
+        wled = self._wled_control_plane()
+        if control is None or not control.authentication_enabled or wled is None:
+            if wled is not None:
+                wled.audit_denied(operation, AuditReason.AUTHENTICATION_DISABLED)
+            self.close_connection = True
+            self._control_unavailable(html=True)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            wled.audit_denied(operation, AuditReason.AUTHENTICATION_REQUIRED)
+            self._redirect("/login?next=%2Fcontrols%2Fwled")
+            return
+
+        allowed_fields = {"csrf_token"}
+        if operation is WLEDOperation.POWER_OFF:
+            allowed_fields.add("confirmation")
+        elif operation is WLEDOperation.BRIGHTNESS_SET:
+            allowed_fields.add("brightness")
+        fields, error = self._read_form(
+            maximum_body_bytes=WLED_CONTROL_BODY_LIMIT,
+            allowed_fields=frozenset(allowed_fields),
+        )
+        if error is not None or fields is None:
+            active_error = error or FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+            wled.audit_denied(operation, active_error.reason)
+            self._send(
+                b"Unable to process the WLED operation request.\n",
+                "text/plain; charset=utf-8",
+                active_error.status,
+            )
+            return
+
+        csrf_token = fields.get("csrf_token")
+        client_identifier = self._client_identifier()
+        if operation is WLEDOperation.POWER_ON:
+            result = wled.power_on(session, csrf_token, client_identifier)
+        elif operation is WLEDOperation.POWER_OFF:
+            result = wled.power_off(
+                session,
+                csrf_token,
+                fields.get("confirmation"),
+                client_identifier,
+            )
+        else:
+            brightness = _parse_brightness(fields.get("brightness"))
+            if brightness is None:
+                security_failure = wled.request_security_failure(
+                    operation,
+                    session,
+                    csrf_token,
+                )
+                if security_failure is not None:
+                    self._redirect(
+                        f"/controls/wled?notice={_result_notice(security_failure)}"
+                    )
+                    return
+                wled.audit_denied(operation, AuditReason.INVALID_BRIGHTNESS)
+                self._redirect("/controls/wled?notice=invalid")
+                return
+            result = wled.set_brightness(
+                session,
+                csrf_token,
+                brightness,
+                client_identifier,
+            )
+        self._redirect(f"/controls/wled?notice={_result_notice(result)}")
 
     def _post_login(self) -> None:
         control = self._control_plane()
@@ -367,6 +537,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _control_plane(self) -> ControlPlaneService | None:
         return getattr(self.server, "control_plane", None)
 
+    def _wled_control_plane(self) -> WLEDControlService | None:
+        return getattr(self.server, "wled_controls", None)
+
     def _portal_control_link(self) -> ControlNavigationLink | None:
         control = self._control_plane()
         if control is None or not control.authentication_enabled:
@@ -435,6 +608,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         values = query.get("next")
         candidate = values[0] if values is not None and len(values) == 1 else None
         return safe_next_path(candidate)
+
+    def _wled_notice(self) -> str | None:
+        try:
+            query = parse_qs(
+                urlsplit(self.path).query,
+                keep_blank_values=True,
+                max_num_fields=2,
+            )
+        except ValueError:
+            return None
+        values = query.get("notice")
+        if values is None or len(values) != 1 or values[0] not in _WLED_NOTICE_VALUES:
+            return None
+        return values[0]
 
     def _client_identifier(self) -> str:
         address = getattr(self, "client_address", None)
@@ -542,6 +729,7 @@ def build_server(
     *,
     service: HealthService | None = None,
     control_plane: ControlPlaneService | None = None,
+    wled_controls: WLEDControlService | None = None,
     port: int | None = None,
 ) -> DashboardHTTPServer:
     """Build a server without starting its request loop."""
@@ -550,6 +738,15 @@ def build_server(
         ControlPlaneService(settings.dashboard.authentication)
         if control_plane is None
         else control_plane
+    )
+    active_wled_controls = (
+        WLEDControlService(
+            settings.wled,
+            authentication_enabled=active_control_plane.authentication_enabled,
+            cache_invalidator=active_service.invalidate,
+        )
+        if wled_controls is None
+        else wled_controls
     )
     address = (
         settings.dashboard.bind_host,
@@ -565,6 +762,7 @@ def build_server(
         active_service,
         settings.dashboard.refresh_seconds,
         active_control_plane,
+        active_wled_controls,
     )
 
 

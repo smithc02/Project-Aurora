@@ -241,13 +241,16 @@ def test_detail_pages_render_requested_sanitized_fields(
 
 
 def test_control_pages_explicitly_defer_controls_and_have_no_inputs() -> None:
-    for path in ("/wled", "/hyperhdr"):
-        page = render_portal(_report(), path, 5)
-        assert "Controls planned for a future milestone" in page
-        assert "Planned · Not active" in page
+    wled = render_portal(_report(), "/wled", 5)
+    assert "Controls require the protected control plane" in wled
+    assert "Protected · separately enabled" in wled
+    hyperhdr = render_portal(_report(), "/hyperhdr", 5)
+    assert "Controls planned for a future milestone" in hyperhdr
+    for page in (wled, hyperhdr):
         assert "<button" not in page
         assert "<form" not in page
         assert "<input" not in page
+    assert "Planned · Not active" in hyperhdr
 
 
 @pytest.mark.parametrize("path", ("/room-map", "/spatial-intelligence"))

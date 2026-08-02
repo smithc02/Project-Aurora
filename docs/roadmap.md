@@ -43,10 +43,16 @@
     routes. Public health behavior and API schema version 1 remain unchanged;
     no device controls exist. See the
     [control-plane security guide](control-plane-security.md).
+15. **Milestone 15 (completed): Bounded WLED lighting controls.** Exactly three
+    authenticated, CSRF-protected, separately enabled and allowlisted operations
+    provide power on, confirmed power off, and bounded absolute brightness.
+    Fixed payloads, response verification, nonblocking serialization, attempt
+    limiting, sanitized audit events, and verified-success cache invalidation
+    preserve the public health API. See the
+    [bounded WLED control guide](wled-controls.md).
 
 ## Planned progression
 
-15. **Milestone 15: Bounded WLED lighting controls.**
 16. **Milestone 16: Bounded HyperHDR controls.**
 17. **Milestone 17: Profiles, configuration backup, validation, and rollback.**
 18. **Milestone 18: Persistent health history, alerting, and automation.**
@@ -97,4 +103,4 @@ The following boundaries are mandatory for that future work:
 - Standard ambient operation must remain available as a fallback.
 
 No spatial-intelligence implementation, AI dependency, frame-analysis loop,
-room-zone output, or learning system exists in Milestone 14.
+room-zone output, or learning system exists in Milestone 15.

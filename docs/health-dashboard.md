@@ -89,10 +89,25 @@ Milestone 14 preserves the original health collectors, single-flight cache,
 portal routes, command, and `GET /api/health` schema version 1. It adds optional
 authentication only for `/controls` and `/api/control/status`, plus login and
 logout routes. Those requests do not poll health or contact hardware, and no
-control operation is registered. Authentication is disabled by default; in
+control operation was registered in Milestone 14. Authentication is disabled by default; in
 that state the protected routes fail closed rather than becoming public. See the
 [control-plane security guide](control-plane-security.md) for configuration and
 deployment.
+
+## Milestone 15 WLED control separation
+
+Milestone 15 leaves every public health route and health field read-only. It
+adds a separate authenticated `/controls/wled` page and three fixed mutation
+routes under the protected control plane. The protected WLED page displays the
+same cached WLED component; opening it creates no direct device read.
+
+Only verified mutation success invalidates the existing cache. Invalidation
+does not poll, and generation tracking ensures an active single-flight sweep is
+not accidentally cached across a verified state change. The next health request
+performs one fresh bounded sweep. Failed, denied, limited, busy, malformed, and
+unverified operations do not invalidate. `GET /api/health` remains schema
+version 1 with unchanged fields and meanings. See the
+[bounded WLED control guide](wled-controls.md).
 
 ## Bounded checks
 
@@ -177,6 +192,6 @@ unit itself.
 - Health history is limited to the in-process last-success timestamp. There is
   no metrics database, alerting, automatic recovery, or multi-zone control.
 - The public health dashboard is intentionally read-only and unauthenticated.
-  Milestone 14 authentication protects only its separate status-only control
-  boundary. Put any remote access behind separately managed authentication and
-  TLS if it is ever needed.
+  Milestone 14 authentication and Milestone 15's optional WLED operations exist
+  only in the separate protected control boundary. Put any remote access behind
+  separately managed authentication and TLS if it is ever needed.

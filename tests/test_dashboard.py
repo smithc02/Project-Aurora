@@ -556,6 +556,35 @@ def test_health_service_caches_single_flight_and_retains_last_success() -> None:
     assert offline.components[0].last_successful_at == "2026-01-01T00:00:00+00:00"
 
 
+def test_cache_invalidation_is_poll_free_and_safe_during_single_flight() -> None:
+    calls = [0]
+    started = threading.Event()
+    release = threading.Event()
+
+    def collect() -> ComponentHealth:
+        calls[0] += 1
+        if calls[0] == 1:
+            started.set()
+            assert release.wait(timeout=1)
+        return _component("wled", HealthStatus.HEALTHY)
+
+    service = HealthService(
+        _settings(dashboard={"refresh_seconds": 30}),
+        (CollectorSpec("wled", collect),),
+        clock=lambda: 0.0,
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        active = pool.submit(service.get_health)
+        assert started.wait(timeout=1)
+        invalidation = pool.submit(service.invalidate)
+        invalidation.result(timeout=0.2)
+        assert calls[0] == 1
+        release.set()
+        active.result(timeout=1)
+    service.get_health()
+    assert calls[0] == 2
+
+
 def test_http_api_and_page_remain_available_during_partial_failure() -> None:
     service = HealthService(
         _settings(),
