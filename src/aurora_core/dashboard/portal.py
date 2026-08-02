@@ -355,6 +355,7 @@ def _detail_panel(
     *,
     future_title: str | None = None,
     future_text: str | None = None,
+    future_label: str = "Planned · Not active",
     extra: tuple[tuple[str, str], ...] = (),
 ) -> str:
     component = _component(report, presentation.name)
@@ -363,7 +364,7 @@ def _detail_panel(
     if future_title is not None and future_text is not None:
         future = f"""
 <aside class="panel future-note" aria-labelledby="future-heading">
-  <span class="future-label">Planned · Not active</span>
+  <span class="future-label">{_escape(future_label)}</span>
   <h2 id="future-heading">{_escape(future_title)}</h2>
   <p>{_escape(future_text)}</p>
 </aside>"""
@@ -424,11 +425,13 @@ def _page_content(report: HealthReport, path: str) -> str:
         return _detail_panel(
             report,
             COMPONENT_BY_NAME["wled"],
-            future_title="Controls planned for a future milestone",
+            future_title="Controls require the protected control plane",
             future_text=(
-                "This page has no buttons, forms, configuration access, or "
-                "state-changing WLED requests."
+                "This public status page remains read-only. Milestone 15 exposes only "
+                "separately enabled, authenticated, allowlisted WLED operations under "
+                "the protected Controls area."
             ),
+            future_label="Protected · separately enabled",
         )
     if path == "/hyperhdr":
         return _detail_panel(

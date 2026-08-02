@@ -32,6 +32,10 @@ SessionTTLMinutes = Annotated[int, Field(ge=5, le=1440, strict=True)]
 MaximumSessions = Annotated[int, Field(ge=1, le=64, strict=True)]
 LoginAttemptLimit = Annotated[int, Field(ge=1, le=20, strict=True)]
 LoginAttemptWindow = Annotated[int, Field(ge=30, le=3600, strict=True)]
+WLEDControlTimeout = Annotated[float, Field(ge=0.1, le=5.0, strict=True)]
+WLEDMaximumBrightness = Annotated[int, Field(ge=1, le=255, strict=True)]
+WLEDOperationLimit = Annotated[int, Field(ge=1, le=120, strict=True)]
+WLEDOperationWindow = Annotated[int, Field(ge=1, le=3600, strict=True)]
 
 
 class LoggingLevel(StrEnum):
@@ -42,6 +46,14 @@ class LoggingLevel(StrEnum):
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
+
+
+class WLEDOperation(StrEnum):
+    """The complete Milestone 15 WLED mutation allowlist."""
+
+    POWER_ON = "wled.power_on"
+    POWER_OFF = "wled.power_off"
+    BRIGHTNESS_SET = "wled.brightness_set"
 
 
 class AuroraModel(BaseModel):
@@ -87,16 +99,44 @@ class HyperHDRSettings(EndpointSettings):
     validation_timeout_seconds: ValidationTimeout = 2.0
 
 
+class WLEDControlSettings(AuroraModel):
+    """Fail-closed settings for the bounded WLED mutation adapter."""
+
+    enabled: StrictBoolean = False
+    allowed_operations: tuple[WLEDOperation, ...] = ()
+    timeout_seconds: WLEDControlTimeout = 2.0
+    maximum_brightness: WLEDMaximumBrightness = 255
+    operation_limit: WLEDOperationLimit = 20
+    operation_window_seconds: WLEDOperationWindow = 60
+
+    @field_validator("allowed_operations", mode="before")
+    @classmethod
+    def operation_allowlist_is_unique(cls, value: object) -> object:
+        if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+            raise ValueError(
+                "allowed_operations must be a list of operation identifiers"
+            )
+        if len(value) != len(set(value)):
+            raise ValueError("allowed_operations must not contain duplicates")
+        return value
+
+
 class WLEDSettings(EndpointSettings):
-    """WLED configuration for explicit, read-only information validation only."""
+    """WLED health and separately activated bounded-control configuration."""
 
     validation_timeout_seconds: ValidationTimeout = 2.0
     expected_led_count: PositiveInteger | None = None
     expected_active_led_count: PositiveInteger | None = None
     expected_skipped_leds: NonNegativeInteger | None = None
+    controls: WLEDControlSettings = Field(default_factory=WLEDControlSettings)
 
     @model_validator(mode="after")
     def expected_led_counts_are_consistent(self) -> WLEDSettings:
+        if self.controls.enabled and (not self.enabled or self.host is None):
+            raise ValueError(
+                "WLED must be enabled with a validated host before controls can be "
+                "enabled"
+            )
         if (
             self.expected_led_count is not None
             and self.expected_active_led_count is not None

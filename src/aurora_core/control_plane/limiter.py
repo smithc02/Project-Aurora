@@ -110,3 +110,7 @@ class LoginAttemptLimiter:
             digest_size=16,
             key=self._digest_key,
         ).digest()
+
+
+class MutationAttemptLimiter(LoginAttemptLimiter):
+    """A separately instantiated bounded limiter for WLED mutation attempts."""

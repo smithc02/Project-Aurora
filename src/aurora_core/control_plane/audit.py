@@ -7,6 +7,8 @@ from enum import StrEnum
 
 import structlog
 
+from aurora_core.config.models import WLEDOperation
+
 
 class AuditEvent(StrEnum):
     """Fixed security event identifiers safe for structured logs."""
@@ -20,6 +22,13 @@ class AuditEvent(StrEnum):
     CSRF_REJECTED = "csrf_rejected"
     AUTHENTICATION_REQUEST_REJECTED = "authentication_request_rejected"
     SESSION_REJECTED = "session_rejected"
+    WLED_OPERATION_SUCCEEDED = "wled_operation_succeeded"
+    WLED_OPERATION_FAILED = "wled_operation_failed"
+    WLED_OPERATION_DENIED = "wled_operation_denied"
+    WLED_OPERATION_RATE_LIMITED = "wled_operation_rate_limited"
+    WLED_OPERATION_BUSY = "wled_operation_busy"
+    WLED_CONFIRMATION_REJECTED = "wled_confirmation_rejected"
+    WLED_STATE_VERIFICATION_FAILED = "wled_state_verification_failed"
 
 
 class AuditReason(StrEnum):
@@ -41,6 +50,22 @@ class AuditReason(StrEnum):
     BODY_TOO_LARGE = "body_too_large"
     TRANSFER_ENCODING = "unsupported_transfer_encoding"
     MALFORMED_FORM = "malformed_form"
+    CONTROLS_DISABLED = "controls_disabled"
+    OPERATION_NOT_ALLOWLISTED = "operation_not_allowlisted"
+    INVALID_BRIGHTNESS = "invalid_brightness"
+    MISSING_CONFIRMATION = "missing_confirmation"
+    INVALID_CONFIRMATION = "invalid_confirmation"
+    OPERATION_LIMIT = "operation_limit"
+    OPERATION_IN_PROGRESS = "operation_in_progress"
+    CONNECTION_FAILURE = "connection_failure"
+    TIMEOUT = "timeout"
+    HTTP_REJECTION = "http_rejection"
+    REDIRECT_REJECTION = "redirect_rejection"
+    OVERSIZED_RESPONSE = "oversized_response"
+    MALFORMED_JSON = "malformed_json"
+    MISSING_EXPECTED_STATE = "missing_expected_state"
+    STATE_VERIFICATION_MISMATCH = "state_verification_mismatch"
+    VERIFIED = "verified"
 
 
 AuditFields = Mapping[str, str | int]
@@ -64,5 +89,22 @@ class SecurityAudit:
                 "schema_version": 1,
                 "security_event": event.value,
                 "reason_code": reason.value,
+            },
+        )
+
+    def emit_operation(
+        self,
+        event: AuditEvent,
+        reason: AuditReason,
+        operation: WLEDOperation,
+    ) -> None:
+        """Emit a fixed WLED event without accepting arbitrary audit fields."""
+        self._sink(
+            "security_audit",
+            {
+                "schema_version": 1,
+                "security_event": event.value,
+                "reason_code": reason.value,
+                "operation_id": operation.value,
             },
         )

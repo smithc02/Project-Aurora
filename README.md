@@ -7,10 +7,12 @@
 > DDP output check. Milestone 11 defines the operator-controlled single-zone
 > baseline proof and deployment runbook; it does not claim that the physical path
 > has passed. Milestone 12 added a local read-only health dashboard, and
-> Milestone 13 turned it into a unified, responsive portal. Milestone 14 adds a
+> Milestone 13 turned it into a unified, responsive portal. Milestone 14 added a
 > fail-closed authenticated control-plane foundation while preserving the same
-> public read-only health service and version 1 API. Device control, room
-> mapping, and spatial intelligence remain deferred.
+> public read-only health service and version 1 API. Milestone 15 adds only
+> authenticated, explicitly enabled WLED power on, power off, and absolute
+> brightness operations. Broader device control, room mapping, and spatial
+> intelligence remain deferred.
 
 ## Architecture summary
 
@@ -112,7 +114,8 @@ Milestone 12's [read-only health dashboard](docs/health-dashboard.md) reuses the
 bounded WLED, HyperHDR, and capture metadata validators, adds one fixed WLED
 state GET, and collects local host metrics. Concurrent requests share one
 single-flight snapshot and cannot overlap hardware polls. The dashboard has no
-controls and performs no DDP, service, capture-configuration, or power mutation.
+public health service remains read-only and performs no DDP, service,
+capture-configuration, or power-supply mutation.
 
 Milestone 13's [unified portal](docs/unified-portal.md) presents that same cached,
 sanitized snapshot across Overview, WLED, HyperHDR, Capture, System, Room Map,
@@ -126,9 +129,14 @@ Milestone 14's
 local authentication, bounded in-memory sessions, CSRF-protected logout,
 attempt limiting, sanitized security audit events, and protected status routes.
 Authentication is disabled by default and protected routes fail closed while it
-is disabled. When enabled, `/controls` and `/api/control/status` report that
-mutations are disabled and no operations are available. Login and control-plane
-requests do not poll hardware. No WLED, HyperHDR, DDP, service, power,
+is disabled. Login and capability requests do not poll hardware.
+
+Milestone 15's [bounded WLED controls](docs/wled-controls.md) register exactly
+`wled.power_on`, `wled.power_off`, and `wled.brightness_set`. Authentication,
+the separate WLED control switch, and an operation allowlist are all required.
+Fixed server routes generate fixed-shape payloads through one serialized,
+rate-limited adapter and verify returned state before reporting success. No
+presets, effects, colors, segments, HyperHDR, DDP, service, power-supply,
 configuration, room-zone, capture, or AI control is implemented.
 
 Milestone 11 adds no runtime behavior. Its
@@ -153,7 +161,9 @@ for its operator evidence requirements, and the
 See the [Milestone 13 unified portal guide](docs/unified-portal.md) for the route
 map and read-only boundary, and the
 [Milestone 14 control-plane security guide](docs/control-plane-security.md) for
-authentication configuration, session behavior, deployment, and recovery.
+authentication configuration, session behavior, deployment, and recovery. See
+the [Milestone 15 WLED control guide](docs/wled-controls.md) for the exact
+operation, verification, activation, and rollback boundaries.
 
 ## Contributing
 
@@ -168,7 +178,8 @@ Settings are applied in deterministic order: command-line overrides, `AURORA_`
 environment variables, an explicitly supplied YAML file, then safe built-in defaults.
 Nested environment fields use `__`, for example `AURORA_WLED__ENABLED=true` and
 `AURORA_LOGGING__LEVEL=DEBUG`. Dashboard authentication uses the same syntax and
-is disabled by default.
+is disabled by default. WLED controls have a second disabled-by-default switch
+and an empty-by-default operation allowlist.
 
 Use `aurora config validate --config path/to/aurora.yaml --log-level DEBUG` to
 check an explicit file. Copy `configs/aurora.example.yaml` to an untracked file

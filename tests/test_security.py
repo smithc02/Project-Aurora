@@ -14,7 +14,9 @@ from aurora_core.control_plane.audit import SecurityAudit
 from aurora_core.control_plane.contracts import (
     CONTROL_CAPABILITIES,
     REGISTERED_OPERATIONS,
-    FutureOperationContract,
+    BrightnessInput,
+    NoOperationInput,
+    OperationContract,
 )
 from aurora_core.control_plane.cookies import (
     MAX_COOKIE_HEADER_BYTES,
@@ -509,38 +511,40 @@ def test_security_audit_events_do_not_capture_credentials_or_identifiers() -> No
     assert "session_rejected" in serialized
 
 
-def test_future_operation_contracts_have_no_registered_executor_or_capability() -> None:
-    assert REGISTERED_OPERATIONS == ()
+def test_control_contracts_register_only_bounded_wled_operations() -> None:
+    assert tuple(contract.operation_id.value for contract in REGISTERED_OPERATIONS) == (
+        "wled.power_on",
+        "wled.power_off",
+        "wled.brightness_set",
+    )
+    assert REGISTERED_OPERATIONS[0].input_model is NoOperationInput
+    assert REGISTERED_OPERATIONS[1].disruptive
+    assert REGISTERED_OPERATIONS[2].input_model is BrightnessInput
     assert CONTROL_CAPABILITIES.to_dict() == {
         "schema_version": 1,
         "authenticated": True,
         "mutations_enabled": False,
         "available_operations": [],
     }
+    contract = REGISTERED_OPERATIONS[1]
+    assert contract.authentication_required and contract.csrf_required
+    assert contract.audit_required and contract.sanitized_errors_required
     with pytest.raises(ValueError):
-        FutureOperationContract("", "Input", 1.0, "adapter", False)
-    with pytest.raises(ValueError):
-        FutureOperationContract("future.test", "Input", 20.0, "adapter", False)
-    with pytest.raises(ValueError):
-        FutureOperationContract(
-            "future.test",
-            "Input",
-            1.0,
-            "adapter",
-            False,
-            authentication_required=False,
+        OperationContract(
+            contract.operation_id,
+            contract.input_model,
+            20.0,
+            contract.destination_adapter_id,
+            contract.disruptive,
+            contract.confirmation_metadata_id,
         )
     with pytest.raises(ValueError):
-        FutureOperationContract("future.test", "Input", 1.0, "adapter", True)
-    contract = FutureOperationContract(
-        "future.test",
-        "Input",
-        1.0,
-        "future.adapter",
-        True,
-        confirmation_metadata_id="future.confirmation",
-    )
-    assert contract.authentication_required
-    assert contract.csrf_required
-    assert contract.audit_required
-    assert contract.sanitized_errors_required
+        OperationContract(
+            contract.operation_id,
+            contract.input_model,
+            1.0,
+            contract.destination_adapter_id,
+            contract.disruptive,
+            contract.confirmation_metadata_id,
+            authentication_required=False,
+        )

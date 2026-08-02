@@ -1,4 +1,4 @@
-"""Fail-closed authentication foundation with no registered device controls."""
+"""Protected control plane with explicitly bounded WLED operations."""
 
 from aurora_core.control_plane.contracts import CONTROL_CAPABILITIES
 from aurora_core.control_plane.service import ControlPlaneService
