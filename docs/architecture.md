@@ -356,3 +356,29 @@ Success changes only the on-disk YAML layer. It does not update a running
 settings snapshot, restart a service, edit environment state, back up
 WLED/HyperHDR configuration, or restore device state. See the
 [configuration-profile guide](configuration-profiles.md).
+
+## Proposed persistent health-history boundary (Milestone 18 design)
+
+Milestone 18 is architecture only at this stage. The proposed history service
+would consume the same immutable, sanitized `HealthReport` returned by the
+existing cached, single-flight `HealthService`. A stricter code-owned projection
+would persist status, timestamps, bounded latency, and fixed reason codes; it
+would not copy arbitrary detail fields, messages, configuration, endpoints,
+identifiers, responses, request data, credentials, or exceptions.
+
+The recommended persistence layer is a bounded local SQLite database accessed
+through Python's standard library. One in-process writer gate, SQLite's
+cross-process locking, bounded transactions, deterministic retention, and
+transition-plus-heartbeat compaction prevent queues and storage growth from
+becoming unbounded. Existing public portal routes and `GET /api/health` schema
+version 1 would remain independent of database availability.
+
+The initial automation boundary is limited to scheduled health sampling,
+sanitized recording, transition evaluation, alert lifecycle updates, and
+retention cleanup. It does not authorize device mutation, profile activation,
+service or system control, frame capture or output, subprocesses, or arbitrary
+network dispatch. Future history views would be separate authenticated,
+read-only surfaces; any acknowledgment mutation would require the existing
+session and CSRF protections. Outbound notifications remain deferred pending a
+separate channel-specific design. See the detailed
+[health-history and alerting design](health-history-alerting.md).

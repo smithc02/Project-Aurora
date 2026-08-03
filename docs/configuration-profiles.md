@@ -288,5 +288,6 @@ mutation, capture/DDP/MQTT/network operation, remote profile, Git action,
 scheduled switching, automation, game/content profile, shell, or subprocess.
 Milestone 25 remains the future game/content-profile milestone.
 
-Milestone 17 is complete in this branch. Controlled Linux filesystem validation
-has passed; final review and merge remain pending.
+Milestone 17 is completed, merged, and deployed, and its controlled Linux
+filesystem validation has passed. This status does not assert that production
+profiles were created or activated.

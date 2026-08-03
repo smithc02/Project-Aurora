@@ -13,9 +13,13 @@
 > authenticated, explicitly enabled WLED power on, power off, and absolute
 > brightness operations. Milestone 16 adds four bounded HyperHDR component-state
 > operations. Milestone 17 adds CLI-only local YAML profiles, exact backups,
-> atomic activation, recovery, and operator-selected rollback. Broader device
-> control, browser configuration, automation, room mapping, and spatial
-> intelligence remain deferred.
+> atomic activation, recovery, and operator-selected rollback. Its software is
+> merged and deployed, and controlled Linux filesystem validation passed; this
+> does not assert that production profiles were created or activated. Milestone
+> 18 currently defines architecture only for bounded persistent health history
+> and alert lifecycle handling. No Milestone 18 storage, route, worker,
+> notification, or automation behavior is implemented. Broader device control,
+> browser configuration, room mapping, and spatial intelligence remain deferred.
 
 ## Architecture summary
 
@@ -196,7 +200,10 @@ operation, verification, activation, and rollback boundaries, and the
 [Milestone 16 HyperHDR control guide](docs/hyperhdr-controls.md) for its exact
 four-operation registry and two-request verification boundary. See the
 [Milestone 17 configuration-profile guide](docs/configuration-profiles.md) for
-the CLI, filesystem, backup, activation, and recovery boundaries.
+the CLI, filesystem, backup, activation, and recovery boundaries. The proposed
+[Milestone 18 health-history and alerting design](docs/health-history-alerting.md)
+documents the persistence, privacy, lifecycle, and bounded-automation decisions;
+it does not add runtime behavior.
 
 ## Contributing
 
