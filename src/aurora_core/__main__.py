@@ -9,6 +9,10 @@ from pathlib import Path
 
 from aurora_core import __version__
 from aurora_core.config import AuroraConfigurationError, load_settings
+from aurora_core.config_profiles.cli import (
+    add_profile_parsers,
+    dispatch_profile_command,
+)
 from aurora_core.hardware.capture_capability import validate_capture_capability
 from aurora_core.hardware.capture_device import validate_capture_device
 from aurora_core.hardware.capture_frame import validate_capture_frame
@@ -41,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser.add_argument("--config", type=Path, help="Path to a YAML file.")
     validate_parser.add_argument("--log-level", help="Override logging.level.")
+    add_profile_parsers(config_subparsers)
     runtime_parser = subparsers.add_parser("runtime", help="Runtime planning commands.")
     runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_command")
     plan_parser = runtime_subparsers.add_parser(
@@ -451,6 +456,8 @@ def main() -> int:
     if args.check:
         print(f"{APPLICATION_NAME} {__version__}: package startup check passed")
         return 0
+    if args.command == "config" and args.config_command == "profile":
+        return dispatch_profile_command(args)
     if args.command == "security" and args.security_command == "hash-password":
         try:
             password = getpass.getpass("Password: ")

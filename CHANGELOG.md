@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added Milestone 17 CLI-only complete YAML profiles with raw and effective
+  validation, sanitized planning, exact bounded backups, nonblocking locking,
+  atomic activation, verified automatic recovery, and explicit reversible
+  rollback. No dashboard, service, environment, network, or device operation is
+  added.
+
 - Added Milestone 7 explicit Linux V4L2 query-only capability validation using
   one `VIDIOC_QUERYCAP` ioctl and no capture operations.
 

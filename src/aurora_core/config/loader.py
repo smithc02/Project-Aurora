@@ -166,13 +166,18 @@ def _parse_environment_value(variable: str, value: str, target_type: type[Any]) 
 def load_settings(
     *,
     config_path: Path | None = None,
+    config_data: ConfigMapping | None = None,
     environment: Mapping[str, str] | None = None,
     cli_overrides: ConfigMapping | None = None,
 ) -> AuroraSettings:
     """Load settings with precedence CLI > environment > YAML > defaults."""
+    if config_path is not None and config_data is not None:
+        raise ConfigurationFileError("Only one YAML configuration source is allowed")
     merged: dict[str, Any] = {}
     if config_path is not None:
         merged = deep_merge(merged, load_yaml_file(config_path))
+    elif config_data is not None:
+        merged = deep_merge(merged, config_data)
     merged = deep_merge(merged, environment_overrides(environment))
     if cli_overrides is not None:
         merged = deep_merge(merged, cli_overrides)

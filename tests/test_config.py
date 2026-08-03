@@ -79,6 +79,24 @@ def test_yaml_environment_and_cli_precedence(tmp_path: Path) -> None:
     assert settings.wled.host == "yaml.local"
 
 
+def test_in_memory_yaml_uses_existing_environment_and_cli_precedence() -> None:
+    settings = load_settings(
+        config_data={"logging": {"level": "INFO"}},
+        environment={"AURORA_LOGGING__LEVEL": "WARNING"},
+        cli_overrides={"logging": {"level": "DEBUG"}},
+    )
+    assert settings.logging.level == "DEBUG"
+
+
+def test_configuration_path_and_in_memory_yaml_are_mutually_exclusive(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "aurora.yaml"
+    path.write_text("{}")
+    with pytest.raises(AuroraConfigurationError, match="one YAML configuration source"):
+        load_settings(config_path=path, config_data={})
+
+
 @pytest.mark.parametrize(
     ("content", "message"),
     [("[unclosed", "malformed YAML"), ("- item", "root must be a mapping")],

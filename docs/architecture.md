@@ -319,3 +319,40 @@ the public portal and `GET /api/health` remain read-only and retain schema
 version 1. Audit fields remain limited to fixed event/reason values and one
 allowlisted operation ID. See the
 [bounded HyperHDR control guide](hyperhdr-controls.md).
+
+## Local configuration-profile boundary (Milestone 17)
+
+Milestone 17 adds a CLI-only service beside the ordinary configuration loader.
+It manages only an explicitly supplied active Aurora YAML file, profile
+directory, and backup directory. It adds no dashboard route, health-cache
+behavior, device adapter, service action, network operation, file search, or
+runtime reload.
+
+A strict logical identifier maps in code to one complete
+`<identifier>.yaml` document. Profiles are replacements, not patches: there is
+no fragment, inheritance, include, template, interpolation, chain, remote
+source, or merge with active YAML. Raw validation rejects malformed UTF-8,
+multiple documents, non-mapping roots, duplicate keys, aliases, unsupported
+tags, invalid Aurora settings, and identifier mismatch. Effective validation
+then uses the existing environment-aware `load_settings()` path. Precedence
+remains CLI, process environment, YAML, then defaults.
+
+The dedicated filesystem boundary enforces no-follow opens, restrictive modes,
+effective-user ownership, single-link managed files, bounded reads and
+enumeration, descriptor metadata rechecks, and no symlink path components.
+Planning reports only sorted key paths, change types, byte identity, and
+SHA-256 digests.
+
+Apply and rollback share one nonblocking advisory lock in the backup directory.
+Each mutation creates an exact previous-byte YAML backup and strict bounded
+manifest before a same-directory temporary file is durably published with
+atomic replacement. Published bytes and hash are reopened and raw/effectively
+revalidated. A post-publication failure triggers one atomic restoration and
+verification of exact pre-operation bytes; restoration failure has a distinct
+high-severity exit and preserves evidence. Rollback first backs up the current
+active YAML, making rollback itself reversible.
+
+Success changes only the on-disk YAML layer. It does not update a running
+settings snapshot, restart a service, edit environment state, back up
+WLED/HyperHDR configuration, or restore device state. See the
+[configuration-profile guide](configuration-profiles.md).
