@@ -51,6 +51,27 @@ defaults. Nested environment names use `__`, such as `AURORA_MQTT__USERNAME` and
 Use an untracked configuration file for real deployment values. Passwords are
 protected from repr output and are excluded from user-facing validation errors.
 
+## Local configuration-profile development
+
+Milestone 17 tests use only pytest temporary directories and synthetic YAML.
+They do not read repository deployment files, `/etc`, service files, device
+nodes, environment credential files, or network devices.
+
+```bash
+uv run pytest tests/test_configuration_profiles.py -v
+```
+
+Profile and backup directories created by tests must be `0700`; managed YAML,
+manifest, active, and lock files must be `0600`. Tests inject UTC time and
+random backup suffixes and monkeypatch filesystem failures, atomic replacement,
+fsync, locking, and post-write validation. Keep filesystem handling outside CLI
+dispatch and preserve stable profile exit codes.
+
+Never add a real profile, active deployment configuration, backup pair, or
+machine path to the repository. Controlled-filesystem validation belongs after
+review and must use explicit non-production paths. The CLI never invokes a
+service manager.
+
 ## Runtime-plan validation
 
 ```bash

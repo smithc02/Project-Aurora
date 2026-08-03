@@ -11,7 +11,10 @@
 > fail-closed authenticated control-plane foundation while preserving the same
 > public read-only health service and version 1 API. Milestone 15 adds only
 > authenticated, explicitly enabled WLED power on, power off, and absolute
-> brightness operations. Broader device control, room mapping, and spatial
+> brightness operations. Milestone 16 adds four bounded HyperHDR component-state
+> operations. Milestone 17 adds CLI-only local YAML profiles, exact backups,
+> atomic activation, recovery, and operator-selected rollback. Broader device
+> control, browser configuration, automation, room mapping, and spatial
 > intelligence remain deferred.
 
 ## Architecture summary
@@ -65,6 +68,12 @@ uv run aurora hardware validate capture-modes --config configs/aurora.local.yaml
 uv run aurora hardware validate capture-frame --config configs/aurora.local.yaml
 uv run aurora hardware validate ddp-output --config configs/aurora.local.yaml
 uv run aurora security hash-password
+uv run aurora config profile list --profiles-dir <profiles-directory>
+uv run aurora config profile validate --profiles-dir <profiles-directory> --profile maintenance
+uv run aurora config profile plan --config <active-yaml> --profiles-dir <profiles-directory> --profile maintenance
+uv run aurora config profile apply --config <active-yaml> --profiles-dir <profiles-directory> --backups-dir <backups-directory> --profile maintenance --confirm-apply maintenance
+uv run aurora config profile backups --backups-dir <backups-directory>
+uv run aurora config profile rollback --config <active-yaml> --backups-dir <backups-directory> --backup-id <generated-id> --confirm-rollback <generated-id>
 uv run aurora-dashboard --config configs/aurora.local.yaml
 uv run ruff check .
 uv run ruff format --check .
@@ -150,6 +159,15 @@ Disable routes require separate disruptive-action confirmation. There is no
 generic JSON-RPC, instance, service, profile, automation, or combined ambient
 control.
 
+Milestone 17's
+[local configuration profiles](docs/configuration-profiles.md) manage only the
+explicitly selected YAML file through strict logical profile IDs, two-stage
+validation, exact managed backups, nonblocking cross-process locking, atomic
+replacement, automatic recovery, and explicit reversible rollback. Environment
+and CLI overrides remain outside profiles and backups. Applying or rolling back
+does not reload the running process or invoke a service manager; an external
+service restart remains operator-controlled.
+
 Milestone 11 adds no runtime behavior. Its
 [single-zone baseline proof and deployment runbook](docs/single-zone-baseline-proof.md)
 combines the existing validation boundaries with operator-observed direct HDMI,
@@ -176,7 +194,9 @@ authentication configuration, session behavior, deployment, and recovery. See
 the [Milestone 15 WLED control guide](docs/wled-controls.md) for the exact
 operation, verification, activation, and rollback boundaries, and the
 [Milestone 16 HyperHDR control guide](docs/hyperhdr-controls.md) for its exact
-four-operation registry and two-request verification boundary.
+four-operation registry and two-request verification boundary. See the
+[Milestone 17 configuration-profile guide](docs/configuration-profiles.md) for
+the CLI, filesystem, backup, activation, and recovery boundaries.
 
 ## Contributing
 

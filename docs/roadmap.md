@@ -50,8 +50,8 @@
     limiting, sanitized audit events, and verified-success cache invalidation
     preserve the public health API. See the
     [bounded WLED control guide](wled-controls.md).
-16. **Milestone 16 (complete in this draft branch, pending review and physical
-    proof): Bounded HyperHDR controls.** Exactly four authenticated,
+16. **Milestone 16 (completed, merged, deployed, and physically validated):
+    Bounded HyperHDR controls.** Exactly four authenticated,
     CSRF-protected, separately enabled and allowlisted component-state
     operations control only the video grabber and LED output. One fixed mutation
     POST plus one fixed serverinfo verification GET, nonblocking serialization,
@@ -59,9 +59,20 @@
     and verified-success cache invalidation preserve health schema version 1.
     See the [bounded HyperHDR control guide](hyperhdr-controls.md).
 
+17. **Milestone 17 (complete in this branch; controlled Linux filesystem
+    validation passed; pending final review and merge): Local configuration
+    profiles, exact backup, validation, atomic activation, and rollback.**
+    Complete YAML profiles use strict logical identifiers and replace only the
+    YAML layer.
+    Raw and environment-aware validation, restrictive no-follow filesystem
+    handling, sanitized plans, exact bounded manifests, shared nonblocking
+    locking, atomic publication, verified automatic recovery, and explicit
+    reversible rollback add no dashboard, service, environment, network, or
+    device operation. See the
+    [configuration-profile guide](configuration-profiles.md).
+
 ## Planned progression
 
-17. **Milestone 17: Profiles, configuration backup, validation, and rollback.**
 18. **Milestone 18: Persistent health history, alerting, and automation.**
 19. **Milestone 19: Multi-zone virtual room model.**
 20. **Milestone 20: Real-time motion-tracking prototype.**
@@ -110,4 +121,4 @@ The following boundaries are mandatory for that future work:
 - Standard ambient operation must remain available as a fallback.
 
 No spatial-intelligence implementation, AI dependency, frame-analysis loop,
-room-zone output, or learning system exists through Milestone 16.
+room-zone output, or learning system exists through Milestone 17.
