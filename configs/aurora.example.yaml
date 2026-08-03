@@ -9,6 +9,13 @@ logging:
 hyperhdr:
   enabled: false
   validation_timeout_seconds: 2.0
+  controls:
+    # Authentication, this switch, and the exact allowlist are all required.
+    enabled: false
+    allowed_operations: []
+    timeout_seconds: 2.0
+    operation_limit: 20
+    operation_window_seconds: 60
 wled:
   enabled: false
   validation_timeout_seconds: 2.0
@@ -54,4 +61,4 @@ mqtt:  # Reserved for future automation and telemetry; never real-time frames.
   enabled: false
 # WLED validation is read-only. Bounded controls remain disabled above.
 # wled.validation_timeout_seconds defaults to 2.0 seconds (0.1–10.0).
-# Read-only HyperHDR validation uses GET /json-rpc serverinfo only when explicitly invoked.
+# HyperHDR health uses read-only serverinfo; bounded controls remain disabled above.

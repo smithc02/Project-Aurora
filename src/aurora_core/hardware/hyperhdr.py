@@ -42,6 +42,8 @@ def parse_hyperhdr_server_info(body: bytes) -> HyperHDRServerInfo:
     else:
         hdr_mode_enabled = None
     component_states: dict[str, bool] = {}
+    component_state_names: set[str] = set()
+    ambiguous_component_states: set[str] = set()
     components = info.get("components")
     if isinstance(components, list):
         for component in components:
@@ -49,8 +51,20 @@ def parse_hyperhdr_server_info(body: bytes) -> HyperHDRServerInfo:
                 continue
             name = component.get("name")
             enabled = component.get("enabled")
-            if isinstance(name, str) and isinstance(enabled, bool):
-                component_states[name.upper()] = enabled
+            if not isinstance(name, str):
+                continue
+            normalized_name = name.upper()
+            component_state_names.add(normalized_name)
+            if not isinstance(enabled, bool):
+                ambiguous_component_states.add(normalized_name)
+                component_states.pop(normalized_name, None)
+                continue
+            previous = component_states.get(normalized_name)
+            if previous is not None and previous is not enabled:
+                ambiguous_component_states.add(normalized_name)
+                component_states.pop(normalized_name, None)
+            elif normalized_name not in ambiguous_component_states:
+                component_states[normalized_name] = enabled
     grabber_active = component_states.get("VIDEOGRABBER")
     if grabber_active is None:
         grabber_active = component_states.get("GRABBER")
@@ -76,6 +90,8 @@ def parse_hyperhdr_server_info(body: bytes) -> HyperHDRServerInfo:
         instance_running=instance_running,
         grabber_active=grabber_active,
         led_output_active=led_output_active,
+        component_state_names=frozenset(component_state_names),
+        ambiguous_component_states=frozenset(ambiguous_component_states),
     )
 
 

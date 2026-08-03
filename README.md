@@ -113,8 +113,8 @@ validation alone does not implement or test connectivity.
 Milestone 12's [read-only health dashboard](docs/health-dashboard.md) reuses the
 bounded WLED, HyperHDR, and capture metadata validators, adds one fixed WLED
 state GET, and collects local host metrics. Concurrent requests share one
-single-flight snapshot and cannot overlap hardware polls. The dashboard has no
-public health service remains read-only and performs no DDP, service,
+single-flight snapshot and cannot overlap hardware polls. The public health
+service remains read-only and performs no DDP, service,
 capture-configuration, or power-supply mutation.
 
 Milestone 13's [unified portal](docs/unified-portal.md) presents that same cached,
@@ -136,8 +136,19 @@ Milestone 15's [bounded WLED controls](docs/wled-controls.md) register exactly
 the separate WLED control switch, and an operation allowlist are all required.
 Fixed server routes generate fixed-shape payloads through one serialized,
 rate-limited adapter and verify returned state before reporting success. No
-presets, effects, colors, segments, HyperHDR, DDP, service, power-supply,
-configuration, room-zone, capture, or AI control is implemented.
+presets, effects, colors, segments, DDP, service, power-supply, configuration,
+room-zone, capture, or AI control is implemented.
+
+Milestone 16's [bounded HyperHDR controls](docs/hyperhdr-controls.md) register
+exactly `hyperhdr.video_grabber_enable`, `hyperhdr.video_grabber_disable`,
+`hyperhdr.led_output_enable`, and `hyperhdr.led_output_disable`. The browser
+selects only fixed routes; code generates the fixed `componentstate` payload.
+One acknowledged POST is followed by one existing read-only `serverinfo` GET,
+and only an exact reported Boolean match is verified. Authentication, the
+separate HyperHDR control switch, and an operation allowlist are all required.
+Disable routes require separate disruptive-action confirmation. There is no
+generic JSON-RPC, instance, service, profile, automation, or combined ambient
+control.
 
 Milestone 11 adds no runtime behavior. Its
 [single-zone baseline proof and deployment runbook](docs/single-zone-baseline-proof.md)
@@ -163,7 +174,9 @@ map and read-only boundary, and the
 [Milestone 14 control-plane security guide](docs/control-plane-security.md) for
 authentication configuration, session behavior, deployment, and recovery. See
 the [Milestone 15 WLED control guide](docs/wled-controls.md) for the exact
-operation, verification, activation, and rollback boundaries.
+operation, verification, activation, and rollback boundaries, and the
+[Milestone 16 HyperHDR control guide](docs/hyperhdr-controls.md) for its exact
+four-operation registry and two-request verification boundary.
 
 ## Contributing
 
@@ -178,8 +191,8 @@ Settings are applied in deterministic order: command-line overrides, `AURORA_`
 environment variables, an explicitly supplied YAML file, then safe built-in defaults.
 Nested environment fields use `__`, for example `AURORA_WLED__ENABLED=true` and
 `AURORA_LOGGING__LEVEL=DEBUG`. Dashboard authentication uses the same syntax and
-is disabled by default. WLED controls have a second disabled-by-default switch
-and an empty-by-default operation allowlist.
+is disabled by default. WLED and HyperHDR controls each have an independent
+disabled-by-default switch and empty-by-default operation allowlist.
 
 Use `aurora config validate --config path/to/aurora.yaml --log-level DEBUG` to
 check an explicit file. Copy `configs/aurora.example.yaml` to an untracked file

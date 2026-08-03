@@ -35,6 +35,9 @@ WLEDControlTimeout = Annotated[float, Field(ge=0.1, le=5.0, strict=True)]
 WLEDMaximumBrightness = Annotated[int, Field(ge=1, le=255, strict=True)]
 WLEDOperationLimit = Annotated[int, Field(ge=1, le=120, strict=True)]
 WLEDOperationWindow = Annotated[int, Field(ge=1, le=3600, strict=True)]
+HyperHDRControlTimeout = Annotated[float, Field(ge=0.1, le=5.0, strict=True)]
+HyperHDROperationLimit = Annotated[int, Field(ge=1, le=120, strict=True)]
+HyperHDROperationWindow = Annotated[int, Field(ge=1, le=3600, strict=True)]
 
 
 class LoggingLevel(StrEnum):
@@ -53,6 +56,15 @@ class WLEDOperation(StrEnum):
     POWER_ON = "wled.power_on"
     POWER_OFF = "wled.power_off"
     BRIGHTNESS_SET = "wled.brightness_set"
+
+
+class HyperHDROperation(StrEnum):
+    """The complete Milestone 16 HyperHDR mutation allowlist."""
+
+    VIDEO_GRABBER_ENABLE = "hyperhdr.video_grabber_enable"
+    VIDEO_GRABBER_DISABLE = "hyperhdr.video_grabber_disable"
+    LED_OUTPUT_ENABLE = "hyperhdr.led_output_enable"
+    LED_OUTPUT_DISABLE = "hyperhdr.led_output_disable"
 
 
 class AuroraModel(BaseModel):
@@ -92,10 +104,43 @@ class EndpointSettings(AuroraModel):
         return self
 
 
+class HyperHDRControlSettings(AuroraModel):
+    """Fail-closed settings for bounded HyperHDR component-state mutations."""
+
+    enabled: StrictBoolean = False
+    allowed_operations: tuple[HyperHDROperation, ...] = ()
+    timeout_seconds: HyperHDRControlTimeout = 2.0
+    operation_limit: HyperHDROperationLimit = 20
+    operation_window_seconds: HyperHDROperationWindow = 60
+
+    @field_validator("allowed_operations", mode="before")
+    @classmethod
+    def operation_allowlist_is_unique(cls, value: object) -> object:
+        if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+            raise ValueError(
+                "allowed_operations must be a list of operation identifiers"
+            )
+        if len(value) != len(set(value)):
+            raise ValueError("allowed_operations must not contain duplicates")
+        return value
+
+
 class HyperHDRSettings(EndpointSettings):
-    """Description-only HyperHDR settings; no connection is attempted."""
+    """HyperHDR health and separately activated bounded-control configuration."""
 
     validation_timeout_seconds: ValidationTimeout = 2.0
+    controls: HyperHDRControlSettings = Field(default_factory=HyperHDRControlSettings)
+
+    @model_validator(mode="after")
+    def controls_require_validated_endpoint(self) -> HyperHDRSettings:
+        if self.controls.enabled and (
+            not self.enabled or self.host is None or self.port is None
+        ):
+            raise ValueError(
+                "HyperHDR must be enabled with a validated host and port before "
+                "controls can be enabled"
+            )
+        return self
 
 
 class WLEDControlSettings(AuroraModel):

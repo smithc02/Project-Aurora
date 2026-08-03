@@ -109,6 +109,21 @@ unverified operations do not invalidate. `GET /api/health` remains schema
 version 1 with unchanged fields and meanings. See the
 [bounded WLED control guide](wled-controls.md).
 
+## Milestone 16 HyperHDR control separation
+
+Milestone 16 likewise leaves public health routes and fields read-only. It adds
+an authenticated `/controls/hyperhdr` page and four fixed component-state POST
+routes. The protected page displays the existing cached HyperHDR component and
+does not perform its own serverinfo request.
+
+An accepted operation performs one mutation POST and, only after
+acknowledgement, one read-only serverinfo GET for verification. Only an exact
+verified Boolean match invalidates the shared cache. Invalidation remains
+poll-free; denied, malformed, limited, busy, failed, and unverified outcomes
+leave the cache unchanged. `GET /api/health` remains schema version 1 with
+unchanged fields and meanings. See the
+[bounded HyperHDR control guide](hyperhdr-controls.md).
+
 ## Bounded checks
 
 - WLED: the existing hardened `GET /json/info` validator plus one fixed
@@ -192,6 +207,7 @@ unit itself.
 - Health history is limited to the in-process last-success timestamp. There is
   no metrics database, alerting, automatic recovery, or multi-zone control.
 - The public health dashboard is intentionally read-only and unauthenticated.
-  Milestone 14 authentication and Milestone 15's optional WLED operations exist
-  only in the separate protected control boundary. Put any remote access behind
-  separately managed authentication and TLS if it is ever needed.
+  Milestone 14 authentication plus Milestones 15 and 16's optional WLED and
+  HyperHDR operations exist only in the separate protected control boundary.
+  Put any remote access behind separately managed authentication and TLS if it
+  is ever needed.

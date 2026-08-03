@@ -12,8 +12,9 @@ from aurora_core.control_plane.audit import AuditReason
 LOGIN_BODY_LIMIT = 4096
 LOGOUT_BODY_LIMIT = 1024
 WLED_CONTROL_BODY_LIMIT = 1024
+HYPERHDR_CONTROL_BODY_LIMIT = 1024
 MAX_FORM_FIELDS = 4
-ALLOWED_NEXT_PATHS = frozenset({"/controls", "/controls/wled"})
+ALLOWED_NEXT_PATHS = frozenset({"/controls", "/controls/wled", "/controls/hyperhdr"})
 _PERCENT_ESCAPE = re.compile(r"[0-9A-Fa-f]{2}")
 
 

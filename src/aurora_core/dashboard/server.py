@@ -15,7 +15,7 @@ from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
 from aurora_core.config import AuroraConfigurationError, load_settings
-from aurora_core.config.models import AuroraSettings, WLEDOperation
+from aurora_core.config.models import AuroraSettings, HyperHDROperation, WLEDOperation
 from aurora_core.control_plane.audit import AuditReason
 from aurora_core.control_plane.contracts import ControlCapabilities
 from aurora_core.control_plane.cookies import (
@@ -24,6 +24,7 @@ from aurora_core.control_plane.cookies import (
     session_cookie,
 )
 from aurora_core.control_plane.forms import (
+    HYPERHDR_CONTROL_BODY_LIMIT,
     LOGIN_BODY_LIMIT,
     LOGOUT_BODY_LIMIT,
     WLED_CONTROL_BODY_LIMIT,
@@ -32,8 +33,15 @@ from aurora_core.control_plane.forms import (
     safe_next_path,
     validate_form_headers,
 )
+from aurora_core.control_plane.hyperhdr_service import (
+    HyperHDRControlAvailability,
+    HyperHDRControlResult,
+    HyperHDRControlService,
+    HyperHDRControlStatus,
+)
 from aurora_core.control_plane.rendering import (
     render_controls,
+    render_hyperhdr_controls,
     render_login,
     render_wled_controls,
 )
@@ -63,6 +71,17 @@ _WLED_POST_OPERATIONS = {
 _WLED_NOTICE_VALUES = frozenset(
     {"verified", "denied", "invalid", "rate_limited", "busy", "failed", "unverified"}
 )
+_HYPERHDR_POST_OPERATIONS = {
+    "/controls/hyperhdr/video-grabber/enable": (HyperHDROperation.VIDEO_GRABBER_ENABLE),
+    "/controls/hyperhdr/video-grabber/disable": (
+        HyperHDROperation.VIDEO_GRABBER_DISABLE
+    ),
+    "/controls/hyperhdr/led-output/enable": HyperHDROperation.LED_OUTPUT_ENABLE,
+    "/controls/hyperhdr/led-output/disable": HyperHDROperation.LED_OUTPUT_DISABLE,
+}
+_HYPERHDR_NOTICE_VALUES = frozenset(
+    {"verified", "denied", "rate_limited", "busy", "failed", "unverified"}
+)
 
 
 def _parse_brightness(value: str | None) -> int | None:
@@ -85,6 +104,17 @@ def _result_notice(result: WLEDControlResult) -> str:
     }[result.status]
 
 
+def _hyperhdr_result_notice(result: HyperHDRControlResult) -> str:
+    return {
+        HyperHDRControlStatus.VERIFIED: "verified",
+        HyperHDRControlStatus.DENIED: "denied",
+        HyperHDRControlStatus.RATE_LIMITED: "rate_limited",
+        HyperHDRControlStatus.BUSY: "busy",
+        HyperHDRControlStatus.FAILED: "failed",
+        HyperHDRControlStatus.UNVERIFIED: "unverified",
+    }[result.status]
+
+
 def _render_page(report: HealthReport, refresh_seconds: int) -> str:
     """Retain the original rendering helper as an overview-page wrapper."""
     return render_portal(report, "/", refresh_seconds)
@@ -103,11 +133,13 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         refresh_seconds: int,
         control_plane: ControlPlaneService,
         wled_controls: WLEDControlService,
+        hyperhdr_controls: HyperHDRControlService,
     ) -> None:
         self.health_service = service
         self.refresh_seconds = refresh_seconds
         self.control_plane = control_plane
         self.wled_controls = wled_controls
+        self.hyperhdr_controls = hyperhdr_controls
         super().__init__(server_address, DashboardHandler)
 
 
@@ -153,7 +185,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlsplit(self.path).path
-        if path in _WLED_POST_OPERATIONS:
+        if path in _WLED_POST_OPERATIONS or path in _HYPERHDR_POST_OPERATIONS:
             self._method_not_allowed()
             return
         if path == PORTAL_CSS_PATH:
@@ -167,6 +199,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/controls/wled":
             self._get_wled_controls()
+            return
+        if path == "/controls/hyperhdr":
+            self._get_hyperhdr_controls()
             return
         if path == "/api/control/status":
             self._get_control_status()
@@ -233,17 +268,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._redirect("/login?next=%2Fcontrols")
             return
         wled = self._wled_control_plane()
+        hyperhdr = self._hyperhdr_control_plane()
         self._send(
             render_controls(
                 session,
-                capabilities=(
-                    ControlCapabilities() if wled is None else wled.capabilities()
-                ),
+                capabilities=self._combined_capabilities(),
                 wled_availability=(
                     WLEDControlAvailability.CONTROLS_DISABLED
                     if wled is None
                     else wled.availability
                 ),
+                hyperhdr_availability=(
+                    HyperHDRControlAvailability.CONTROLS_DISABLED
+                    if hyperhdr is None
+                    else hyperhdr.availability
+                ),
+            ).encode(),
+            "text/html; charset=utf-8",
+        )
+
+    def _get_hyperhdr_controls(self) -> None:
+        control = self._control_plane()
+        hyperhdr = self._hyperhdr_control_plane()
+        if control is None or not control.authentication_enabled or hyperhdr is None:
+            if control is not None:
+                control.audit_page_denied(AuditReason.AUTHENTICATION_DISABLED)
+            self._control_unavailable(html=True)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            control.audit_page_denied()
+            self._redirect("/login?next=%2Fcontrols%2Fhyperhdr")
+            return
+        server = cast(DashboardHTTPServer, self.server)
+        report = server.health_service.get_health()
+        component = next(
+            (item for item in report.components if item.name == "hyperhdr"),
+            None,
+        )
+        self._send(
+            render_hyperhdr_controls(
+                session,
+                component=component,
+                availability=hyperhdr.availability,
+                operations=hyperhdr.available_operations,
+                notice=self._hyperhdr_notice(),
             ).encode(),
             "text/html; charset=utf-8",
         )
@@ -298,16 +367,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 HTTPStatus.UNAUTHORIZED,
             )
             return
-        wled = self._wled_control_plane()
-        capabilities = ControlCapabilities() if wled is None else wled.capabilities()
-        self._send_json(capabilities.to_dict())
+        self._send_json(self._combined_capabilities().to_dict())
 
     def _method_not_allowed(self) -> None:
         self.close_connection = True
         path = urlsplit(getattr(self, "path", "")).path
         if path == "/login":
             allowed = "GET, POST"
-        elif path == "/logout" or path in _WLED_POST_OPERATIONS:
+        elif (
+            path == "/logout"
+            or path in _WLED_POST_OPERATIONS
+            or path in _HYPERHDR_POST_OPERATIONS
+        ):
             allowed = "POST"
         else:
             allowed = "GET"
@@ -329,6 +400,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         operation = _WLED_POST_OPERATIONS.get(path)
         if operation is not None:
             self._post_wled_operation(operation)
+            return
+        hyperhdr_operation = _HYPERHDR_POST_OPERATIONS.get(path)
+        if hyperhdr_operation is not None:
+            self._post_hyperhdr_operation(hyperhdr_operation)
             return
         self._method_not_allowed()
 
@@ -403,6 +478,74 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 client_identifier,
             )
         self._redirect(f"/controls/wled?notice={_result_notice(result)}")
+
+    def _post_hyperhdr_operation(self, operation: HyperHDROperation) -> None:
+        control = self._control_plane()
+        hyperhdr = self._hyperhdr_control_plane()
+        if control is None or not control.authentication_enabled or hyperhdr is None:
+            if hyperhdr is not None:
+                hyperhdr.audit_denied(operation, AuditReason.AUTHENTICATION_DISABLED)
+            self.close_connection = True
+            self._control_unavailable(html=True)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            hyperhdr.audit_denied(operation, AuditReason.AUTHENTICATION_REQUIRED)
+            self._redirect("/login?next=%2Fcontrols%2Fhyperhdr")
+            return
+
+        allowed_fields = {"csrf_token"}
+        if operation in {
+            HyperHDROperation.VIDEO_GRABBER_DISABLE,
+            HyperHDROperation.LED_OUTPUT_DISABLE,
+        }:
+            allowed_fields.add("confirmation")
+        fields, error = self._read_form(
+            maximum_body_bytes=HYPERHDR_CONTROL_BODY_LIMIT,
+            allowed_fields=frozenset(allowed_fields),
+        )
+        if error is not None or fields is None:
+            active_error = error or FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+            hyperhdr.audit_denied(operation, active_error.reason)
+            self._send(
+                b"Unable to process the HyperHDR operation request.\n",
+                "text/plain; charset=utf-8",
+                active_error.status,
+            )
+            return
+
+        csrf_token = fields.get("csrf_token")
+        client_identifier = self._client_identifier()
+        if operation is HyperHDROperation.VIDEO_GRABBER_ENABLE:
+            result = hyperhdr.video_grabber_enable(
+                session,
+                csrf_token,
+                client_identifier,
+            )
+        elif operation is HyperHDROperation.VIDEO_GRABBER_DISABLE:
+            result = hyperhdr.video_grabber_disable(
+                session,
+                csrf_token,
+                fields.get("confirmation"),
+                client_identifier,
+            )
+        elif operation is HyperHDROperation.LED_OUTPUT_ENABLE:
+            result = hyperhdr.led_output_enable(
+                session,
+                csrf_token,
+                client_identifier,
+            )
+        else:
+            result = hyperhdr.led_output_disable(
+                session,
+                csrf_token,
+                fields.get("confirmation"),
+                client_identifier,
+            )
+        self._redirect(f"/controls/hyperhdr?notice={_hyperhdr_result_notice(result)}")
 
     def _post_login(self) -> None:
         control = self._control_plane()
@@ -540,6 +683,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _wled_control_plane(self) -> WLEDControlService | None:
         return getattr(self.server, "wled_controls", None)
 
+    def _hyperhdr_control_plane(self) -> HyperHDRControlService | None:
+        return getattr(self.server, "hyperhdr_controls", None)
+
+    def _combined_capabilities(self) -> ControlCapabilities:
+        operations: list[str] = []
+        wled = self._wled_control_plane()
+        if wled is not None:
+            operations.extend(wled.capabilities().available_operations)
+        hyperhdr = self._hyperhdr_control_plane()
+        if hyperhdr is not None:
+            operations.extend(hyperhdr.capabilities().available_operations)
+        return ControlCapabilities(
+            mutations_enabled=bool(operations),
+            available_operations=tuple(operations),
+        )
+
     def _portal_control_link(self) -> ControlNavigationLink | None:
         control = self._control_plane()
         if control is None or not control.authentication_enabled:
@@ -620,6 +779,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return None
         values = query.get("notice")
         if values is None or len(values) != 1 or values[0] not in _WLED_NOTICE_VALUES:
+            return None
+        return values[0]
+
+    def _hyperhdr_notice(self) -> str | None:
+        try:
+            query = parse_qs(
+                urlsplit(self.path).query,
+                keep_blank_values=True,
+                max_num_fields=2,
+            )
+        except ValueError:
+            return None
+        values = query.get("notice")
+        if (
+            values is None
+            or len(values) != 1
+            or values[0] not in _HYPERHDR_NOTICE_VALUES
+        ):
             return None
         return values[0]
 
@@ -730,6 +907,7 @@ def build_server(
     service: HealthService | None = None,
     control_plane: ControlPlaneService | None = None,
     wled_controls: WLEDControlService | None = None,
+    hyperhdr_controls: HyperHDRControlService | None = None,
     port: int | None = None,
 ) -> DashboardHTTPServer:
     """Build a server without starting its request loop."""
@@ -748,6 +926,15 @@ def build_server(
         if wled_controls is None
         else wled_controls
     )
+    active_hyperhdr_controls = (
+        HyperHDRControlService(
+            settings.hyperhdr,
+            authentication_enabled=active_control_plane.authentication_enabled,
+            cache_invalidator=active_service.invalidate,
+        )
+        if hyperhdr_controls is None
+        else hyperhdr_controls
+    )
     address = (
         settings.dashboard.bind_host,
         settings.dashboard.port if port is None else port,
@@ -763,6 +950,7 @@ def build_server(
         settings.dashboard.refresh_seconds,
         active_control_plane,
         active_wled_controls,
+        active_hyperhdr_controls,
     )
 
 
