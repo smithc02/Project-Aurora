@@ -59,9 +59,9 @@
     and verified-success cache invalidation preserve health schema version 1.
     See the [bounded HyperHDR control guide](hyperhdr-controls.md).
 
-17. **Milestone 17 (complete in this branch; controlled Linux filesystem
-    validation passed; pending final review and merge): Local configuration
-    profiles, exact backup, validation, atomic activation, and rollback.**
+17. **Milestone 17 (completed, merged, and deployed; controlled Linux
+    filesystem validation passed): Local configuration profiles, exact backup,
+    validation, atomic activation, and rollback.**
     Complete YAML profiles use strict logical identifiers and replace only the
     YAML layer.
     Raw and environment-aware validation, restrictive no-follow filesystem
@@ -70,10 +70,18 @@
     reversible rollback add no dashboard, service, environment, network, or
     device operation. See the
     [configuration-profile guide](configuration-profiles.md).
+    Deployment and validation do not assert that production profiles were
+    created or activated.
 
 ## Planned progression
 
-18. **Milestone 18: Persistent health history, alerting, and automation.**
+18. **Milestone 18 (architecture proposed; implementation not started):
+    Persistent health history, alerting, and bounded automation.** The proposed
+    design records only a strict projection of existing sanitized health
+    snapshots, evaluates deterministic alert state, and performs bounded
+    retention work. It authorizes no device, service, configuration, command,
+    or arbitrary network action. See the
+    [health-history and alerting design](health-history-alerting.md).
 19. **Milestone 19: Multi-zone virtual room model.**
 20. **Milestone 20: Real-time motion-tracking prototype.**
 21. **Milestone 21: Predictive off-screen continuation.**
@@ -121,4 +129,4 @@ The following boundaries are mandatory for that future work:
 - Standard ambient operation must remain available as a fallback.
 
 No spatial-intelligence implementation, AI dependency, frame-analysis loop,
-room-zone output, or learning system exists through Milestone 17.
+room-zone output, or learning system exists through the Milestone 18 design.
