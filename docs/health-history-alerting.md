@@ -232,6 +232,53 @@ Projection validation occurs before a writer lock or transaction. A malformed,
 unknown-version, oversized, non-finite, or unknown-component snapshot is
 rejected as one sanitized ingestion failure; it is never partially stored.
 
+### Finalized normalized reason-code registry
+
+The preimplementation registry is finalized in the isolated
+`aurora_core.m18_validation.reasons` module. It is validation tooling only and
+is not imported by an Aurora runtime entry point. It accepts schema version 1,
+the exact component names `wled`, `hyperhdr`, `capture`, and `raspberry_pi`, the
+three current health statuses, and exact current collector detail shapes. It
+returns an immutable tuple of at most two WLED reasons, three HyperHDR reasons,
+two capture reasons, or one Raspberry Pi reason. The tuple order is fixed by
+code, never by input mapping order.
+
+The complete normalized registry is:
+
+| Component | Exact normalized reasons |
+| --- | --- |
+| WLED fixed states | `wled.disabled`, `wled.collector_failed`, `wled.healthy` |
+| WLED information | `wled.info.led_count_mismatch`, `wled.info.connection_failed`, `wled.info.timeout`, `wled.info.redirect_rejected`, `wled.info.http_error`, `wled.info.response_too_large`, `wled.info.invalid_json`, `wled.info.invalid_response` |
+| WLED state | `wled.state.connection_failed`, `wled.state.timeout`, `wled.state.redirect_rejected`, `wled.state.http_error`, `wled.state.response_too_large`, `wled.state.invalid_json`, `wled.state.invalid_response` |
+| HyperHDR fixed states | `hyperhdr.disabled`, `hyperhdr.collector_failed`, `hyperhdr.healthy` |
+| HyperHDR observation failures | `hyperhdr.connection_failed`, `hyperhdr.timeout`, `hyperhdr.redirect_rejected`, `hyperhdr.authorization_required`, `hyperhdr.http_error`, `hyperhdr.response_too_large`, `hyperhdr.invalid_json`, `hyperhdr.invalid_response`, `hyperhdr.server_reported_failure` |
+| HyperHDR validated inactivity | `hyperhdr.instance_inactive`, `hyperhdr.video_grabber_inactive`, `hyperhdr.led_output_inactive` |
+| Capture fixed states | `capture.disabled`, `capture.collector_failed`, `capture.healthy` |
+| Capture observation failures | `capture.unsupported_platform`, `capture.device_not_found`, `capture.probe_failed`, `capture.symlink_resolution_failed`, `capture.invalid_device_target`, `capture.not_character_device`, `capture.v4l2_registration_missing`, `capture.metadata_unavailable`, `capture.invalid_device_name`, `capture.permission_denied` |
+| Capture activity | `capture.grabber_inactive`, `capture.activity_unreported` |
+| Raspberry Pi | `raspberry_pi.collector_failed`, `raspberry_pi.healthy`, `raspberry_pi.degraded`, `raspberry_pi.unavailable` |
+
+Intentional WLED, HyperHDR, and capture disablement is therefore distinct from
+an observation or collector failure. WLED reasons are derived only from the
+exact `reason_code`, `info_reason_code`, and `state_reason_code` values listed
+above. HyperHDR inactivity is derived only from exact Boolean `false` values
+for instance, video-grabber, and LED-output state. Capture activity uses only
+the fixed `HyperHDR serverinfo` source marker and exact Boolean or null grabber
+state. Raspberry Pi reasons use only the sanitized component status because
+its numeric metric and configured-threshold details must not be persisted.
+
+The registry recognizes the current collector's remaining detail keys only to
+verify that the input shape is known. It does not compare, copy, interpolate,
+or return their values. These excluded values include firmware, uptime, LED
+counts, brightness, output state, HDR mode, capture-device name and metadata,
+temperatures, load, CPU count, memory, storage, thresholds, and host uptime.
+The free-form component message is never inspected. An unknown schema,
+component, status, detail key, contributing value, activity source, or
+status/reason combination produces one fixed rejected result and no persistent
+reason. Comprehensive synthetic tests cover every mapping, input-order and
+message independence, unknown rejection, disabled-state distinctions, and the
+inability of prohibited values to enter output.
+
 ## Proposed database schema
 
 The logical schema uses the following tables. Exact SQL belongs to the future
@@ -798,6 +845,100 @@ Implementation review should require these stages:
 Production history enablement, production configuration-profile use, and
 outbound notification testing are not implied by this controlled plan.
 
+### Preimplementation validation tooling
+
+Two standard-library-only commands implement the current synthetic gates. They
+operate only in an explicit existing `0700` directory or a securely created
+temporary directory, use code-generated filenames, redact the test root from
+reports, make no network or hardware request, and are not production database,
+migration, backup, restore, or enablement commands.
+
+Run the target-platform gate on the Raspberry Pi from a reviewed source tree:
+
+```console
+$ umask 077
+$ m18_platform_root="$(mktemp -d)"
+$ chmod 0700 "${m18_platform_root}"
+$ uv run python scripts/validate_m18_sqlite_platform.py \
+    --test-dir "${m18_platform_root}" \
+    > "${m18_platform_root}/platform-report.json" \
+    2> "${m18_platform_root}/platform-summary.txt"
+```
+
+The platform report records the Python, `sqlite3` module, and SQLite library
+versions; relevant compile options; protected-directory and database identity
+checks; symlink, type, hard-link, owner, mode, and identity-change behavior;
+WAL and shared-memory permissions; required pragmas; busy timeout; progress
+handler and `Connection.interrupt()` behavior; transaction rollback after
+interruption; and the quick-check, checkpoint, online-backup,
+migration-style rollback, restore, incremental-vacuum, and shutdown budgets.
+It explicitly records that standard-library `sqlite3` opens by pathname and
+cannot use an already secured ordinary database descriptor. It makes no claim
+that SQLite's internal open has `O_NOFOLLOW` protection.
+
+Run each accelerated workload with a fresh protected root or with the distinct
+code-owned scenario filenames shown here:
+
+```console
+$ umask 077
+$ m18_benchmark_root="$(mktemp -d)"
+$ chmod 0700 "${m18_benchmark_root}"
+$ uv run python scripts/benchmark_m18_sqlite.py \
+    --test-dir "${m18_benchmark_root}" --transactions 2880 \
+    --scenario healthy \
+    > "${m18_benchmark_root}/healthy-report.json" \
+    2> "${m18_benchmark_root}/healthy-summary.txt"
+$ uv run python scripts/benchmark_m18_sqlite.py \
+    --test-dir "${m18_benchmark_root}" --transactions 2880 \
+    --scenario mixed \
+    > "${m18_benchmark_root}/mixed-report.json" \
+    2> "${m18_benchmark_root}/mixed-summary.txt"
+$ uv run python scripts/benchmark_m18_sqlite.py \
+    --test-dir "${m18_benchmark_root}" --transactions 2880 \
+    --scenario transition-heavy \
+    > "${m18_benchmark_root}/transition-heavy-report.json" \
+    2> "${m18_benchmark_root}/transition-heavy-summary.txt"
+$ uv run python scripts/benchmark_m18_sqlite.py \
+    --test-dir "${m18_benchmark_root}" --transactions 2880 \
+    --scenario gap-recovery \
+    > "${m18_benchmark_root}/gap-recovery-report.json" \
+    2> "${m18_benchmark_root}/gap-recovery-summary.txt"
+```
+
+For the required 24-hour pacing measurement, use a separate fresh protected
+root and the fixed 30-second pace; this validates one workload and must be
+repeated as the review selects additional worst cases:
+
+```console
+$ umask 077
+$ m18_endurance_root="$(mktemp -d)"
+$ chmod 0700 "${m18_endurance_root}"
+$ uv run python scripts/benchmark_m18_sqlite.py \
+    --test-dir "${m18_endurance_root}" --transactions 2880 \
+    --scenario transition-heavy --pace-milliseconds 30000 \
+    > "${m18_endurance_root}/endurance-report.json" \
+    2> "${m18_endurance_root}/endurance-summary.txt"
+```
+
+Each run emits a concise human summary on standard error and one compact JSON
+report on standard output. The protected root also contains only synthetic
+benchmark databases and SQLite sidecars. `PASS` means that the individual
+fixed probe completed within its implemented budget. `FAIL` means a required
+gate failed and the command exits nonzero. `SKIPPED` is permitted only for a
+clearly named check that an ordinary service account or deployed interface
+cannot perform; it is not success evidence and review decides whether it is
+blocking. The benchmark labels every value as measured, projected,
+unavailable, architecture limit, or decision pending. A successful command
+does not approve the provisional interval, retention, heartbeat, or size
+defaults.
+
+These artifacts are synthetic target-platform evidence, not production
+enablement. Production SQLite schema and runtime integration, production
+backup and restore commands, portal alert grouping, outbound notifications,
+and production history enablement remain deferred. Production implementation
+remains blocked until the Raspberry Pi reports are reviewed against every
+acceptance ceiling and all remaining gates are accepted.
+
 ## Threat model and abuse cases
 
 The trusted boundary is one local service account and authenticated local
@@ -828,15 +969,16 @@ tampering remain in scope.
 Application implementation must not begin until a design review explicitly
 marks every gate below accepted. A disposable synthetic measurement or
 filesystem-opening prototype may be used to close a gate, but it must remain
-outside Aurora's application package and may not create routes, configuration,
-workers, migrations, alerts, notifications, or deployment changes.
+in an isolated validation namespace that no runtime entry point imports and may
+not create routes, configuration, workers, migrations, alerts, notifications,
+or deployment changes.
 
 | Gate | Current design status | Acceptance required before implementation |
 | --- | --- | --- |
-| Normalized finite reason-code registry | Not finalized; blocking. | Enumerate every accepted source key/value and normalized code, disabled-state suppression, unknown-value behavior, and tests. |
+| Normalized finite reason-code registry | Finalized by the isolated registry and comprehensive synthetic tests in this branch. | Review the exact list above and preserve fail-closed behavior when any health collector contract changes. |
 | Exact write-volume strategy | One state transaction per accepted scheduled sample is selected; default rates remain blocking. | Raspberry Pi measurements must pass every transaction, byte, checkpoint, growth, CPU, memory, clean-restart, and abrupt-termination ceiling. |
-| SQLite path-opening procedure | Feasible protected-directory procedure is specified; deployment proof is blocking. | Demonstrate pre/post identity checks and sidecar handling on the target Python/SQLite/Linux build and confirm no untrusted process shares the service account. |
-| Integrity and maintenance budgets | Page, byte, step, and time budgets are proposed; platform cancellation behavior is blocking. | Prove progress/interrupt behavior where claimed and measured worst-case completion within each single-call budget. |
+| SQLite path-opening procedure | Isolated checks exist; target Linux proof remains blocking. | Demonstrate pre/post identity checks and sidecar handling on the target Python/SQLite/Linux build and confirm no untrusted process shares the service account. |
+| Integrity and maintenance budgets | Concrete isolated probes exist; target-platform timing and cancellation behavior remain blocking. | Prove progress/interrupt behavior where claimed and measured worst-case completion within each single-call budget. |
 | Sampling-gap transitions | Two cumulative misses open; two consecutive on-time committed samples recover; restart and clock rules are specified. | Approve a reference state-machine table and exhaustive synthetic transition tests before translating it to application code. |
 | Schema-version-1 lifecycle | Exactly open, acknowledged, recovered, and archived; no expired state. | Approve transition, cooldown, archival, retention, authorization, and audit-event tables before encoding the schema. |
 
@@ -870,16 +1012,14 @@ gates closed:
 1. Whether the proposed 30-second, 30-day, and 64 MiB defaults provide the best
    operational tradeoff after the complete Raspberry Pi write-volume and
    storage-endurance acceptance run.
-2. The exact finite normalized reason-code registry derived from current
-   `HealthReport.details`; unknown fields will remain excluded regardless.
-3. Whether overall and component alerts should both be displayed or whether
+2. Whether overall and component alerts should both be displayed or whether
    the portal should visually group an overall alert with its component causes.
-4. Whether the documented standard-library pathname-open procedure and
+3. Whether the documented standard-library pathname-open procedure and
    progress/interrupt behavior pass target Linux tests; failure requires a
    different secured VFS/open mechanism or persistence design.
-5. The operator command, backup count, and byte cap for explicit SQLite backup
+4. The operator command, backup count, and byte cap for explicit SQLite backup
    and restore; these will not reuse Milestone 17 artifacts.
-6. Which fixed outbound notification channel, if any, deserves a later design.
+5. Which fixed outbound notification channel, if any, deserves a later design.
    No outbound channel is authorized by Milestone 18's initial implementation.
 
 None of these open decisions authorizes implementation or broadens the safe
