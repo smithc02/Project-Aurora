@@ -59,10 +59,11 @@
     and verified-success cache invalidation preserve health schema version 1.
     See the [bounded HyperHDR control guide](hyperhdr-controls.md).
 
-17. **Milestone 17 (complete in this draft branch, pending review and a
-    controlled filesystem deployment test): Local configuration profiles,
-    exact backup, validation, atomic activation, and rollback.** Complete YAML
-    profiles use strict logical identifiers and replace only the YAML layer.
+17. **Milestone 17 (complete in this branch; controlled Linux filesystem
+    validation passed; pending final review and merge): Local configuration
+    profiles, exact backup, validation, atomic activation, and rollback.**
+    Complete YAML profiles use strict logical identifiers and replace only the
+    YAML layer.
     Raw and environment-aware validation, restrictive no-follow filesystem
     handling, sanitized plans, exact bounded manifests, shared nonblocking
     locking, atomic publication, verified automatic recovery, and explicit

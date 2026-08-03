@@ -254,6 +254,31 @@ release; there is no database or migration.
 This boundary assumes a trusted local operator with filesystem access. It does
 not defend against an administrator who can replace the running program.
 
+## Controlled Linux filesystem validation
+
+Controlled validation passed on the Linux deployment target using only
+synthetic files in an isolated, temporary, operator-owned directory. It
+confirmed:
+
+- `0700` profile and backup directories and `0600` active, profile, backup, and
+  manifest files;
+- profile listing, raw and effective validation, and sanitized planning that
+  disclosed only changed key paths and digests;
+- atomic apply, an exact active/profile byte match, an exact previous-active
+  backup, SHA-256 verification, strict manifest listing, and valid integrity;
+- byte-identical no-op behavior without an additional backup, plus rollback to
+  the exact original bytes with a new integrity-valid, reversible pre-rollback
+  backup;
+- backup-cap refusal with exit 2 and lock contention with exit 3, both leaving
+  the active file and backup count unchanged; and
+- corrupted-backup listing as integrity-invalid and rollback refusal with exit
+  2, without changing the active file.
+
+This was not a production configuration deployment. No production
+configuration, service or systemd unit, dashboard process, environment file,
+network endpoint, WLED device, HyperHDR service, capture device, DDP output,
+MQTT service, or physical hardware state was read or changed.
+
 ## Explicit non-goals
 
 Milestone 17 adds no dashboard/browser editing, HTTP route, environment-file or
@@ -263,5 +288,5 @@ mutation, capture/DDP/MQTT/network operation, remote profile, Git action,
 scheduled switching, automation, game/content profile, shell, or subprocess.
 Milestone 25 remains the future game/content-profile milestone.
 
-Milestone 17 is complete only on its draft branch, pending review and a
-controlled filesystem deployment test.
+Milestone 17 is complete in this branch. Controlled Linux filesystem validation
+has passed; final review and merge remain pending.
