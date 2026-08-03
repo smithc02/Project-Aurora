@@ -1,8 +1,9 @@
 # Control-plane security foundation
 
 Milestone 14 added an authenticated boundary for future Project Aurora controls.
-It did not add a device control. Milestone 15 now places three bounded WLED
-operations inside that boundary without changing its session or CSRF model. The
+It did not add a device control. Milestones 15 and 16 now place three bounded
+WLED and four bounded HyperHDR operations inside that boundary without changing
+its session or CSRF model. The
 public health portal and `GET /api/health`
 continue to use the Milestone 12 single-flight health service and remain backward
 compatible. Authentication state is held by a separate in-process service and
@@ -18,6 +19,7 @@ The route groups are intentionally separate:
 | Authentication | `GET /login`, `POST /login`, `POST /logout` | Local credential verification and session lifecycle only. |
 | Protected status | `GET /controls`, `GET /api/control/status` | Authenticated status and a versioned, configuration-derived capability response. |
 | Protected WLED | `GET /controls/wled`, three fixed route-specific POST handlers | Optional Milestone 15 operations described in the [WLED control guide](wled-controls.md). |
+| Protected HyperHDR | `GET /controls/hyperhdr`, four fixed route-specific POST handlers | Optional Milestone 16 operations described in the [HyperHDR control guide](hyperhdr-controls.md). |
 
 Authentication is disabled by default. In that state, protected routes return
 an unavailable response rather than treating the visitor as authenticated. When
@@ -26,17 +28,17 @@ the control-status API returns JSON `401`. Authentication therefore fails
 closed: a missing or disabled authentication configuration cannot grant control
 access.
 
-The protected capability response reports mutations enabled only when
-authentication, WLED, the separate control switch, and at least one implemented
-allowlisted operation are all enabled. Otherwise it reports false and an empty
-list. There is no generic execute route, HyperHDR mutation, DDP output, system
-command, service action, configuration write, capture operation, room-zone
-output, or AI operation.
+The protected capability response returns the deterministic WLED-then-HyperHDR
+union of operations whose device configuration, separate control switch,
+allowlist, and code registry are all enabled. Authentication is also required.
+Otherwise it reports false and an empty list. There is no generic execute route,
+arbitrary HyperHDR mutation, DDP output, system command, service action,
+configuration write, capture operation, room-zone output, or AI operation.
 
 Login, logout, `/controls`, and the capability API do not query the public
-health snapshot. The protected WLED page uses the same cached snapshot as public
-pages and never creates a direct read. Public pages continue to share the
-existing cached, single-flight snapshot.
+health snapshot. The protected WLED and HyperHDR pages use the same cached
+snapshot as public pages and never create a page-specific direct read. Public
+pages continue to share the existing cached, single-flight snapshot.
 
 ## Configuration
 
@@ -129,7 +131,8 @@ ordinary HTTP responses. Do not expose this service directly to the internet.
 
 Login creates authentication state before a CSRF-bearing session exists.
 Logout was Milestone 14's only authenticated state-changing form. Milestone 15
-WLED forms reuse the same requirement. Each contains a strong per-session CSRF
+WLED and Milestone 16 HyperHDR forms reuse the same requirement. Each contains a
+strong per-session CSRF
 token and posts it in the request body, never in a URL. Validation uses a
 constant-time comparison. A missing, malformed, expired, or incorrect token
 rejects the request. Every future authenticated mutation must reuse this
@@ -143,9 +146,9 @@ fields. Header and size checks occur before the body is read. Login and logout
 bodies are capped separately at small fixed limits. Errors are generic and do
 not include request bodies.
 
-The `next` value is a fixed allowlist containing `/controls` and
-`/controls/wled`. Absolute, external, protocol-relative, and otherwise unknown
-destinations fall back to the safe internal status route.
+The `next` value is a fixed allowlist containing `/controls`, `/controls/wled`,
+and `/controls/hyperhdr`. Absolute, external, protocol-relative, and otherwise
+unknown destinations fall back to the safe internal status route.
 
 ## Login-attempt limiting
 
@@ -169,20 +172,23 @@ logout; unauthorized protected-page and protected-API access; CSRF rejection;
 malformed authentication requests; and malformed, invalid, or expired sessions.
 
 Authentication audit fields contain only schema version, event name, and
-bounded reason code. WLED audit events add only an allowlisted operation ID.
+bounded reason code. WLED and HyperHDR audit events add only an allowlisted
+operation ID.
 They never accept passwords, password hashes, cookies, session identifiers,
 CSRF tokens, request bodies, client identifiers, raw exceptions, device
 endpoints, or installation details. Events are not persisted to a database in
 this milestone; retention is controlled by the operator's existing logging
 environment.
 
-## Typed operation contracts after Milestone 15
+## Typed operation contracts after Milestone 16
 
 Milestone 14 defined non-executable metadata and an empty operation tuple.
-Milestone 15 replaces that empty registry with strict contracts only for
-`wled.power_on`, `wled.power_off`, and `wled.brightness_set`. Fixed server routes
-invoke a fixed WLED adapter; no browser-facing generic executor exists. Every
-future operation must separately review and implement all of these boundaries:
+Milestone 15 replaced that empty registry with strict WLED contracts only for
+`wled.power_on`, `wled.power_off`, and `wled.brightness_set`. Milestone 16 adds a
+separate exact HyperHDR registry for video-grabber enable/disable and LED-output
+enable/disable. Fixed routes invoke fixed device-specific adapters; no
+browser-facing generic executor exists. Every future operation must separately
+review and implement all of these boundaries:
 
 - authenticated session and valid CSRF token;
 - known, code-allowlisted typed operation identifier;
@@ -212,8 +218,8 @@ To enable the foundation after deploying the code:
 5. Validate the combined configuration, then restart the dashboard with the
    operator's normal service-management workflow. Aurora never invokes systemd.
 6. Open `/login`, authenticate, and confirm `/controls` accurately reports the
-   configured capability state. Authentication alone must still show no WLED
-   operations.
+   configured capability state. Authentication alone must still show no WLED or
+   HyperHDR operations.
 
 For credential recovery, disable authentication or replace the protected
 credential environment values, validate the configuration, and restart the
@@ -223,13 +229,16 @@ unavailable; it never bypasses login.
 
 ## Milestone 14 non-goals
 
-Milestone 14 does not implement WLED or HyperHDR changes, DDP output, service or
+Milestone 14 did not implement WLED or HyperHDR changes, DDP output, service or
 power management, configuration writes, backup or rollback, persistent
 sessions, persistent audit storage, SQLite, health history, alerts, automation,
 capture or frame analysis, room mapping, multi-zone output, object tracking, AI,
 spatial effects, arbitrary HTTP or JSON forwarding, shell execution, TLS
 termination, or internet exposure.
 
-Milestone 15's later, narrow WLED exception to the original non-goal is fully
-documented in the [bounded WLED control guide](wled-controls.md). The remaining
-Milestone 14 non-goals are unchanged.
+Milestone 15's narrow WLED exception and Milestone 16's narrow HyperHDR
+component-state exception are fully documented in the
+[bounded WLED control guide](wled-controls.md) and
+[bounded HyperHDR control guide](hyperhdr-controls.md). The remaining original
+non-goals are unchanged; neither milestone adds generic forwarding, combined
+operations, profiles, or automation.

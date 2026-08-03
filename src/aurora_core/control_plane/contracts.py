@@ -1,14 +1,19 @@
-"""Strict contracts for the three bounded Milestone 15 WLED operations."""
+"""Strict code-owned contracts for bounded control-plane operations."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aurora_core.config.models import WLEDOperation
+from aurora_core.config.models import HyperHDROperation, WLEDOperation
 
 WLED_ADAPTER_ID = "wled.fixed_state_adapter"
 POWER_OFF_CONFIRMATION_ID = "wled.confirm_power_off"
 POWER_OFF_CONFIRMATION_VALUE = "confirm_power_off"
+HYPERHDR_ADAPTER_ID = "hyperhdr.fixed_component_state_adapter"
+VIDEO_GRABBER_DISABLE_CONFIRMATION_ID = "hyperhdr.confirm_video_grabber_disable"
+VIDEO_GRABBER_DISABLE_CONFIRMATION_VALUE = "confirm_video_grabber_disable"
+LED_OUTPUT_DISABLE_CONFIRMATION_ID = "hyperhdr.confirm_led_output_disable"
+LED_OUTPUT_DISABLE_CONFIRMATION_VALUE = "confirm_led_output_disable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +94,49 @@ class OperationContract:
             raise ValueError("non-disruptive operations cannot request confirmation")
 
 
+@dataclass(frozen=True, slots=True)
+class HyperHDROperationContract:
+    """Code-owned metadata for one fixed HyperHDR component-state operation."""
+
+    operation_id: HyperHDROperation
+    input_model: type[NoOperationInput]
+    timeout_seconds: float
+    destination_adapter_id: str
+    disruptive: bool
+    confirmation_metadata_id: str | None = None
+    authentication_required: bool = True
+    csrf_required: bool = True
+    audit_required: bool = True
+    sanitized_errors_required: bool = True
+
+    def __post_init__(self) -> None:
+        if self.input_model is not NoOperationInput:
+            raise ValueError("HyperHDR operations accept no browser-selected input")
+        if self.destination_adapter_id != HYPERHDR_ADAPTER_ID:
+            raise ValueError("the fixed HyperHDR destination adapter is required")
+        if not 0.1 <= self.timeout_seconds <= 5.0:
+            raise ValueError("operation timeout must be from 0.1 through 5 seconds")
+        if not (
+            self.authentication_required
+            and self.csrf_required
+            and self.audit_required
+            and self.sanitized_errors_required
+        ):
+            raise ValueError(
+                "control-operation security requirements cannot be disabled"
+            )
+        expected_confirmation = {
+            HyperHDROperation.VIDEO_GRABBER_DISABLE: (
+                VIDEO_GRABBER_DISABLE_CONFIRMATION_ID
+            ),
+            HyperHDROperation.LED_OUTPUT_DISABLE: LED_OUTPUT_DISABLE_CONFIRMATION_ID,
+        }.get(self.operation_id)
+        if self.disruptive and self.confirmation_metadata_id != expected_confirmation:
+            raise ValueError("disable operations require fixed confirmation metadata")
+        if not self.disruptive and self.confirmation_metadata_id is not None:
+            raise ValueError("enable operations cannot request confirmation")
+
+
 def operation_registry(timeout_seconds: float) -> tuple[OperationContract, ...]:
     """Build the deterministic, code-owned registry with a configured timeout."""
     return (
@@ -117,9 +165,51 @@ def operation_registry(timeout_seconds: float) -> tuple[OperationContract, ...]:
     )
 
 
+def hyperhdr_operation_registry(
+    timeout_seconds: float,
+) -> tuple[HyperHDROperationContract, ...]:
+    """Build the exact deterministic Milestone 16 HyperHDR registry."""
+    return (
+        HyperHDROperationContract(
+            HyperHDROperation.VIDEO_GRABBER_ENABLE,
+            NoOperationInput,
+            timeout_seconds,
+            HYPERHDR_ADAPTER_ID,
+            False,
+        ),
+        HyperHDROperationContract(
+            HyperHDROperation.VIDEO_GRABBER_DISABLE,
+            NoOperationInput,
+            timeout_seconds,
+            HYPERHDR_ADAPTER_ID,
+            True,
+            VIDEO_GRABBER_DISABLE_CONFIRMATION_ID,
+        ),
+        HyperHDROperationContract(
+            HyperHDROperation.LED_OUTPUT_ENABLE,
+            NoOperationInput,
+            timeout_seconds,
+            HYPERHDR_ADAPTER_ID,
+            False,
+        ),
+        HyperHDROperationContract(
+            HyperHDROperation.LED_OUTPUT_DISABLE,
+            NoOperationInput,
+            timeout_seconds,
+            HYPERHDR_ADAPTER_ID,
+            True,
+            LED_OUTPUT_DISABLE_CONFIRMATION_ID,
+        ),
+    )
+
+
 REGISTERED_OPERATIONS = operation_registry(2.0)
 IMPLEMENTED_OPERATION_ORDER = tuple(
     contract.operation_id for contract in REGISTERED_OPERATIONS
+)
+REGISTERED_HYPERHDR_OPERATIONS = hyperhdr_operation_registry(2.0)
+HYPERHDR_IMPLEMENTED_OPERATION_ORDER = tuple(
+    contract.operation_id for contract in REGISTERED_HYPERHDR_OPERATIONS
 )
 CONTROL_CAPABILITIES = ControlCapabilities()
 

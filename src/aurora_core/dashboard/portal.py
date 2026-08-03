@@ -437,11 +437,13 @@ def _page_content(report: HealthReport, path: str) -> str:
         return _detail_panel(
             report,
             COMPONENT_BY_NAME["hyperhdr"],
-            future_title="Controls planned for a future milestone",
+            future_title="Controls require the protected control plane",
             future_text=(
-                "This page observes bounded server information only and cannot change "
-                "HyperHDR state."
+                "This public status page remains read-only. Milestone 16 exposes only "
+                "separately enabled, authenticated, allowlisted HyperHDR component "
+                "operations under the protected Controls area."
             ),
+            future_label="Protected · separately enabled",
         )
     if path == "/capture":
         return _detail_panel(report, COMPONENT_BY_NAME["capture"])

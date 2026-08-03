@@ -50,10 +50,17 @@
     limiting, sanitized audit events, and verified-success cache invalidation
     preserve the public health API. See the
     [bounded WLED control guide](wled-controls.md).
+16. **Milestone 16 (complete in this draft branch, pending review and physical
+    proof): Bounded HyperHDR controls.** Exactly four authenticated,
+    CSRF-protected, separately enabled and allowlisted component-state
+    operations control only the video grabber and LED output. One fixed mutation
+    POST plus one fixed serverinfo verification GET, nonblocking serialization,
+    separate attempt limiting, disruptive-action confirmation, sanitized audit,
+    and verified-success cache invalidation preserve health schema version 1.
+    See the [bounded HyperHDR control guide](hyperhdr-controls.md).
 
 ## Planned progression
 
-16. **Milestone 16: Bounded HyperHDR controls.**
 17. **Milestone 17: Profiles, configuration backup, validation, and rollback.**
 18. **Milestone 18: Persistent health history, alerting, and automation.**
 19. **Milestone 19: Multi-zone virtual room model.**
@@ -103,4 +110,4 @@ The following boundaries are mandatory for that future work:
 - Standard ambient operation must remain available as a fallback.
 
 No spatial-intelligence implementation, AI dependency, frame-analysis loop,
-room-zone output, or learning system exists in Milestone 15.
+room-zone output, or learning system exists through Milestone 16.

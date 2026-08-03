@@ -7,7 +7,7 @@ from enum import StrEnum
 
 import structlog
 
-from aurora_core.config.models import WLEDOperation
+from aurora_core.config.models import HyperHDROperation, WLEDOperation
 
 
 class AuditEvent(StrEnum):
@@ -29,6 +29,13 @@ class AuditEvent(StrEnum):
     WLED_OPERATION_BUSY = "wled_operation_busy"
     WLED_CONFIRMATION_REJECTED = "wled_confirmation_rejected"
     WLED_STATE_VERIFICATION_FAILED = "wled_state_verification_failed"
+    HYPERHDR_OPERATION_SUCCEEDED = "hyperhdr_operation_succeeded"
+    HYPERHDR_OPERATION_FAILED = "hyperhdr_operation_failed"
+    HYPERHDR_OPERATION_DENIED = "hyperhdr_operation_denied"
+    HYPERHDR_OPERATION_RATE_LIMITED = "hyperhdr_operation_rate_limited"
+    HYPERHDR_OPERATION_BUSY = "hyperhdr_operation_busy"
+    HYPERHDR_CONFIRMATION_REJECTED = "hyperhdr_confirmation_rejected"
+    HYPERHDR_STATE_VERIFICATION_FAILED = "hyperhdr_state_verification_failed"
 
 
 class AuditReason(StrEnum):
@@ -65,6 +72,12 @@ class AuditReason(StrEnum):
     MALFORMED_JSON = "malformed_json"
     MISSING_EXPECTED_STATE = "missing_expected_state"
     STATE_VERIFICATION_MISMATCH = "state_verification_mismatch"
+    UNAUTHORIZED_RESPONSE = "unauthorized_response"
+    MISSING_SUCCESS = "missing_success"
+    INVALID_SUCCESS = "invalid_success"
+    COMMAND_MISMATCH = "command_mismatch"
+    MISSING_COMPONENT_STATE = "missing_component_state"
+    AMBIGUOUS_COMPONENT_STATE = "ambiguous_component_state"
     VERIFIED = "verified"
 
 
@@ -96,9 +109,9 @@ class SecurityAudit:
         self,
         event: AuditEvent,
         reason: AuditReason,
-        operation: WLEDOperation,
+        operation: WLEDOperation | HyperHDROperation,
     ) -> None:
-        """Emit a fixed WLED event without accepting arbitrary audit fields."""
+        """Emit a fixed operation event without accepting arbitrary audit fields."""
         self._sink(
             "security_audit",
             {

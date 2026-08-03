@@ -5,9 +5,9 @@ responsive landing portal. It is a presentation and architecture milestone: the
 portal makes the existing sanitized health snapshot easier to navigate while
 remaining dependency-free, local, and completely read-only. Milestone 13 itself
 was unauthenticated; Milestone 14 later adds a separate optional protected
-status boundary without changing these public pages. Milestone 15 later adds a
-separately enabled protected WLED page while the Milestone 13 public portal
-remains read-only.
+status boundary without changing these public pages. Milestones 15 and 16 later
+add separately enabled protected WLED and HyperHDR pages while the Milestone 13
+public portal remains read-only.
 
 Run it with the existing command:
 
@@ -33,6 +33,7 @@ and installations require no configuration change.
 | `/api/health` | Unchanged machine-readable health response, schema version 1. |
 | `/static/portal.css` | Locally bundled portal presentation. |
 | `/controls/wled` | Authenticated Milestone 15 WLED status and bounded forms; unavailable when authentication is disabled. |
+| `/controls/hyperhdr` | Authenticated Milestone 16 HyperHDR status and four bounded forms; unavailable when authentication is disabled. |
 
 Milestone 14 adds separate authentication routes at `GET`/`POST /login` and
 `POST /logout`, plus protected status routes at `GET /controls` and
@@ -40,7 +41,8 @@ Milestone 14 adds separate authentication routes at `GET`/`POST /login` and
 renders Login or Controls navigation according to server-side session state.
 When it is disabled, those protected routes remain unavailable.
 Milestone 15 adds three fixed POST routes under `/controls/wled`; they are not
-part of the public portal route group.
+part of the public portal route group. Milestone 16 adds four fixed POST routes
+under `/controls/hyperhdr` with the same separation.
 
 Every HTML page has a semantic header, primary navigation, current page title,
 overall health indicator, component status where applicable, snapshot time,
@@ -64,8 +66,9 @@ the portal or another component page offline.
 
 The Milestone 13 portal added no state-changing operation. Milestone 14 accepted
 POST only for login and CSRF-protected logout in a separate authentication
-boundary. Milestone 15 adds only the three protected, route-specific WLED POST
-handlers documented in [bounded WLED controls](wled-controls.md); every other
+boundary. Milestones 15 and 16 add only the protected, route-specific WLED and
+HyperHDR POST handlers documented in [bounded WLED controls](wled-controls.md)
+and [bounded HyperHDR controls](hyperhdr-controls.md); every other
 unsupported mutation method still returns `405 Method Not Allowed`. There are
 no arbitrary JSON inputs, configuration writes, service commands, power-supply
 commands, DDP output, frame capture, persistence, or outbound internet access.
@@ -88,7 +91,7 @@ caching of health responses.
 The server intentionally does not implement TLS. Keep it on the local host or a
 trusted, firewall-controlled LAN as documented in the health-dashboard guide.
 
-## Control-plane boundary after Milestones 14 and 15
+## Control-plane boundary after Milestones 14 through 16
 
 Health collection and presentation are not a control plane. Milestone 14 creates
 a separate fail-closed authenticated foundation with process-local sessions,
@@ -103,6 +106,12 @@ brightness. Those operations require the existing authenticated session and
 CSRF checks plus a separate control switch and explicit allowlist. The protected
 WLED GET page uses the shared health snapshot; capability, login, logout, and
 mutation requests do not poll health. No public health page mutates a device.
+
+Milestone 16 registers only HyperHDR video-grabber enable/disable and LED-output
+enable/disable. The protected page also uses the shared snapshot. Each accepted
+operation can perform one fixed mutation POST and one fixed verification GET;
+the page itself never polls. The capability API reports a deterministic union
+of enabled and allowlisted WLED and HyperHDR operations.
 
 Future state-changing controls must remain inside that boundary and must not
 turn the health snapshot API into a mutation or forwarding channel. Before an
@@ -162,6 +171,7 @@ mutation-safety contracts, but none of the device, service, output, persistence,
 room, or AI capabilities deferred by Milestone 13. The public portal routes and
 health snapshot remain read-only and backward compatible.
 
-Milestone 15 later adds only the separately protected WLED operation subset.
-It does not alter the historical Milestone 13 scope or implement the other
-deferred controls, room model, or spatial-intelligence features.
+Milestones 15 and 16 later add only the separately protected WLED and HyperHDR
+operation subsets. They do not alter the historical Milestone 13 scope or
+implement combined controls, profiles, automation, the room model, or
+spatial-intelligence features.

@@ -289,3 +289,33 @@ response, credential, cookie, session, CSRF token, client identifier, or raw
 exception is recorded. The public portal and `GET /api/health` remain read-only
 and retain health schema version 1. See the
 [bounded WLED control guide](wled-controls.md).
+
+## Bounded HyperHDR control boundary (Milestone 16)
+
+Milestone 16 adds a second, independent mutation service beside the WLED
+service. Its exact registry contains video-grabber enable/disable and LED-output
+enable/disable. Code maps those operations only to `VIDEOGRABBER` or
+`LEDDEVICE` and a fixed Boolean. Authentication, enabled and validated HyperHDR
+configuration, the separate control switch, the configured allowlist, and the
+code registry must all agree before a capability exists.
+
+The dedicated mutation adapter performs exactly one POST to `/json-rpc` with a
+code-generated `componentstate` object. It rejects redirects, bounds timeout and
+response size, and requires a top-level Boolean `success: true` acknowledgement
+whose optional command matches. It does not reuse or generalize the existing
+read-only transport.
+
+After acknowledgement, the adapter invokes the existing fixed `serverinfo` GET
+transport and parser exactly once. `VIDEOGRABBER` is verified against
+`grabber_active`; `LEDDEVICE` is verified against `led_output_active`. Missing,
+ambiguous, opposite, malformed, or unavailable verification becomes an
+unverified warning because the change may already have applied. No retry,
+rollback, response-provided URL, or second mutation occurs.
+
+All HyperHDR mutations share one nonblocking process-local lock and use their
+own bounded monotonic limiter. Only verified success invalidates the shared
+health cache, without polling. The protected page reads that shared snapshot;
+the public portal and `GET /api/health` remain read-only and retain schema
+version 1. Audit fields remain limited to fixed event/reason values and one
+allowlisted operation ID. See the
+[bounded HyperHDR control guide](hyperhdr-controls.md).

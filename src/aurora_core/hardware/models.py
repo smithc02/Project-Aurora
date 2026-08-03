@@ -46,6 +46,8 @@ class HyperHDRServerInfo:
     instance_running: bool | None = None
     grabber_active: bool | None = None
     led_output_active: bool | None = None
+    component_state_names: frozenset[str] = frozenset()
+    ambiguous_component_states: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
