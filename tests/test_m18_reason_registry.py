@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from itertools import product
 
 import pytest
 
@@ -34,14 +35,21 @@ def _wled_details(
     }
 
 
-def _hyperhdr_details(reason: str = "validated") -> dict[str, object]:
+def _hyperhdr_details(
+    reason: str = "validated",
+    *,
+    instance_running: bool = True,
+    grabber_active: bool = True,
+    led_output_active: bool = True,
+) -> dict[str, object]:
+    validated = reason == "validated"
     return {
         "reason_code": reason,
-        "server_info_received": reason == "validated",
+        "server_info_received": validated,
         "hdr_mode_enabled": None,
-        "instance_running": True if reason == "validated" else None,
-        "grabber_active": True if reason == "validated" else None,
-        "led_output_active": True if reason == "validated" else None,
+        "instance_running": instance_running if validated else None,
+        "grabber_active": grabber_active if validated else None,
+        "led_output_active": led_output_active if validated else None,
     }
 
 
@@ -202,6 +210,115 @@ def test_hyperhdr_fixed_states_and_inactive_components() -> None:
         NormalizedReason.HYPERHDR_VIDEO_GRABBER_INACTIVE,
         NormalizedReason.HYPERHDR_LED_OUTPUT_INACTIVE,
     )
+
+
+@pytest.mark.parametrize(
+    ("instance_running", "grabber_active", "led_output_active"),
+    tuple(product((True, False), repeat=3)),
+)
+def test_every_complete_validated_hyperhdr_component_shape(
+    instance_running: bool,
+    grabber_active: bool,
+    led_output_active: bool,
+) -> None:
+    details = _hyperhdr_details(
+        instance_running=instance_running,
+        grabber_active=grabber_active,
+        led_output_active=led_output_active,
+    )
+    expected = tuple(
+        reason
+        for active, reason in (
+            (instance_running, NormalizedReason.HYPERHDR_INSTANCE_INACTIVE),
+            (grabber_active, NormalizedReason.HYPERHDR_VIDEO_GRABBER_INACTIVE),
+            (led_output_active, NormalizedReason.HYPERHDR_LED_OUTPUT_INACTIVE),
+        )
+        if not active
+    ) or (NormalizedReason.HYPERHDR_HEALTHY,)
+    status = (
+        "healthy"
+        if all((instance_running, grabber_active, led_output_active))
+        else "degraded"
+    )
+    assert _normalize("hyperhdr", status, details).reasons == expected
+
+
+@pytest.mark.parametrize("hdr_mode_enabled", [None, True, False])
+def test_validated_hyperhdr_accepts_current_hdr_observation_shapes(
+    hdr_mode_enabled: bool | None,
+) -> None:
+    details = _hyperhdr_details()
+    details["hdr_mode_enabled"] = hdr_mode_enabled
+    assert _normalize("hyperhdr", "healthy", details).reasons == (
+        NormalizedReason.HYPERHDR_HEALTHY,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "details"),
+    [
+        (
+            "healthy",
+            dict(_hyperhdr_details(), server_info_received=False),
+        ),
+        (
+            "healthy",
+            dict(_hyperhdr_details(), instance_running=None),
+        ),
+        (
+            "healthy",
+            dict(_hyperhdr_details(), grabber_active=None),
+        ),
+        (
+            "healthy",
+            dict(_hyperhdr_details(), led_output_active=None),
+        ),
+        (
+            "unavailable",
+            dict(_hyperhdr_details("connection_failed"), server_info_received=True),
+        ),
+        (
+            "degraded",
+            dict(
+                _hyperhdr_details("http_error"),
+                instance_running=True,
+                grabber_active=True,
+                led_output_active=True,
+            ),
+        ),
+        (
+            "unavailable",
+            dict(
+                _hyperhdr_details("hyperhdr_disabled"),
+                grabber_active=False,
+            ),
+        ),
+        (
+            "healthy",
+            _hyperhdr_details(grabber_active=False),
+        ),
+        (
+            "unavailable",
+            _hyperhdr_details(),
+        ),
+    ],
+)
+def test_contradictory_hyperhdr_shapes_are_inconsistent(
+    status: str, details: dict[str, object]
+) -> None:
+    result = _normalize("hyperhdr", status, details)
+    assert result.decision is ReasonDecision.REJECTED
+    assert result.reasons == ()
+    assert result.rejection is RejectionCode.INCONSISTENT_SNAPSHOT
+
+
+def test_unknown_hyperhdr_value_rejects_without_copying_value() -> None:
+    unknown = "free-form-value-must-not-appear"
+    details = _hyperhdr_details()
+    details["server_info_received"] = unknown
+    result = _normalize("hyperhdr", "healthy", details)
+    assert result.rejection is RejectionCode.UNKNOWN_VALUE
+    assert unknown not in repr(result)
 
 
 @pytest.mark.parametrize(

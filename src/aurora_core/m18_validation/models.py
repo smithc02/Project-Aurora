@@ -30,6 +30,10 @@ class CheckResult:
     summary: str
     required: bool = True
 
+    def __post_init__(self) -> None:
+        if self.status is CheckStatus.SKIPPED and self.required:
+            raise ValueError("skipped_check_must_be_non_required")
+
     def to_dict(self) -> dict[str, Scalar]:
         return {
             "name": self.name,
@@ -66,8 +70,9 @@ class ToolReport:
 
     @property
     def passed(self) -> bool:
-        return not any(
-            check.required and check.status is CheckStatus.FAIL for check in self.checks
+        return all(
+            not check.required or check.status is CheckStatus.PASS
+            for check in self.checks
         )
 
     def to_dict(self) -> dict[str, object]:

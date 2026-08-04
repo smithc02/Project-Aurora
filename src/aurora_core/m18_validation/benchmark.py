@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote
 
 from aurora_core.m18_validation.filesystem import (
     FilesystemBoundaryError,
     create_secure_file,
+    require_same_identity,
     validate_protected_directory,
     validate_regular_file,
 )
@@ -109,7 +111,7 @@ def run_benchmark(root: Path, config: BenchmarkConfig) -> ToolReport:
     database = root / f"m18-benchmark-{config.scenario.value}.sqlite3"
     try:
         create_secure_file(database)
-        connection = _connect(database)
+        connection = _connect_existing_database(database)
         _create_schema(connection)
     except (OSError, sqlite3.Error, FilesystemBoundaryError):
         return ToolReport(
@@ -132,8 +134,9 @@ def run_benchmark(root: Path, config: BenchmarkConfig) -> ToolReport:
         )
     )
     counters = _Counters()
+    setup_files = _managed_sizes(database)
+    _record_managed_sizes(counters, setup_files)
     rng = random.Random(config.seed)
-    before_files = {"main": 0, "wal": 0, "shm": 0}
     before_writes = _linux_write_bytes()
     before_cpu = time.process_time()
     started = time.monotonic()
@@ -233,16 +236,13 @@ def run_benchmark(root: Path, config: BenchmarkConfig) -> ToolReport:
             else "bounded integrity probe failed",
         )
     )
-    after_files = _managed_sizes(database)
+    final_files = _managed_sizes(database)
     write_delta = (
         None
         if before_writes is None or after_writes is None
-        else max(0, after_writes - before_writes)
-    )
-    total_growth = max(
-        0,
-        counters.peak_total_bytes,
-        sum(after_files.values()) - sum(before_files.values()),
+        else after_writes - before_writes
+        if after_writes >= before_writes
+        else None
     )
     rate = counters.sample_transactions / elapsed if elapsed > 0 else 0.0
     max_rss = _maximum_resident_bytes()
@@ -269,22 +269,7 @@ def run_benchmark(root: Path, config: BenchmarkConfig) -> ToolReport:
                 PROJECTED_TRANSACTIONS_PER_DAY,
                 "transactions/day",
             ),
-            _measured("main_database_bytes", after_files["main"], "bytes"),
-            Measurement(
-                "wal_bytes",
-                MeasurementKind.MEASURED,
-                counters.peak_wal_bytes,
-                "bytes",
-                "peak observed before a bounded checkpoint",
-            ),
-            Measurement(
-                "shared_memory_bytes",
-                MeasurementKind.MEASURED,
-                counters.peak_shm_bytes,
-                "bytes",
-                "peak observed before a bounded checkpoint",
-            ),
-            _measured("total_managed_file_growth", total_growth, "bytes"),
+            *_storage_measurements(setup_files, counters, final_files),
             _write_measurement("process_write_bytes", write_delta),
             _project_write_measurement(
                 "projected_write_bytes_per_hour",
@@ -334,10 +319,23 @@ def run_benchmark(root: Path, config: BenchmarkConfig) -> ToolReport:
     )
 
 
-def _connect(path: Path) -> sqlite3.Connection:
+def _connect_existing_database(path: Path) -> sqlite3.Connection:
+    """Open one securely precreated benchmark database without creating it."""
+    identity = validate_regular_file(path)
+    uri = f"file:{quote(path.as_posix(), safe='/')}?mode=rw"
     previous_umask = os.umask(0o077)
     try:
-        return sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
+        connection = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=BUSY_TIMEOUT_MS / 1000,
+        )
+        try:
+            require_same_identity(path, identity)
+        except FilesystemBoundaryError:
+            connection.close()
+            raise
+        return connection
     finally:
         os.umask(previous_umask)
 
@@ -525,10 +523,7 @@ def _bounded_checkpoint(
     connection: sqlite3.Connection, database: Path, counters: _Counters
 ) -> None:
     sizes = _managed_sizes(database)
-    counters.peak_main_bytes = max(counters.peak_main_bytes, sizes["main"])
-    counters.peak_wal_bytes = max(counters.peak_wal_bytes, sizes["wal"])
-    counters.peak_shm_bytes = max(counters.peak_shm_bytes, sizes["shm"])
-    counters.peak_total_bytes = max(counters.peak_total_bytes, sum(sizes.values()))
+    _record_managed_sizes(counters, sizes)
     wal = Path(f"{database}-wal")
     before = wal.stat().st_size if wal.exists() else 0
     if before > 4 * 1024 * 1024:
@@ -541,12 +536,13 @@ def _bounded_checkpoint(
     counters.checkpoints += 1
     counters.checkpoint_seconds += duration
     counters.checkpoint_bytes += int(result[2]) * PAGE_SIZE
+    _record_managed_sizes(counters, _managed_sizes(database))
 
 
 def _validate_database(path: Path) -> bool:
     try:
         validate_regular_file(path)
-        connection = _connect(path)
+        connection = _connect_existing_database(path)
         try:
             identity = connection.execute("PRAGMA application_id").fetchone()
             version = connection.execute("PRAGMA user_version").fetchone()
@@ -571,7 +567,7 @@ def _crash_recovery(root: Path, scenario: BenchmarkScenario) -> bool:
     path = root / f"m18-fixed-crash-probe-{scenario.value}.sqlite3"
     try:
         create_secure_file(path)
-        connection = _connect(path)
+        connection = _connect_existing_database(path)
         _create_schema(connection)
         connection.execute("CREATE TABLE crash_probe(value TEXT NOT NULL)")
         connection.execute("INSERT INTO crash_probe(value) VALUES ('committed')")
@@ -587,7 +583,7 @@ def _crash_recovery(root: Path, scenario: BenchmarkScenario) -> bool:
             return False
         if process.exitcode != 23:
             return False
-        recovered = _connect(path)
+        recovered = _connect_existing_database(path)
         try:
             values = recovered.execute(
                 "SELECT value FROM crash_probe ORDER BY rowid"
@@ -601,7 +597,7 @@ def _crash_recovery(root: Path, scenario: BenchmarkScenario) -> bool:
 
 
 def _crash_child(path: Path) -> None:
-    connection = _connect(path)
+    connection = _connect_existing_database(path)
     connection.execute("BEGIN IMMEDIATE")
     connection.execute("INSERT INTO crash_probe(value) VALUES ('uncommitted')")
     os._exit(23)
@@ -622,7 +618,7 @@ def _start_without_coverage_hooks(process: _StartableProcess) -> None:
 
 def _identity_matches(path: Path) -> bool:
     try:
-        connection = _connect(path)
+        connection = _connect_existing_database(path)
         try:
             application_id = connection.execute("PRAGMA application_id").fetchone()
             user_version = connection.execute("PRAGMA user_version").fetchone()
@@ -632,13 +628,13 @@ def _identity_matches(path: Path) -> bool:
             )
         finally:
             connection.close()
-    except sqlite3.Error:
+    except (OSError, sqlite3.Error, FilesystemBoundaryError):
         return False
 
 
 def _quick_check(path: Path) -> bool:
     try:
-        connection = _connect(path)
+        connection = _connect_existing_database(path)
         started = time.monotonic()
         try:
             return (
@@ -647,7 +643,7 @@ def _quick_check(path: Path) -> bool:
             )
         finally:
             connection.close()
-    except sqlite3.Error:
+    except (OSError, sqlite3.Error, FilesystemBoundaryError):
         return False
 
 
@@ -661,6 +657,48 @@ def _managed_sizes(path: Path) -> dict[str, int]:
         if Path(f"{path}-shm").exists()
         else 0,
     }
+
+
+def _record_managed_sizes(counters: _Counters, sizes: dict[str, int]) -> None:
+    counters.peak_main_bytes = max(counters.peak_main_bytes, sizes["main"])
+    counters.peak_wal_bytes = max(counters.peak_wal_bytes, sizes["wal"])
+    counters.peak_shm_bytes = max(counters.peak_shm_bytes, sizes["shm"])
+    counters.peak_total_bytes = max(counters.peak_total_bytes, sum(sizes.values()))
+
+
+def _storage_measurements(
+    setup: dict[str, int], counters: _Counters, final: dict[str, int]
+) -> tuple[Measurement, ...]:
+    setup_total = sum(setup.values())
+    final_total = sum(final.values())
+    return (
+        _measured("setup_main_database_bytes", setup["main"], "bytes"),
+        _measured("setup_wal_bytes", setup["wal"], "bytes"),
+        _measured("setup_shared_memory_bytes", setup["shm"], "bytes"),
+        _measured("setup_total_managed_bytes", setup_total, "bytes"),
+        _measured("peak_main_database_bytes", counters.peak_main_bytes, "bytes"),
+        _measured("peak_wal_bytes", counters.peak_wal_bytes, "bytes"),
+        _measured("peak_shared_memory_bytes", counters.peak_shm_bytes, "bytes"),
+        _measured("peak_total_managed_bytes", counters.peak_total_bytes, "bytes"),
+        _measured("final_main_database_bytes", final["main"], "bytes"),
+        _measured("final_wal_bytes", final["wal"], "bytes"),
+        _measured("final_shared_memory_bytes", final["shm"], "bytes"),
+        _measured("final_total_managed_bytes", final_total, "bytes"),
+        Measurement(
+            "workload_managed_file_growth_bytes",
+            MeasurementKind.MEASURED,
+            counters.peak_total_bytes - setup_total,
+            "bytes",
+            "peak managed-file growth above the measured post-schema baseline",
+        ),
+        Measurement(
+            "workload_final_managed_file_delta_bytes",
+            MeasurementKind.MEASURED,
+            final_total - setup_total,
+            "bytes",
+            "signed final managed-file delta from the post-schema baseline",
+        ),
+    )
 
 
 def _linux_write_bytes() -> int | None:

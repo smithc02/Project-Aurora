@@ -307,6 +307,9 @@ def _normalize_hyperhdr(status: str, details: dict[str, object]) -> ReasonResult
         return _accepted(NormalizedReason.HYPERHDR_COLLECTOR_FAILED)
     if set(details) != _HYPERHDR_DETAIL_KEYS:
         return _rejected(RejectionCode.UNKNOWN_DETAILS)
+    reason = details["reason_code"]
+    if not isinstance(reason, str):
+        return _rejected(RejectionCode.UNKNOWN_VALUE)
     if type(details["server_info_received"]) is not bool or any(
         details[key] is not None and type(details[key]) is not bool
         for key in (
@@ -317,22 +320,37 @@ def _normalize_hyperhdr(status: str, details: dict[str, object]) -> ReasonResult
         )
     ):
         return _rejected(RejectionCode.UNKNOWN_VALUE)
-    reason = details["reason_code"]
+    known_reason = (
+        reason == "hyperhdr_disabled"
+        or reason == "validated"
+        or reason in _HYPERHDR_FAILURES
+    )
+    if not known_reason:
+        return _rejected(RejectionCode.UNKNOWN_VALUE)
+    empty_observation = (
+        details["server_info_received"] is False
+        and details["hdr_mode_enabled"] is None
+        and details["instance_running"] is None
+        and details["grabber_active"] is None
+        and details["led_output_active"] is None
+    )
     if reason == "hyperhdr_disabled":
-        if status != "unavailable":
+        if status != "unavailable" or not empty_observation:
             return _rejected(RejectionCode.INCONSISTENT_SNAPSHOT)
         return _accepted(NormalizedReason.HYPERHDR_DISABLED)
     if reason in _HYPERHDR_FAILURES:
         expected = "unavailable" if reason in _NETWORK_UNAVAILABLE else "degraded"
-        if status != expected:
+        if status != expected or not empty_observation:
             return _rejected(RejectionCode.INCONSISTENT_SNAPSHOT)
         return _accepted(_HYPERHDR_MAP[str(reason)])
-    if reason != "validated":
-        return _rejected(RejectionCode.UNKNOWN_VALUE)
     state_values = tuple(
         details[key]
         for key in ("instance_running", "grabber_active", "led_output_active")
     )
+    if details["server_info_received"] is not True or any(
+        type(value) is not bool for value in state_values
+    ):
+        return _rejected(RejectionCode.INCONSISTENT_SNAPSHOT)
     reasons = tuple(
         reason_code
         for value, reason_code in zip(

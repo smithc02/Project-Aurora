@@ -159,3 +159,5 @@ def test_report_fixed_status_and_required_skip_semantics() -> None:
     )
     assert not failed.passed
     assert json.loads(failed.to_json())["result"] == "FAIL"
+    with pytest.raises(ValueError, match="skipped_check_must_be_non_required"):
+        CheckResult("required-skip", CheckStatus.SKIPPED, "invalid")

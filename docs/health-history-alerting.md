@@ -261,11 +261,31 @@ The complete normalized registry is:
 Intentional WLED, HyperHDR, and capture disablement is therefore distinct from
 an observation or collector failure. WLED reasons are derived only from the
 exact `reason_code`, `info_reason_code`, and `state_reason_code` values listed
-above. HyperHDR inactivity is derived only from exact Boolean `false` values
-for instance, video-grabber, and LED-output state. Capture activity uses only
-the fixed `HyperHDR serverinfo` source marker and exact Boolean or null grabber
-state. Raspberry Pi reasons use only the sanitized component status because
-its numeric metric and configured-threshold details must not be persisted.
+above. HyperHDR normalization accepts only these exact current collector
+projections:
+
+- `collector_failed` is the short unavailable projection containing only that
+  fixed reason code;
+- `hyperhdr_disabled` is unavailable with `server_info_received=false` and all
+  four optional observation fields null;
+- each fixed transport, HTTP, protocol, or server failure has
+  `server_info_received=false` and all optional observation fields null;
+  connection failure and timeout are unavailable, while the remaining fixed
+  failures are degraded; and
+- `validated` has `server_info_received=true`, actual Boolean instance,
+  video-grabber, and LED-output states, and a Boolean-or-null HDR observation.
+  All three active states produce healthy; any inactive state produces degraded
+  and only the corresponding fixed inactivity reasons.
+
+A validated projection with missing component states, a failure that claims a
+successful or active observation, a disabled projection with activity, or a
+status that contradicts the complete validated state is rejected as
+`INCONSISTENT_SNAPSHOT`. Unknown reason or field value types are rejected as
+`UNKNOWN_VALUE`. No free-form value is copied into either result. Capture
+activity uses only the fixed `HyperHDR serverinfo` source marker and exact
+Boolean or null grabber state. Raspberry Pi reasons use only the sanitized
+component status because its numeric metric and configured-threshold details
+must not be persisted.
 
 The registry recognizes the current collector's remaining detail keys only to
 verify that the input shape is known. It does not compare, copy, interpolate,
@@ -853,6 +873,14 @@ temporary directory, use code-generated filenames, redact the test root from
 reports, make no network or hardware request, and are not production database,
 migration, backup, restore, or enablement commands.
 
+The endurance harness securely precreates each disposable main and crash-probe
+database. Every later benchmark, child-process, restart, identity, and
+quick-check open goes through one existing-database helper using SQLite URI
+`mode=rw`. A missing expected database or a path replaced by an unexpected
+object fails closed and is never recreated. SQLite may create its ordinary WAL
+and shared-memory sidecars only beside that precreated file in the protected
+directory; those sidecars remain subject to the platform boundary checks.
+
 Run the target-platform gate on the Raspberry Pi from a reviewed source tree:
 
 ```console
@@ -924,10 +952,20 @@ Each run emits a concise human summary on standard error and one compact JSON
 report on standard output. The protected root also contains only synthetic
 benchmark databases and SQLite sidecars. `PASS` means that the individual
 fixed probe completed within its implemented budget. `FAIL` means a required
-gate failed and the command exits nonzero. `SKIPPED` is permitted only for a
-clearly named check that an ordinary service account or deployed interface
-cannot perform; it is not success evidence and review decides whether it is
-blocking. The benchmark labels every value as measured, projected,
+gate failed and the command exits nonzero. `SKIPPED` is permitted only for an
+explicitly non-required, clearly named check that an ordinary service account
+or deployed interface cannot perform. A required check can only pass or fail;
+it cannot be skipped while the report remains `PASS`. A skip is not success
+evidence, and review decides whether it remains operationally blocking.
+
+Storage accounting distinguishes the measured post-schema setup size, peak
+main/WAL/shared-memory and total sizes, final sizes, peak workload growth above
+the setup baseline, and the signed final delta from that baseline. The signed
+delta remains negative when checkpointing leaves the final managed files
+smaller than setup; it is not clamped into positive growth. Linux
+`/proc/self/io` process-write bytes and their hourly/daily projections are
+reported separately because they measure operating-system write activity, not
+logical managed-file growth. Every value is labeled measured, projected,
 unavailable, architecture limit, or decision pending. A successful command
 does not approve the provisional interval, retention, heartbeat, or size
 defaults.
