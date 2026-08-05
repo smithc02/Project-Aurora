@@ -2,16 +2,50 @@
 
 ## Status
 
-This document proposes Milestone 18 architecture. It does not implement a
-database, configuration fields, scheduler, worker, route, alert, notification,
-migration, or automation action. Milestones 12 through 17 remain the current
-behavior.
+Milestone 18 implementation is in progress. The first production slice adds an
+isolated strict health projection, an independent finite reason registry, exact
+SQLite schema version 1 DDL, and explicit secure create and fail-closed
+open-existing storage boundaries. No current runtime entry point imports the
+package, no deployment creates a database, and production history remains
+disabled and unavailable.
+
+This slice does not add configuration fields, a scheduler, worker, route,
+sample ingestion, alert mutation, query, migration, backup, restore,
+notification, or automation action. Milestones 12 through 17 remain the
+current behavior, including public `GET /api/health` schema version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
 schema version 1 contract, the shared `HealthService` cache, authentication,
 WLED or HyperHDR controls, configuration-profile commands, or filesystem
 backup behavior.
+
+### First implementation slice
+
+The production-only `aurora_core.health_history` package establishes these
+reviewable boundaries without runtime integration:
+
+- immutable code-owned enums and bounded projection records;
+- an independent copy of the accepted finite normalized-reason mapping, with
+  production/reference parity tests and no import from `m18_validation`;
+- SHA-256 canonical projection digests of exactly 32 bytes, independent of
+  mapping insertion order, free-form messages, excluded detail values, and the
+  later recording time;
+- fixed production SQLite `application_id` `0x41555248` and `user_version` 1;
+- exclusive new-file creation in an existing owned mode-`0700` directory, with
+  a mode-`0600` main file and no overwrite or reuse;
+- URI `mode=rw` opening of existing databases so a missing file is never
+  created implicitly;
+- pre-open and post-open type, owner, mode, link-count, device, inode, and
+  sidecar validation; and
+- exact object, definition, migration-ledger, pragma, and one bounded
+  `quick_check(1)` verification with no repair or recreation.
+
+Python's standard-library `sqlite3` still opens the validated database by
+pathname. It does not accept the already inspected file descriptor and this
+implementation does not claim that SQLite's internal open uses `O_NOFOLLOW`.
+The accepted mode-`0700` directory and dedicated-service-account threat model
+remain mandatory.
 
 ## Scope
 
@@ -357,10 +391,14 @@ reason. Comprehensive synthetic tests cover every mapping, input-order and
 message independence, unknown rejection, disabled-state distinctions, and the
 inability of prohibited values to enter output.
 
-## Proposed database schema
+## Schema version 1 storage foundation
 
-The logical schema uses the following tables. Exact SQL belongs to the future
-implementation review.
+The first implementation slice supplies exact code-owned DDL for the following
+tables and indexes. Creation publishes them in one transaction, sets the fixed
+application and schema identities, inserts exactly one version-1 migration
+ledger row, and initializes one fixed `evaluation_state` row per scope. The
+store exposes no arbitrary SQL, ingestion, alert mutation, query, migration,
+backup, or restore method.
 
 ### `schema_migrations`
 
@@ -394,7 +432,9 @@ idempotent.
 - sample foreign key with cascading deletion;
 - fixed component name;
 - status;
-- normalized nullable reason code;
+- one required normalized reason code plus two fixed nullable reason-code
+  slots, preserving the accepted maximum of three reasons without JSON or an
+  additional open-ended metadata table;
 - checked-at UTC microseconds;
 - bounded latency milliseconds; and
 - nullable last-successful UTC microseconds.
@@ -439,9 +479,25 @@ codes fail closed at the model boundary.
 
 ## Schema versioning and migrations
 
-Schema version 1 should create the tables and indexes in one transaction. Each
-later version must be a code-owned, forward-only migration from exactly one
-known predecessor. Startup refuses a newer or unknown version.
+Schema version 1 creates the tables and indexes in one transaction. No version
+upgrade or down migration is implemented in this slice. Each later version
+must be a code-owned, forward-only migration from exactly one known predecessor.
+Opening refuses a newer, older, altered, additional-object, or unknown schema.
+
+The exact required indexes cover newest-first samples, overall transitions,
+component history, replay uniqueness, the single active alert per scope/kind,
+alert lifecycle and recovery, and event timelines. Database `CHECK`
+constraints cover every fixed enum, digest length, timestamps, durations, and
+counters. Component rows cascade only with their sample; alert events cascade
+only with their alert. Retained alert and evaluator sample references use
+`SET NULL` so bounded history cleanup does not implicitly delete lifecycle
+evidence.
+
+Creation and open-existing are intentionally separate calls. Failed initial
+creation removes only the unpublished main file when its managed identity still
+matches the file exclusively created by that call. Opening always uses
+`mode=rw`, validates the exact schema and identities, and never repairs,
+replaces, or recreates operator evidence.
 
 Before a migration, the operator-visible migration workflow must create and
 verify a separate SQLite backup under the 16,384-page, 64-MiB, 30-second online
@@ -457,7 +513,7 @@ older Aurora release must refuse a newer schema. Software rollback therefore
 requires restoring the verified pre-migration history backup or disabling the
 history feature; it must not alter the active Aurora YAML or device state.
 
-## Snapshot ingestion and deduplication
+## Future snapshot ingestion and deduplication
 
 The scheduler asks the shared `HealthService` for one report at each monotonic
 deadline. It never performs catch-up polls. The projection is validated and
@@ -486,6 +542,10 @@ write volume.
 If a dashboard request recently refreshed the cache, the scheduler may ingest
 that same report once. Repeated cache reads with the same observation time and
 digest are idempotent and do not inflate counters or history.
+
+Atomic sample ingestion and deterministic translation into evaluation and alert
+state are the next planned implementation slice. They are not enabled by the
+storage foundation.
 
 ## Missed sampling periods
 
