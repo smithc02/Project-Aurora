@@ -122,7 +122,8 @@ filesystems or multiple uncoordinated writer services.
 
 ## Recommended resource envelope
 
-These are proposed implementation defaults, not current configuration fields:
+These are reviewed initial implementation defaults, not current configuration
+fields or active runtime behavior:
 
 | Policy | Recommendation | Required bound |
 | --- | --- | --- |
@@ -144,7 +145,7 @@ backup files. The implementation should enforce `max_page_count`, bounded WAL
 checkpoints, a minimum free-space reserve, and a pre-transaction storage check.
 If those controls disagree, the most restrictive result wins.
 
-### Write-volume strategy and acceptance gate
+### Write-volume strategy and accepted ceilings
 
 History-row compaction does not mean write-free sampling. Schema version 1
 should deliberately perform at most one bounded SQLite state transaction for
@@ -154,39 +155,96 @@ checkpoint state even when it inserts no `health_samples` row. Projection
 rejection occurs before the transaction. There is no sampling-write retry and
 no second transaction for alert evaluation.
 
-At the proposed 30-second interval, sampling therefore has a hard ceiling of
-120 transactions per hour and 2,880 per day. One hourly retention transaction
-is permitted separately. Operator acknowledgment, explicit backup, migration,
-and restore operations are not part of the scheduled rate and require their
-own bounds. The initial implementation must not add a no-write fast path: doing
-so safely would first require a separately reviewed durable representation of
-debounce, gap, and restart-checkpoint state.
+At the approved initial 30-second interval, sampling therefore has a hard
+ceiling of 120 transactions per hour and 2,880 per day. One hourly retention
+transaction is permitted separately. Operator acknowledgment, explicit backup,
+migration, and restore operations are not part of the scheduled rate and
+require their own bounds. The initial implementation must not add a no-write
+fast path: doing so safely would first require a separately reviewed durable
+representation of debounce, gap, and restart-checkpoint state.
 
-The proposed defaults remain provisional until an isolated synthetic workload
-passes all of these Raspberry Pi 5 acceptance criteria for at least 24 hours,
-including one clean restart and repeated abrupt process termination at
-different transaction phases:
+The reviewed target-platform acceptance ceilings are:
 
-| Measurement | Provisional acceptance ceiling |
+| Measurement | Accepted implementation ceiling |
 | --- | --- |
-| Sampling transactions | No more than 120 per hour or 2,880 per day, with no hidden retry transaction. |
-| Maintenance transactions | No more than one retention transaction per hour in steady state. |
-| WAL bytes written | No more than 4 MiB per hour and 96 MiB per day at default sampling. |
-| Main-database/checkpoint bytes written | No more than 4 MiB per hour and 96 MiB per day. |
-| Combined SQLite-managed writes | No more than 8 MiB per hour and 192 MiB per day, measured as actual file writes rather than file-size delta alone. |
-| One checkpoint | No more than 960 pages or 4 MiB including WAL framing, and one attempt. |
-| Logical database growth | No more than 2 MiB per day before retention equilibrium, with a measured 30-day projection below the 64 MiB main-file cap. |
-| CPU | No more than 2% of one core averaged over the run and no sustained sampling spike above 10%. |
-| Memory | No more than 32 MiB incremental resident memory and no monotonic growth above 4 MiB after warm-up. |
-| Restart durability | After clean and abrupt termination, bounded startup validation succeeds, all committed state is present, at most the active uncommitted sample is absent, no duplicate alert is created, and WAL size returns below its target after at most one permitted checkpoint. |
+| Sampling transactions | Exactly one committed sample transaction per accepted sample and no more than 2,880 scheduled sample transactions per day at the 30-second interval. |
+| Transition-heavy process writes | No more than 256 MiB per day. |
+| Main database | Peak size no greater than 64 MiB. |
+| WAL checkpoint input | Peak no greater than 4 MiB before one bounded checkpoint attempt. |
+| Memory | Maximum resident memory no greater than 64 MiB for the isolated benchmark. |
+| CPU | Average use no greater than 1% of one core during the paced run. |
+| Checkpoint | Every checkpoint completes in no more than one second. |
+| Cleanup | Every bounded cleanup completes in no more than one second. |
+| Durability and identity | Clean restart, abrupt-termination recovery, schema/application identity, and bounded quick-check all pass. |
+| Platform checks | No required target-platform check fails or is skipped. |
+| Availability | The existing dashboard remains active throughout validation. |
 
-The test record must separate WAL writes, main-file writes attributed to
-checkpoints, logical file growth, and underlying filesystem/block-device write
-traffic so fsync and metadata amplification are visible. Failure of any ceiling
-requires changing the interval, transaction shape, checkpoint policy, or
-storage recommendation and repeating the measurement. The 30-second interval,
-30-day retention, 15-minute heartbeat, and 64 MiB limit cannot be approved as
-implementation defaults until this gate passes.
+The test record separates managed-file size, process write activity, checkpoint
+bytes, and logical growth. A future implementation that exceeds any ceiling
+must change the interval, transaction shape, checkpoint policy, or storage
+recommendation and repeat the controlled validation before deployment.
+
+### Reviewed Raspberry Pi acceptance record — 2026-08-05
+
+The reviewed validation used source commit
+`6d868ceab2b04e74c9237b5e4845e7f0d411b4a3` and only isolated synthetic data.
+No database, absolute test path, hostname, address, device identifier,
+environment value, or private configuration from the validation host is part
+of this repository record.
+
+The target-platform report was `PASS` with no required failure. The sole skip,
+`foreign_owner_rejection`, was explicitly non-required because an ordinary
+service account could not safely manufacture foreign ownership. SQLite path,
+ownership, sidecar, pragma, cancellation, integrity, maintenance-budget,
+transaction-rollback, restore-validation, and shutdown probes all passed.
+
+All four accelerated scenarios—healthy, mixed, transition-heavy, and
+gap-recovery—passed 2,880 committed sample transactions apiece. Their clean
+restart, abrupt-termination recovery, schema/application identity, and
+integrity checks passed, and the dashboard remained active.
+
+The 24-hour paced transition-heavy run exited zero with overall result `PASS`:
+
+| Measurement | Reviewed value |
+| --- | ---: |
+| Committed sample transactions | 2,880 |
+| Committed maintenance transactions | 25 |
+| Elapsed wall time | 86,421.40680942399 seconds |
+| CPU time | 1.352879132 seconds |
+| Maximum resident memory | 22,167,552 bytes |
+| Setup total managed bytes | 102,816 bytes |
+| Peak main database | 368,640 bytes |
+| Peak WAL | 1,409,072 bytes |
+| Peak shared memory | 32,768 bytes |
+| Peak total managed files | 1,810,480 bytes |
+| Final main database | 368,640 bytes |
+| Final WAL and shared memory | 0 bytes |
+| Peak workload managed-file growth | 1,707,664 bytes |
+| Signed final managed-file delta | 265,824 bytes |
+| Process writes | 167,182,336 bytes |
+| Checkpoints | 49 |
+| Total checkpoint duration | 0.4579932988854125 seconds |
+| Checkpoint bytes moved | 68,128,768 bytes |
+| Total cleanup duration | 0.13327772176126018 seconds |
+| Cleanup rows removed | 2,816 |
+| History rows inserted | 2,880 |
+| Component rows inserted | 11,520 |
+| Alert events inserted | 11,517 |
+
+Clean restart, abrupt-termination recovery, schema/application identity, and
+integrity were all `PASS`; the dashboard remained active. The reviewed derived
+values are approximately 159.44 MiB of process writes per artificial
+transition-heavy day, 56.83 GiB per year if that worst case occurred every day,
+21.14 MiB maximum resident memory, 0.0016% average use of one CPU core, and
+0.55% use of the provisional 64-MiB main-database limit. The measurements pass
+every accepted ceiling above.
+
+The review therefore approves 30-second sampling, a 15-minute unchanged
+heartbeat, 30-day retention, a 64-MiB main-database limit, one bounded state
+transaction per accepted scheduled sample, and a 250-millisecond busy timeout
+as initial implementation defaults. This acceptance authorizes implementation
+planning only. It does not enable production history, create runtime
+configuration, or authorize outbound notifications.
 
 ## Persistent privacy contract
 
@@ -439,9 +497,9 @@ scheduler observations, not on the number of delayed observations by itself:
 
 - one delayed observation reporting two or more missed intervals immediately
   satisfies the opening threshold in its successful persistence transaction;
-- one observation reporting one missed interval creates a one-interval
-  candidate; another delayed observation before an on-time observation adds to
-  it and opens the alert at two;
+- one observation reporting one cumulative missed interval creates a
+  one-interval candidate; a later cumulative report of two before an on-time
+  observation opens the alert;
 - an on-time scheduled observation with zero missed intervals clears a
   one-interval candidate that never opened; and
 - the delayed observation that opens an alert does not also count as a recovery
@@ -455,19 +513,18 @@ two-sample recovery count as a health alert but uses an explicit on-time
 condition.
 
 A failed persistence attempt cannot open, advance, acknowledge, recover, close,
-or archive a persisted gap alert. The scheduler may retain only a capped
-in-memory missed-interval accumulator for the next single persistence attempt;
-it is not a work queue. If the process exits first, startup-gap handling replaces
-that volatile evidence.
+archive, increment, or otherwise mutate persisted gap state. The scheduler may
+retain only a capped in-memory missed-interval accumulator for the next single
+persistence attempt; it is not a work queue. If the process exits first, no
+volatile evidence is treated as persisted.
 
-On startup, Aurora compares the last persisted sampling checkpoint with the
-current UTC time and writes at most one `startup_gap` marker. A bounded estimate
-of two or more missed intervals opens a gap alert immediately in that same
-successful transaction; a smaller estimate becomes the corresponding candidate.
-No sample is fabricated or backfilled. A `clock_discontinuity` marker never
-opens, advances, or recovers a gap alert because wall-clock movement is not proof
-that monotonic scheduler deadlines were missed. It pauses gap recovery until two
-new consecutive on-time monotonic observations establish a reliable sequence.
+On startup, Aurora may write at most one fixed `startup_gap` marker. The marker
+alone never counts as a sampling miss, starts a candidate, opens an alert, or
+advances recovery. Only missed intervals independently reported by the
+monotonic scheduler are evaluated. No UTC estimate fabricates a missed sample.
+A `clock_discontinuity` marker never opens, advances, or recovers a gap because
+wall-clock movement is not proof that monotonic scheduler deadlines were
+missed. It resets `recovery_one` to `active`; otherwise it preserves the phase.
 
 The schema-version-1 gap evaluator has these exact persisted states and
 transitions. Alert acknowledgment is orthogonal: it changes an open alert's
@@ -481,9 +538,22 @@ lifecycle but leaves the evaluator in `active` or `recovery_one`.
 | `active` | On time; zero missed intervals and successful health collection | `recovery_one`; alert remains open or acknowledged. |
 | `recovery_one` | On time; zero missed intervals and successful health collection | `clear`; transition the alert to recovered. |
 | `active` or `recovery_one` | Any delayed observation | `active`; add the bounded missed count and reset recovery progress. |
-| Any state | `startup_gap` estimate | Apply the same one-miss or at-least-two-miss transition as delayed scheduler evidence. |
+| Any state | `startup_gap` marker without monotonic missed-interval evidence | Preserve the phase and make no alert lifecycle change. If the same scheduler observation independently reports misses, apply the ordinary delayed-observation transition. |
 | Any state | `clock_discontinuity` | Preserve candidate/active status, reset any recovery progress, and make no alert lifecycle change. |
 | Any state | Collection, projection, or persistence failure | No persisted evaluator or alert change. Preserve only the capped volatile missed accumulator described above. |
+
+The accepted reference implementation is isolated in
+`aurora_core.m18_validation.sampling_gap`; no runtime entry point imports it.
+Its immutable input carries one bounded sequence, the scheduler's nonnegative
+cumulative missed-interval report, fixed marker flags, and collection and
+persistence outcomes. Its immutable state stores only the four phases above,
+the last committed sequence, and saturating counters capped at 65,535.
+Successfully replaying an already committed sequence is idempotent. A failed
+persistence attempt changes neither sequence nor counters. Exhaustive synthetic
+tests cover zero, one, two, and many misses, immediate opening, recovery and
+reset, markers, duplicate replay, saturation, and comparison against an
+independent deterministic reference table. The model performs no scheduling or
+database work.
 
 ## Health transitions and alert lifecycle
 
@@ -505,15 +575,16 @@ transition counter.
 
 The lifecycle is deterministic:
 
-1. **Open:** a confirmed threshold creates one alert or reopens the recently
-   recovered alert during cooldown.
-2. **Acknowledged:** a future authenticated operator action changes only the
-   lifecycle state and acknowledgment time. It does not suppress collection or
-   claim recovery.
-3. **Recovered:** the required healthy observations close the active condition.
-4. **Archived:** after the 15-minute duplicate cooldown elapses without
-   recurrence, a recovered alert becomes read-only. It remains queryable until
-   30 days after `recovered_at`, then becomes eligible for bounded deletion.
+1. **Open:** a confirmed threshold creates one alert record.
+2. **Acknowledged:** a future authenticated operator action changes only that
+   record's lifecycle. It stores no note, username, session value, CSRF value,
+   endpoint, or free-form text, does not suppress collection, and does not claim
+   recovery.
+3. **Recovered:** the required healthy observations close the active condition
+   and record one fixed recovery event.
+4. **Archived:** after the fixed 15-minute cooldown eligibility condition, a
+   recovered record becomes read-only. It remains queryable until 30 days after
+   `recovered_at`, then becomes eligible for bounded deletion.
 
 Schema version 1 has no `expired` lifecycle or expiration event. An active or
 acknowledged alert never becomes terminal merely because it is old. Adding an
@@ -522,26 +593,38 @@ transition, authorization, retention, and audit rules.
 
 The complete schema-version-1 lifecycle is:
 
-| Current lifecycle | Fixed cause | Next lifecycle | Fixed event |
+| Current lifecycle | Fixed cause | Result | Fixed event |
 | --- | --- | --- | --- |
 | No alert | Opening threshold satisfied | `open` | `opened` |
 | `open` | Authenticated, CSRF-valid acknowledgment commits | `acknowledged` | `acknowledged` |
-| `acknowledged` | Severity escalates | `open` | `escalated_reopened` |
 | `open` or `acknowledged` | Recovery threshold satisfied | `recovered` | `recovered` |
-| `recovered` | Condition recurs before cooldown ends | `open` | `recurrence_reopened` |
-| `recovered` | Cooldown ends without recurrence | `archived` | `archived` |
-| `archived` | A later opening threshold is satisfied | New `open` alert | `opened` on the new alert |
+| `recovered` | Fixed cooldown eligibility satisfied | `archived` | `archived` |
+| `open` or `acknowledged` | Repeated matching observation | Preserve lifecycle; saturating occurrence metadata only | `occurrence_updated` |
+| `recovered` before cooldown eligibility | Repeated matching observation | Preserve `recovered`, update bounded occurrence metadata, and extend cooldown | `occurrence_updated` |
+| `recovered` after cooldown eligibility or `archived` | A new opening threshold is satisfied | Preserve the old record; create a distinct `open` occurrence | `opened` on the new record |
+| `open` or `acknowledged` degraded alert | Code-owned escalation to unavailable | Preserve the old alert kind and lifecycle; create a distinct unavailable `open` alert | `opened` on the new record |
+| Any state | Duplicate acknowledgment, recovery, or archive already reflected by that state | Preserve state; no second event | none |
+| Any state | Invalid transition | Preserve state and create no alert | `rejected_transition` |
 
-Those six event identifiers are the complete version-1 `alert_events` registry.
-No other action may change lifecycle. Archival is automatic and deterministic;
-acknowledgment is its only operator-authorized transition. Deletion after
-retention is storage cleanup, not a new lifecycle or event.
+The exact schema-version-1 event registry is `opened`, `occurrence_updated`,
+`acknowledged`, `recovered`, `archived`, and `rejected_transition`. There is no
+expired state or event. No acknowledged record returns to open. Escalation and
+a later episode create separate immutable occurrences, so the old alert's kind
+and meaning never change. `archived` is terminal. At most one open or
+acknowledged record exists for each fixed scope and kind. Occurrence counts
+saturate at 65,535, and repeated matches during cooldown cannot create a
+duplicate alert. Deletion after retention is storage cleanup, not a lifecycle
+transition.
 
-An acknowledged alert that escalates from degraded to unavailable returns to
-open and records a fixed escalation event. A repeat condition during cooldown
-reopens the recovered alert and increments its bounded episode count. A repeat
-after archival creates a new alert. The partial unique index and transaction
-enforce duplicate prevention even if evaluation is invoked twice.
+The accepted reference implementation is isolated in
+`aurora_core.m18_validation.alert_lifecycle`; no runtime entry point imports it.
+It defines only fixed scopes, kinds, operations, outcomes, states, and events.
+Persistence failure returns the original immutable state and no event.
+Table-driven synthetic tests cover every allowed and rejected lifecycle pair,
+idempotency, cooldown boundaries, saturation, fixed degraded-to-unavailable
+escalation, recovery, archive eligibility, distinct later occurrences, and
+persistence-failure invariants. It implements no authentication, CSRF, route,
+SQL, identifier, or database behavior.
 
 ## Notification boundary
 
@@ -881,7 +964,8 @@ object fails closed and is never recreated. SQLite may create its ordinary WAL
 and shared-memory sidecars only beside that precreated file in the protected
 directory; those sidecars remain subject to the platform boundary checks.
 
-Run the target-platform gate on the Raspberry Pi from a reviewed source tree:
+The accepted target-platform procedure, retained for future regression runs,
+is:
 
 ```console
 $ umask 077
@@ -933,9 +1017,10 @@ $ uv run python scripts/benchmark_m18_sqlite.py \
     2> "${m18_benchmark_root}/gap-recovery-summary.txt"
 ```
 
-For the required 24-hour pacing measurement, use a separate fresh protected
-root and the fixed 30-second pace; this validates one workload and must be
-repeated as the review selects additional worst cases:
+The accepted 24-hour pacing procedure uses a separate fresh protected root and
+the fixed 30-second pace. Future changes to the accepted defaults or persistence
+shape must repeat this workload and any additional worst cases selected by
+review:
 
 ```console
 $ umask 077
@@ -966,16 +1051,16 @@ smaller than setup; it is not clamped into positive growth. Linux
 `/proc/self/io` process-write bytes and their hourly/daily projections are
 reported separately because they measure operating-system write activity, not
 logical managed-file growth. Every value is labeled measured, projected,
-unavailable, architecture limit, or decision pending. A successful command
-does not approve the provisional interval, retention, heartbeat, or size
-defaults.
+unavailable, architecture limit, or decision pending. A successful command by
+itself does not alter accepted defaults; the dated evidence review above is the
+acceptance decision.
 
 These artifacts are synthetic target-platform evidence, not production
 enablement. Production SQLite schema and runtime integration, production
 backup and restore commands, portal alert grouping, outbound notifications,
-and production history enablement remain deferred. Production implementation
-remains blocked until the Raspberry Pi reports are reviewed against every
-acceptance ceiling and all remaining gates are accepted.
+and production history enablement remain deferred. The reviewed reports close
+the preimplementation gates for planning, but a separate implementation review
+is still required before any production behavior exists or is enabled.
 
 ## Threat model and abuse cases
 
@@ -1004,30 +1089,34 @@ tampering remain in scope.
 
 ## Pre-implementation gates
 
-Application implementation must not begin until a design review explicitly
-marks every gate below accepted. A disposable synthetic measurement or
-filesystem-opening prototype may be used to close a gate, but it must remain
-in an isolated validation namespace that no runtime entry point imports and may
-not create routes, configuration, workers, migrations, alerts, notifications,
-or deployment changes.
+The 2026-08-05 review accepts every preimplementation gate below for
+implementation planning. The isolated validation package remains outside every
+runtime entry point and does not itself authorize routes, configuration,
+workers, database integration, migrations, alerts, notifications, or deployment
+changes.
 
-| Gate | Current design status | Acceptance required before implementation |
+| Gate | Accepted status | Reviewed evidence and retained boundary |
 | --- | --- | --- |
-| Normalized finite reason-code registry | Finalized by the isolated registry and comprehensive synthetic tests in this branch. | Review the exact list above and preserve fail-closed behavior when any health collector contract changes. |
-| Exact write-volume strategy | One state transaction per accepted scheduled sample is selected; default rates remain blocking. | Raspberry Pi measurements must pass every transaction, byte, checkpoint, growth, CPU, memory, clean-restart, and abrupt-termination ceiling. |
-| SQLite path-opening procedure | Isolated checks exist; target Linux proof remains blocking. | Demonstrate pre/post identity checks and sidecar handling on the target Python/SQLite/Linux build and confirm no untrusted process shares the service account. |
-| Integrity and maintenance budgets | Concrete isolated probes exist; target-platform timing and cancellation behavior remain blocking. | Prove progress/interrupt behavior where claimed and measured worst-case completion within each single-call budget. |
-| Sampling-gap transitions | Two cumulative misses open; two consecutive on-time committed samples recover; restart and clock rules are specified. | Approve a reference state-machine table and exhaustive synthetic transition tests before translating it to application code. |
-| Schema-version-1 lifecycle | Exactly open, acknowledged, recovered, and archived; no expired state. | Approve transition, cooldown, archival, retention, authorization, and audit-event tables before encoding the schema. |
+| Normalized finite reason-code registry | Accepted. | The finite fail-closed registry and synthetic mapping tests remain authoritative; a collector-contract change requires renewed review. |
+| Raspberry Pi write-volume and default strategy | Accepted for implementation. | Reviewed platform, accelerated, and paced evidence passes every ceiling. Initial defaults are 30 seconds, 15 minutes, 30 days, 64 MiB, one state transaction per accepted sample, and a 250-millisecond busy timeout. |
+| SQLite path-opening procedure | Accepted for the reviewed target platform. | Protected-directory, existing-file `mode=rw`, pre/post identity, ownership, sidecar, and no-recreation probes passed. The documented same-service-account pathname-open limitation remains. |
+| Integrity and maintenance budgets | Accepted for the reviewed target platform. | Cancellation, quick-check, checkpoint, online-backup probe, transaction rollback, restore validation, incremental-vacuum, and shutdown budgets passed. This does not implement production backup or restore. |
+| Sampling-gap transitions | Accepted. | The immutable isolated reference model and exhaustive synthetic tests implement immediate opening at two cumulative misses, two committed on-time recoveries, marker rules, persistence failure, replay idempotency, and bounded counters. |
+| Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the six-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
 
-SQLite backup/restore implementation and every outbound notification channel
-remain separately deferred. They are not prerequisites for a core history
-implementation only if schema migration is also absent; any schema migration
-requires the budgeted pre-migration backup design first.
+The following work remains separately deferred and is not implemented by gate
+acceptance:
+
+- the production SQLite schema and runtime integration;
+- database migrations;
+- production database backup and restore commands;
+- portal grouping of overall and component alerts;
+- outbound notifications; and
+- production history enablement.
 
 ## Recommendations and unresolved decisions
 
-The design recommends the following as the implementation baseline:
+The reviewed design accepts the following as the implementation baseline:
 
 - one scheduler inside the dashboard process;
 - a disabled-by-default, standard-library SQLite store using WAL;
@@ -1044,20 +1133,16 @@ The design recommends the following as the implementation baseline:
 - SQLite backups and migrations completely separate from Milestone 17 YAML
   backups.
 
-The following decisions remain open and keep the applicable pre-implementation
-gates closed:
+The following decisions remain separately deferred; they do not reopen the
+accepted preimplementation gates or authorize their implementation:
 
-1. Whether the proposed 30-second, 30-day, and 64 MiB defaults provide the best
-   operational tradeoff after the complete Raspberry Pi write-volume and
-   storage-endurance acceptance run.
-2. Whether overall and component alerts should both be displayed or whether
+1. Whether overall and component alerts should both be displayed or whether
    the portal should visually group an overall alert with its component causes.
-3. Whether the documented standard-library pathname-open procedure and
-   progress/interrupt behavior pass target Linux tests; failure requires a
-   different secured VFS/open mechanism or persistence design.
-4. The operator command, backup count, and byte cap for explicit SQLite backup
+2. The production SQLite schema, runtime integration, configuration, scheduler,
+   migrations, and enablement sequence.
+3. The operator command, backup count, and byte cap for explicit SQLite backup
    and restore; these will not reuse Milestone 17 artifacts.
-5. Which fixed outbound notification channel, if any, deserves a later design.
+4. Which fixed outbound notification channel, if any, deserves a later design.
    No outbound channel is authorized by Milestone 18's initial implementation.
 
 None of these open decisions authorizes implementation or broadens the safe
