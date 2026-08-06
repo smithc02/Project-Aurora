@@ -357,28 +357,28 @@ settings snapshot, restart a service, edit environment state, back up
 WLED/HyperHDR configuration, or restore device state. See the
 [configuration-profile guide](configuration-profiles.md).
 
-## Proposed persistent health-history boundary (Milestone 18 design)
+## Persistent health-history foundation (Milestone 18 in progress)
 
-Milestone 18 is architecture only at this stage. The proposed history service
-would consume the same immutable, sanitized `HealthReport` returned by the
-existing cached, single-flight `HealthService`. A stricter code-owned projection
-would persist status, timestamps, bounded latency, and fixed reason codes; it
-would not copy arbitrary detail fields, messages, configuration, endpoints,
-identifiers, responses, request data, credentials, or exceptions.
+The first Milestone 18 production slice supplies an isolated
+`aurora_core.health_history` package. Its stricter code-owned projection accepts
+only complete `HealthReport` schema version 1 snapshots and retains status,
+timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
+fields, messages, configuration, endpoints, identifiers, responses, request
+data, credentials, or exceptions. Production/reference parity tests bind its
+independent reason registry to the accepted preimplementation model.
 
-The recommended persistence layer is a bounded local SQLite database accessed
-through Python's standard library. One in-process writer gate, SQLite's
-cross-process locking, bounded transactions, deterministic retention, and
-transition-plus-heartbeat compaction prevent queues and storage growth from
-becoming unbounded. Existing public portal routes and `GET /api/health` schema
-version 1 would remain independent of database availability.
+The package defines exact SQLite schema version 1 under application identity
+`0x41555248`. New database creation is exclusive and separate from
+existing-database opening; existing files are opened with URI `mode=rw` and
+fail closed on filesystem, identity, pragma, schema, or bounded integrity
+verification failures. The standard library opens SQLite files by pathname,
+not the already inspected descriptor, so the accepted owned mode-`0700`
+directory boundary remains required and no internal `O_NOFOLLOW` claim is made.
 
-The initial automation boundary is limited to scheduled health sampling,
-sanitized recording, transition evaluation, alert lifecycle updates, and
-retention cleanup. It does not authorize device mutation, profile activation,
-service or system control, frame capture or output, subprocesses, or arbitrary
-network dispatch. Future history views would be separate authenticated,
-read-only surfaces; any acknowledgment mutation would require the existing
-session and CSRF protections. Outbound notifications remain deferred pending a
-separate channel-specific design. See the detailed
+No current runtime entry point imports this package. There is no configuration,
+deployment database creation, sample ingestion, scheduler, query, route, alert
+mutation, maintenance execution, or device/service/network behavior. Atomic
+sample ingestion and deterministic alert-state translation are the next planned
+slice. Existing portal routes and public `GET /api/health` schema version 1
+remain independent and unchanged. See the detailed
 [health-history and alerting design](health-history-alerting.md).

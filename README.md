@@ -16,9 +16,11 @@
 > atomic activation, recovery, and operator-selected rollback. Its software is
 > merged and deployed, and controlled Linux filesystem validation passed; this
 > does not assert that production profiles were created or activated. Milestone
-> 18 currently defines architecture only for bounded persistent health history
-> and alert lifecycle handling. No Milestone 18 storage, route, worker,
-> notification, or automation behavior is implemented. Broader device control,
+> 18 implementation is in progress: its first isolated slice defines the strict
+> production health projection, finite reason registry, and exact SQLite
+> storage foundation. No runtime entry point imports it, no deployment database
+> is created, and no history, route, worker, notification, or automation
+> behavior is enabled. Broader device control,
 > browser configuration, room mapping, and spatial intelligence remain deferred.
 
 ## Architecture summary
@@ -200,10 +202,10 @@ operation, verification, activation, and rollback boundaries, and the
 [Milestone 16 HyperHDR control guide](docs/hyperhdr-controls.md) for its exact
 four-operation registry and two-request verification boundary. See the
 [Milestone 17 configuration-profile guide](docs/configuration-profiles.md) for
-the CLI, filesystem, backup, activation, and recovery boundaries. The proposed
+the CLI, filesystem, backup, activation, and recovery boundaries. The in-progress
 [Milestone 18 health-history and alerting design](docs/health-history-alerting.md)
-documents the persistence, privacy, lifecycle, and bounded-automation decisions;
-it does not add runtime behavior.
+documents the persistence, privacy, lifecycle, and bounded-automation decisions
+plus the isolated storage-foundation slice; it does not enable runtime behavior.
 
 ## Contributing
 
