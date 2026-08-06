@@ -112,6 +112,14 @@ def create_database_file(path: Path) -> PathIdentity:
     """Exclusively create one empty mode-0600 database file."""
     _require_database_path(path)
     validate_protected_directory(path.parent)
+    for candidate in _managed_paths(path):
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise FilesystemBoundaryError(FilesystemRejection.INVALID_PATH) from error
+        raise FilesystemBoundaryError(FilesystemRejection.ALREADY_EXISTS)
     try:
         descriptor = os.open(path, _create_flags(), 0o600)
     except FileExistsError as error:
@@ -200,6 +208,21 @@ def fsync_directory(path: Path) -> None:
 
 def remove_created_database(path: Path, identity: PathIdentity) -> None:
     """Remove only the incomplete main file created with the supplied identity."""
+    remove_created_artifacts(path, identity, {})
+
+
+def remove_created_artifacts(
+    path: Path,
+    identity: PathIdentity,
+    sidecars: dict[str, PathIdentity],
+) -> None:
+    """Remove only exact artifacts whose identities this creation captured."""
+    for suffix in ("-wal", "-shm"):
+        sidecar_identity = sidecars.get(suffix)
+        if sidecar_identity is not None:
+            _unlink_created_file(
+                path.with_name(f"{path.name}{suffix}"), sidecar_identity
+            )
     _unlink_created_file(path, identity)
     fsync_directory(path.parent)
 
@@ -209,11 +232,9 @@ def _unlink_created_file(path: Path, identity: PathIdentity) -> None:
         metadata = path.lstat()
     except OSError:
         return
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_uid != identity.owner
-        or metadata.st_nlink != 1
-        or (metadata.st_dev, metadata.st_ino) != (identity.device, identity.inode)
+    current = _identity(metadata)
+    if not stat.S_ISREG(metadata.st_mode) or not _same_managed_identity(
+        current, identity
     ):
         return
     try:
@@ -267,6 +288,14 @@ def _require_database_path(path: Path) -> None:
     _require_path(path)
     if not path.name or path.name in {".", ".."} or path.parent == path:
         raise FilesystemBoundaryError(FilesystemRejection.INVALID_PATH)
+
+
+def _managed_paths(path: Path) -> tuple[Path, Path, Path]:
+    return (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
 
 
 def _require_path(path: Path) -> None:

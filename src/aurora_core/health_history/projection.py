@@ -32,6 +32,7 @@ class ProjectionRejection(StrEnum):
     INVALID_REPORT = "invalid_report"
     UNKNOWN_SCHEMA = "unknown_schema"
     INVALID_STATUS = "invalid_status"
+    INCONSISTENT_STATUS = "inconsistent_status"
     INVALID_TIMESTAMP = "invalid_timestamp"
     INVALID_DURATION = "invalid_duration"
     INVALID_COMPONENTS = "invalid_components"
@@ -69,6 +70,19 @@ class ComponentProjection:
             raise ValueError("invalid_reasons")
         if len(set(self.reasons)) != len(self.reasons):
             raise ValueError("duplicate_reasons")
+        maximum_reasons = {
+            ComponentName.WLED: 2,
+            ComponentName.HYPERHDR: 3,
+            ComponentName.CAPTURE: 2,
+            ComponentName.RASPBERRY_PI: 1,
+        }[self.component]
+        if len(self.reasons) > maximum_reasons:
+            raise ValueError("invalid_reason_count")
+        if any(
+            not reason.value.startswith(f"{self.component.value}.")
+            for reason in self.reasons
+        ):
+            raise ValueError("invalid_reason_component")
         _bounded_integer(self.checked_at_utc_us, MAX_TIMESTAMP_US, "checked_at")
         _bounded_integer(self.latency_ms, MAX_COMPONENT_LATENCY_MS, "latency")
         if self.last_successful_at_utc_us is not None:
@@ -113,6 +127,8 @@ class HealthProjection:
             != COMPONENT_ORDER
         ):
             raise ValueError("invalid_component_order")
+        if self.overall_status is not _worst_component_status(self.components):
+            raise ValueError("inconsistent_overall_status")
         if (
             type(self.digest) is not bytes
             or len(self.digest) != PROJECTION_DIGEST_BYTES
@@ -158,10 +174,15 @@ def project_health_report(
     components = tuple(
         _project_component(name, by_name[name.value]) for name in COMPONENT_ORDER
     )
+    calculated_status = _worst_component_status(components)
+    if status is not calculated_status:
+        raise ProjectionError(ProjectionRejection.INCONSISTENT_STATUS)
     canonical = _canonical_bytes(
         observed_at=observed_at,
         status=status,
         uptime=uptime,
+        sample_kind=sample_kind,
+        missed_intervals=missed_intervals,
         components=components,
     )
     return HealthProjection(
@@ -247,8 +268,11 @@ def _timestamp_from_datetime(value: object) -> int:
 def _duration_ms(value: object, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProjectionError(ProjectionRejection.INVALID_DURATION)
-    converted = float(value)
-    if not math.isfinite(converted) or converted < 0:
+    try:
+        converted = float(value)
+    except OverflowError as error:
+        raise ProjectionError(ProjectionRejection.INVALID_DURATION) from error
+    if not math.isfinite(converted) or converted < 0 or converted > maximum / 1000:
         raise ProjectionError(ProjectionRejection.INVALID_DURATION)
     rounded = round(converted * 1000)
     if rounded > maximum:
@@ -259,7 +283,10 @@ def _duration_ms(value: object, maximum: int) -> int:
 def _rounded_milliseconds(value: object, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProjectionError(ProjectionRejection.INVALID_DURATION)
-    converted = float(value)
+    try:
+        converted = float(value)
+    except OverflowError as error:
+        raise ProjectionError(ProjectionRejection.INVALID_DURATION) from error
     if not math.isfinite(converted) or not 0 <= converted <= maximum:
         raise ProjectionError(ProjectionRejection.INVALID_DURATION)
     return round(converted)
@@ -270,11 +297,24 @@ def _bounded_integer(value: object, maximum: int, name: str) -> None:
         raise ValueError(f"invalid_{name}")
 
 
+def _worst_component_status(
+    components: tuple[ComponentProjection, ...],
+) -> HealthHistoryStatus:
+    order = {
+        HealthHistoryStatus.HEALTHY: 0,
+        HealthHistoryStatus.DEGRADED: 1,
+        HealthHistoryStatus.UNAVAILABLE: 2,
+    }
+    return max((component.status for component in components), key=order.__getitem__)
+
+
 def _canonical_bytes(
     *,
     observed_at: int,
     status: HealthHistoryStatus,
     uptime: int,
+    sample_kind: SampleKind,
+    missed_intervals: int,
     components: tuple[ComponentProjection, ...],
 ) -> bytes:
     fields: list[object] = [
@@ -282,6 +322,8 @@ def _canonical_bytes(
         observed_at,
         status.value,
         uptime,
+        sample_kind.value,
+        missed_intervals,
     ]
     fields.extend(
         [

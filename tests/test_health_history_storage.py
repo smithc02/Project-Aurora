@@ -20,12 +20,15 @@ from aurora_core.health_history import schema
 from aurora_core.health_history.filesystem import (
     FilesystemBoundaryError,
     FilesystemRejection,
+    remove_created_artifacts,
+    validate_database_file,
 )
 from aurora_core.health_history.models import (
     APPLICATION_ID,
     COMPONENT_ORDER,
     MAX_BOUNDED_COUNTER,
     MAX_COMPONENT_LATENCY_MS,
+    MAX_SCHEMA_VERSION,
     MAX_SERVICE_UPTIME_MS,
     PAGE_SIZE_BYTES,
     PROJECTION_DIGEST_BYTES,
@@ -169,9 +172,13 @@ def _component(
     )
 
 
-def _report(*, components: tuple[ComponentHealth, ...] | None = None) -> HealthReport:
+def _report(
+    *,
+    status: HealthStatus = HealthStatus.HEALTHY,
+    components: tuple[ComponentHealth, ...] | None = None,
+) -> HealthReport:
     return HealthReport(
-        status=HealthStatus.HEALTHY,
+        status=status,
         checked_at=_OBSERVED,
         service_uptime_seconds=12.5,
         components=components
@@ -516,7 +523,20 @@ def test_registry_is_message_and_mapping_order_independent() -> None:
 
 def test_projection_is_complete_bounded_and_deterministic() -> None:
     first = project_health_report(_report(), recorded_at=_RECORDED)
-    reordered = _report(components=tuple(reversed(_report().components)))
+    reordered = _report(
+        components=tuple(
+            _component(
+                component.name,
+                dict(reversed(tuple(component.details.items()))),
+                status=component.status,
+                message=component.message,
+                checked_at=component.checked_at,
+                latency_ms=component.latency_ms,
+                last_successful_at=component.last_successful_at,
+            )
+            for component in reversed(_report().components)
+        )
+    )
     second = project_health_report(reordered, recorded_at=_RECORDED)
     assert first == second
     assert tuple(item.component for item in first.components) == COMPONENT_ORDER
@@ -528,6 +548,44 @@ def test_projection_is_complete_bounded_and_deterministic() -> None:
         _report(), recorded_at=datetime(2026, 8, 5, 12, 1, tzinfo=UTC)
     )
     assert replay.digest == first.digest
+
+
+def test_projection_digest_includes_scheduler_evidence_but_not_recording_time() -> None:
+    base = project_health_report(_report(), recorded_at=_RECORDED)
+    retried = project_health_report(
+        _report(),
+        recorded_at=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
+    )
+    transition = project_health_report(
+        _report(), recorded_at=_RECORDED, sample_kind=SampleKind.TRANSITION
+    )
+    missed = project_health_report(_report(), recorded_at=_RECORDED, missed_intervals=1)
+    assert retried.recorded_at_utc_us != base.recorded_at_utc_us
+    assert retried.digest == base.digest
+    assert transition.digest != base.digest
+    assert missed.digest != base.digest
+
+
+def test_replay_key_distinguishes_same_observation_with_distinct_scheduler_evidence(
+    protected_directory: Path,
+) -> None:
+    base = project_health_report(_report(), recorded_at=_RECORDED)
+    missed = project_health_report(_report(), recorded_at=_RECORDED, missed_intervals=1)
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    _insert_health_sample(
+        connection,
+        observed=base.observed_at_utc_us,
+        digest=base.digest,
+    )
+    _insert_health_sample(
+        connection,
+        observed=missed.observed_at_utc_us,
+        digest=missed.digest,
+    )
+    assert connection.execute("SELECT COUNT(*) FROM health_samples").fetchone() == (2,)
+    connection.close()
 
 
 def test_projection_ignores_messages_and_excluded_detail_values() -> None:
@@ -623,6 +681,87 @@ def test_projection_rejects_invalid_missed_interval_counts(invalid: object) -> N
     assert caught.value.reason is ProjectionRejection.INVALID_DURATION
 
 
+def _component_at_status(name: str, status: HealthStatus) -> ComponentHealth:
+    if name == "wled":
+        details = (
+            _wled_details()
+            if status is HealthStatus.HEALTHY
+            else _wled_details(info="http_error")
+            if status is HealthStatus.DEGRADED
+            else _wled_details(info="timeout", state="timeout")
+        )
+    elif name == "hyperhdr":
+        details = (
+            _hyperhdr_details()
+            if status is HealthStatus.HEALTHY
+            else _hyperhdr_details(grabber=False)
+            if status is HealthStatus.DEGRADED
+            else _hyperhdr_details("timeout")
+        )
+    elif name == "capture":
+        details = _capture_details()
+        if status is HealthStatus.DEGRADED:
+            details.update(
+                {"activity_source": "HyperHDR serverinfo", "grabber_active": False}
+            )
+        elif status is HealthStatus.UNAVAILABLE:
+            details = _capture_details("device_not_found")
+    else:
+        details = _pi_details()
+    return _component(name, details, status=status)
+
+
+def test_projection_requires_overall_status_to_equal_worst_component_exhaustively() -> (
+    None
+):
+    order = {
+        HealthStatus.HEALTHY: 0,
+        HealthStatus.DEGRADED: 1,
+        HealthStatus.UNAVAILABLE: 2,
+    }
+    statuses = tuple(HealthStatus)
+    for combination in product(statuses, repeat=len(COMPONENT_ORDER)):
+        components = tuple(
+            _component_at_status(name.value, status)
+            for name, status in zip(COMPONENT_ORDER, combination, strict=True)
+        )
+        expected = max(combination, key=order.__getitem__)
+        projection = project_health_report(
+            _report(status=expected, components=components), recorded_at=_RECORDED
+        )
+        assert projection.overall_status.value == expected.value
+        for inconsistent in set(statuses) - {expected}:
+            with pytest.raises(ProjectionError) as caught:
+                project_health_report(
+                    _report(status=inconsistent, components=components),
+                    recorded_at=_RECORDED,
+                )
+            assert caught.value.reason is ProjectionRejection.INCONSISTENT_STATUS
+
+
+def test_projection_sanitizes_extreme_integer_duration_overflow() -> None:
+    huge = 10**10_000
+    uptime_report = HealthReport(
+        status=HealthStatus.HEALTHY,
+        checked_at=_OBSERVED,
+        service_uptime_seconds=huge,  # type: ignore[arg-type]
+        components=_report().components,
+    )
+    latency_components = (
+        _component(
+            "wled",
+            _wled_details(),
+            latency_ms=huge,  # type: ignore[arg-type]
+        ),
+        *_report().components[1:],
+    )
+    for report in (uptime_report, _report(components=latency_components)):
+        with pytest.raises(ProjectionError) as caught:
+            project_health_report(report, recorded_at=_RECORDED)
+        assert caught.value.reason is ProjectionRejection.INVALID_DURATION
+        assert repr(caught.value) == "ProjectionError('invalid_duration')"
+
+
 def test_strict_production_models_reject_open_ended_values() -> None:
     component = ComponentProjection(
         ComponentName.WLED,
@@ -678,6 +817,62 @@ def test_component_projection_rejects_boolean_negative_and_oversized_integers(
             checked_at_utc_us=checked_at,  # type: ignore[arg-type]
             latency_ms=latency,  # type: ignore[arg-type]
             last_successful_at_utc_us=last_successful,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("component", "reasons"),
+    [
+        (ComponentName.WLED, (NormalizedReason.HYPERHDR_HEALTHY,)),
+        (
+            ComponentName.WLED,
+            (
+                NormalizedReason.WLED_HEALTHY,
+                NormalizedReason.WLED_INFO_HTTP_ERROR,
+                NormalizedReason.WLED_STATE_HTTP_ERROR,
+            ),
+        ),
+        (
+            ComponentName.HYPERHDR,
+            (
+                NormalizedReason.HYPERHDR_INSTANCE_INACTIVE,
+                NormalizedReason.HYPERHDR_VIDEO_GRABBER_INACTIVE,
+                NormalizedReason.HYPERHDR_LED_OUTPUT_INACTIVE,
+                NormalizedReason.HYPERHDR_TIMEOUT,
+            ),
+        ),
+        (
+            ComponentName.CAPTURE,
+            (
+                NormalizedReason.CAPTURE_PROBE_FAILED,
+                NormalizedReason.CAPTURE_GRABBER_INACTIVE,
+                NormalizedReason.CAPTURE_ACTIVITY_UNREPORTED,
+            ),
+        ),
+        (
+            ComponentName.RASPBERRY_PI,
+            (
+                NormalizedReason.RASPBERRY_PI_HEALTHY,
+                NormalizedReason.RASPBERRY_PI_DEGRADED,
+            ),
+        ),
+        (
+            ComponentName.WLED,
+            (NormalizedReason.WLED_HEALTHY, NormalizedReason.WLED_HEALTHY),
+        ),
+    ],
+)
+def test_component_projection_enforces_component_reason_invariants(
+    component: ComponentName, reasons: tuple[NormalizedReason, ...]
+) -> None:
+    with pytest.raises(ValueError):
+        ComponentProjection(
+            component=component,
+            status=HealthHistoryStatus.HEALTHY,
+            reasons=reasons,
+            checked_at_utc_us=1,
+            latency_ms=1,
+            last_successful_at_utc_us=None,
         )
 
 
@@ -738,6 +933,50 @@ def test_create_sets_exact_identity_schema_pragmas_and_permissions(
         store.close()
 
 
+def test_migration_ledger_constraint_allows_only_bounded_positive_versions(
+    protected_directory: Path,
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    for invalid in (0, -1):
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at_utc_us) "
+                "VALUES (?, 1)",
+                (invalid,),
+            )
+        connection.rollback()
+    connection.execute("BEGIN")
+    connection.execute(
+        "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, 2)",
+        (min(2, MAX_SCHEMA_VERSION),),
+    )
+    assert connection.execute(
+        "SELECT version FROM schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (2,)]
+    connection.rollback()
+    connection.close()
+
+
+def test_schema_v1_verification_rejects_a_second_positive_migration_row(
+    protected_directory: Path,
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(
+        "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (2, 2)"
+    )
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema.verify_schema_v1(connection)
+    assert caught.value.reason == "migration_ledger_mismatch"
+    connection.rollback()
+    connection.close()
+    assert not hasattr(HealthHistoryStore, "migrate")
+
+
 def test_open_existing_uses_no_create_and_missing_file_remains_missing(
     protected_directory: Path,
 ) -> None:
@@ -753,14 +992,50 @@ def test_exclusive_creation_never_reuses_an_existing_path(
     path = _database_path(protected_directory)
     path.touch(mode=0o600)
     before = path.stat()
-    with pytest.raises(StoreError):
+    with pytest.raises(StoreError) as caught:
         HealthHistoryStore.create(path, created_at_utc_us=1)
+    assert caught.value.reason == "already_exists"
     after = path.stat()
     assert (after.st_dev, after.st_ino, after.st_size) == (
         before.st_dev,
         before.st_ino,
         before.st_size,
     )
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+@pytest.mark.parametrize("object_kind", ["file", "directory", "symlink"])
+def test_creation_refuses_every_preexisting_reserved_sidecar_without_modification(
+    protected_directory: Path, suffix: str, object_kind: str
+) -> None:
+    path = _database_path(protected_directory)
+    reserved = path.with_name(f"{path.name}{suffix}")
+    target = protected_directory / f"target{suffix}"
+    if object_kind == "file":
+        reserved.write_bytes(b"existing evidence")
+        reserved.chmod(0o600)
+    elif object_kind == "directory":
+        reserved.mkdir(mode=0o700)
+    else:
+        target.write_bytes(b"target evidence")
+        target.chmod(0o600)
+        reserved.symlink_to(target)
+    before = reserved.lstat()
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.create(path, created_at_utc_us=1)
+    assert caught.value.reason == "already_exists"
+    after = reserved.lstat()
+    assert (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)) == (
+        before.st_dev,
+        before.st_ino,
+        stat.S_IFMT(before.st_mode),
+    )
+    assert not path.exists()
+    if object_kind == "file":
+        assert reserved.read_bytes() == b"existing evidence"
+    elif object_kind == "symlink":
+        assert reserved.readlink() == target
+        assert target.read_bytes() == b"target evidence"
 
 
 @pytest.mark.parametrize("mode", [0o755, 0o750, 0o777])
@@ -992,6 +1267,53 @@ def test_replay_and_component_uniqueness_and_foreign_keys(
     connection.close()
 
 
+@pytest.mark.parametrize(
+    ("component", "reasons"),
+    [
+        (
+            "wled",
+            (
+                "wled.healthy",
+                "wled.info.http_error",
+                "wled.state.http_error",
+            ),
+        ),
+        (
+            "capture",
+            (
+                "capture.probe_failed",
+                "capture.grabber_inactive",
+                "capture.activity_unreported",
+            ),
+        ),
+        (
+            "raspberry_pi",
+            ("raspberry_pi.healthy", "raspberry_pi.degraded", None),
+        ),
+        ("wled", ("hyperhdr.healthy", None, None)),
+    ],
+)
+def test_component_reason_count_and_prefix_checks_are_enforced_by_schema(
+    protected_directory: Path,
+    component: str,
+    reasons: tuple[str | None, str | None, str | None],
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    sample_id = _insert_health_sample(connection)
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO component_samples("
+            "sample_id, component, status, reason_code_1, reason_code_2, "
+            "reason_code_3, checked_at_utc_us, latency_ms"
+            ") VALUES (?, ?, 'degraded', ?, ?, ?, 1, 1)",
+            (sample_id, component, *reasons),
+        )
+    connection.close()
+
+
 def _insert_alert(
     connection: sqlite3.Connection,
     *,
@@ -1021,6 +1343,48 @@ def test_only_one_active_alert_per_scope_and_kind(protected_directory: Path) -> 
     with pytest.raises(sqlite3.IntegrityError):
         _insert_alert(connection, lifecycle="acknowledged")
     _insert_alert(connection, lifecycle="recovered")
+    connection.close()
+
+
+def test_only_attached_valid_lifecycle_events_can_be_persisted(
+    protected_directory: Path,
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    _insert_alert(connection)
+    alert_id = connection.execute("SELECT id FROM alerts").fetchone()[0]
+    valid_events = (
+        ("opened", "open"),
+        ("occurrence_updated", "open"),
+        ("acknowledged", "acknowledged"),
+        ("recovered", "recovered"),
+        ("archived", "archived"),
+    )
+    for event_at, (event, lifecycle) in enumerate(valid_events, start=1):
+        connection.execute(
+            "INSERT INTO alert_events("
+            "alert_id, event_type, event_at_utc_us, resulting_lifecycle"
+            ") VALUES (?, ?, ?, ?)",
+            (alert_id, event, event_at, lifecycle),
+        )
+    for values in (
+        (None, "opened", "open"),
+        (alert_id, "rejected_transition", "open"),
+        (alert_id, "opened", "recovered"),
+        (alert_id, "occurrence_updated", "archived"),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO alert_events("
+                "alert_id, event_type, event_at_utc_us, resulting_lifecycle"
+                ") VALUES (?, ?, 10, ?)",
+                values,
+            )
+    assert connection.execute("SELECT COUNT(*) FROM alert_events").fetchone() == (
+        len(valid_events),
+    )
     connection.close()
 
 
@@ -1153,7 +1517,7 @@ def test_database_check_constraints_reject_unknown_enums_and_bounds(
     connection.close()
 
 
-def test_quick_check_timeout_fails_closed(
+def test_quick_check_progress_handler_cancellation_fails_closed(
     protected_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path, store = _create_store(protected_directory)
@@ -1165,6 +1529,70 @@ def test_quick_check_timeout_fails_closed(
     with pytest.raises(schema.SchemaVerificationError):
         schema.verify_schema_v1(connection, monotonic=lambda: next(ticks, 3.0))
     connection.close()
+
+
+class _QuickCheckCursor:
+    def __init__(self, rows: list[tuple[str]]) -> None:
+        self._rows = rows
+
+    def fetchmany(self, count: int) -> list[tuple[str]]:
+        assert count == 2
+        return self._rows
+
+
+class _QuickCheckConnection:
+    def __init__(
+        self,
+        *,
+        rows: list[tuple[str]] | None = None,
+        error: sqlite3.Error | None = None,
+    ) -> None:
+        self.rows = rows or [("ok",)]
+        self.error = error
+        self.handlers: list[tuple[object, int]] = []
+
+    def set_progress_handler(self, handler: object, steps: int) -> None:
+        self.handlers.append((handler, steps))
+
+    def execute(self, statement: str) -> _QuickCheckCursor:
+        assert statement == "PRAGMA quick_check(1)"
+        if self.error is not None:
+            raise self.error
+        return _QuickCheckCursor(self.rows)
+
+
+def test_quick_check_rejects_successful_result_completed_after_deadline() -> None:
+    connection = _QuickCheckConnection()
+    ticks = iter((0.0, schema.QUICK_CHECK_SECONDS + 0.001))
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_quick_check(
+            connection,  # type: ignore[arg-type]
+            monotonic=lambda: next(ticks),
+        )
+    assert caught.value.reason == "quick_check_failed"
+    assert connection.handlers[-1] == (None, 0)
+
+
+def test_quick_check_accepts_completion_within_deadline_and_cleans_handler() -> None:
+    connection = _QuickCheckConnection()
+    ticks = iter((10.0, 10.0 + schema.QUICK_CHECK_SECONDS - 0.001))
+    schema._bounded_quick_check(
+        connection,  # type: ignore[arg-type]
+        monotonic=lambda: next(ticks),
+    )
+    assert connection.handlers[0][0] is not None
+    assert connection.handlers[-1] == (None, 0)
+
+
+def test_quick_check_cleans_handler_after_sqlite_failure() -> None:
+    connection = _QuickCheckConnection(error=sqlite3.DatabaseError("synthetic"))
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_quick_check(
+            connection,  # type: ignore[arg-type]
+            monotonic=lambda: 0.0,
+        )
+    assert caught.value.reason == "quick_check_failed"
+    assert connection.handlers[-1] == (None, 0)
 
 
 def test_failed_creation_removes_only_its_incomplete_file(
@@ -1186,6 +1614,77 @@ def test_failed_creation_removes_only_its_incomplete_file(
         HealthHistoryStore.create(path, created_at_utc_us=1)
     assert not path.exists()
     assert unrelated.read_bytes() == b"evidence"
+
+
+def test_creation_detects_a_newly_created_sidecar_identity_change_during_verification(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aurora_core.health_history.store as store_module
+
+    path = _database_path(protected_directory)
+    original_verify = store_module.verify_schema_v1
+    original_sidecars = store_module.validate_sidecars
+    verification_complete = False
+
+    def verify(*args: object, **kwargs: object) -> None:
+        nonlocal verification_complete
+        original_verify(*args, **kwargs)  # type: ignore[arg-type]
+        verification_complete = True
+
+    def changed_sidecars(candidate: Path) -> dict[str, object]:
+        result = original_sidecars(candidate)
+        if verification_complete and result:
+            suffix = next(iter(result))
+            identity = result[suffix]
+            result[suffix] = type(identity)(
+                identity.device,
+                identity.inode + 1,
+                identity.mode,
+                identity.owner,
+                identity.links,
+                identity.size,
+            )
+        return result  # type: ignore[return-value]
+
+    monkeypatch.setattr(store_module, "verify_schema_v1", verify)
+    monkeypatch.setattr(store_module, "validate_sidecars", changed_sidecars)
+    with pytest.raises(StoreError):
+        HealthHistoryStore.create(path, created_at_utc_us=1)
+    assert not path.exists()
+
+
+def test_failed_creation_cleanup_removes_only_exact_captured_identities(
+    protected_directory: Path,
+) -> None:
+    main = _database_path(protected_directory)
+    wal = main.with_name(f"{main.name}-wal")
+    shm = main.with_name(f"{main.name}-shm")
+    for candidate, content in ((main, b"main"), (wal, b"wal")):
+        candidate.write_bytes(content)
+        candidate.chmod(0o600)
+    main_identity = validate_database_file(main)
+    wal_identity = validate_database_file(wal)
+    remove_created_artifacts(main, main_identity, {"-wal": wal_identity})
+    assert not main.exists()
+    assert not wal.exists()
+
+    for candidate, content in (
+        (main, b"second main"),
+        (wal, b"captured wal"),
+        (shm, b"uncertain shm"),
+    ):
+        candidate.write_bytes(content)
+        candidate.chmod(0o600)
+    main_identity = validate_database_file(main)
+    replaced_identity = validate_database_file(wal)
+    replacement = protected_directory / "replacement-wal"
+    replacement.write_bytes(b"replacement evidence")
+    replacement.chmod(0o600)
+    os.replace(replacement, wal)
+    remove_created_artifacts(main, main_identity, {"-wal": replaced_identity})
+    assert not main.exists()
+    assert wal.read_bytes() == b"replacement evidence"
+    assert shm.read_bytes() == b"uncertain shm"
 
 
 def test_store_context_manager_and_explicit_close(protected_directory: Path) -> None:
@@ -1221,6 +1720,13 @@ def test_public_health_schema_remains_version_one() -> None:
 def test_no_expired_production_alert_lifecycle_exists() -> None:
     assert {state.value for state in AlertLifecycle} == {
         "open",
+        "acknowledged",
+        "recovered",
+        "archived",
+    }
+    assert {event.value for event in LifecycleEvent} == {
+        "opened",
+        "occurrence_updated",
         "acknowledged",
         "recovered",
         "archived",

@@ -18,6 +18,7 @@ MAX_TIMESTAMP_US: Final = 2**63 - 1
 MAX_SERVICE_UPTIME_MS: Final = 31_536_000_000_000
 MAX_COMPONENT_LATENCY_MS: Final = 300_000
 MAX_BOUNDED_COUNTER: Final = 65_535
+MAX_SCHEMA_VERSION: Final = 2_147_483_647
 
 
 class DatabaseIdentity(IntEnum):
@@ -78,7 +79,6 @@ class LifecycleEvent(StrEnum):
     ACKNOWLEDGED = "acknowledged"
     RECOVERED = "recovered"
     ARCHIVED = "archived"
-    REJECTED_TRANSITION = "rejected_transition"
 
 
 class SamplingGapPhase(StrEnum):

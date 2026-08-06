@@ -10,10 +10,11 @@ from types import TracebackType
 
 from aurora_core.health_history.filesystem import (
     FilesystemBoundaryError,
+    FilesystemRejection,
     PathIdentity,
     create_database_file,
     fsync_database_files,
-    remove_created_database,
+    remove_created_artifacts,
     require_stable_sidecars,
     validate_database_file,
     validate_sidecars,
@@ -64,18 +65,26 @@ class HealthHistoryStore:
     ) -> HealthHistoryStore:
         """Exclusively create and verify one new production-format database."""
         identity: PathIdentity | None = None
+        created_sidecars: dict[str, PathIdentity] = {}
         connection: sqlite3.Connection | None = None
         try:
             identity = create_database_file(path)
             connection = _connect_existing(path)
             validate_database_file(path, expected=identity)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             _configure_new_database(connection)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             create_schema_v1(connection, applied_at_utc_us=created_at_utc_us)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             _verify_connection_settings(connection)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             verify_schema_v1(connection, monotonic=monotonic)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             identity = validate_database_file(path, expected=identity)
-            validate_sidecars(path)
             fsync_database_files(path)
+            identity = validate_database_file(path, expected=identity)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
+            _advance_sidecar_snapshot(path, created_sidecars)
             return cls(
                 path=path,
                 connection=connection,
@@ -92,10 +101,16 @@ class HealthHistoryStore:
                 connection.close()
             if identity is not None:
                 try:
-                    remove_created_database(path, identity)
+                    remove_created_artifacts(path, identity, created_sidecars)
                 except (FilesystemBoundaryError, OSError):
                     pass
-            raise StoreError("creation_failed") from error
+            reason = (
+                "already_exists"
+                if isinstance(error, FilesystemBoundaryError)
+                and error.reason is FilesystemRejection.ALREADY_EXISTS
+                else "creation_failed"
+            )
+            raise StoreError(reason) from error
 
     @classmethod
     def open_existing(
@@ -111,12 +126,16 @@ class HealthHistoryStore:
             sidecars = validate_sidecars(path)
             connection = _connect_existing(path)
             validate_database_file(path, expected=identity)
-            require_stable_sidecars(sidecars, validate_sidecars(path))
+            sidecars = _advance_sidecar_snapshot(path, sidecars)
             _configure_existing_database(connection)
+            sidecars = _advance_sidecar_snapshot(path, sidecars)
             _verify_connection_settings(connection)
+            sidecars = _advance_sidecar_snapshot(path, sidecars)
             verify_schema_v1(connection, monotonic=monotonic)
+            sidecars = _advance_sidecar_snapshot(path, sidecars)
             identity = validate_database_file(path, expected=identity)
-            require_stable_sidecars(sidecars, validate_sidecars(path))
+            sidecars = _advance_sidecar_snapshot(path, sidecars)
+            _advance_sidecar_snapshot(path, sidecars)
             return cls(
                 path=path,
                 connection=connection,
@@ -144,9 +163,11 @@ class HealthHistoryStore:
             validate_database_file(self._path, expected=self._identity)
             sidecars = validate_sidecars(self._path)
             _verify_connection_settings(self._connection)
+            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
             verify_schema_v1(self._connection, monotonic=self._monotonic)
+            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
             validate_database_file(self._path, expected=self._identity)
-            require_stable_sidecars(sidecars, validate_sidecars(self._path))
+            _advance_sidecar_snapshot(self._path, sidecars)
         except (
             FilesystemBoundaryError,
             OSError,
@@ -188,6 +209,14 @@ def _connect_existing(path: Path) -> sqlite3.Connection:
         timeout=BUSY_TIMEOUT_MILLISECONDS / 1000,
         isolation_level=None,
     )
+
+
+def _advance_sidecar_snapshot(
+    path: Path, before: dict[str, PathIdentity]
+) -> dict[str, PathIdentity]:
+    after = validate_sidecars(path)
+    require_stable_sidecars(before, after)
+    return after
 
 
 def _configure_new_database(connection: sqlite3.Connection) -> None:

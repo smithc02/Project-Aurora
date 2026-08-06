@@ -98,7 +98,7 @@ def test_no_alert_opens_one_fixed_alert() -> None:
             AlertOperation.ARCHIVE,
             AlertLifecycle.OPEN,
             AlertOutcome.REJECTED,
-            AlertEvent.REJECTED_TRANSITION,
+            None,
         ),
         (
             AlertLifecycle.ACKNOWLEDGED,
@@ -119,14 +119,14 @@ def test_no_alert_opens_one_fixed_alert() -> None:
             AlertOperation.ARCHIVE,
             AlertLifecycle.ACKNOWLEDGED,
             AlertOutcome.REJECTED,
-            AlertEvent.REJECTED_TRANSITION,
+            None,
         ),
         (
             AlertLifecycle.RECOVERED,
             AlertOperation.ACKNOWLEDGE,
             AlertLifecycle.RECOVERED,
             AlertOutcome.REJECTED,
-            AlertEvent.REJECTED_TRANSITION,
+            None,
         ),
         (
             AlertLifecycle.RECOVERED,
@@ -147,7 +147,7 @@ def test_no_alert_opens_one_fixed_alert() -> None:
             AlertOperation.ACKNOWLEDGE,
             AlertLifecycle.ARCHIVED,
             AlertOutcome.REJECTED,
-            AlertEvent.REJECTED_TRANSITION,
+            None,
         ),
         (
             AlertLifecycle.ARCHIVED,
@@ -256,6 +256,7 @@ def test_escalation_is_code_owned_and_creates_a_distinct_alert_kind() -> None:
         )
         assert rejected.outcome is AlertOutcome.REJECTED
         assert rejected.state is invalid
+        assert rejected.event is None
 
 
 def test_recovery_records_one_fixed_event_and_duplicates_are_idempotent() -> None:
@@ -284,6 +285,7 @@ def test_archive_requires_recovery_and_exact_cooldown_eligibility() -> None:
     )
     assert before.outcome is AlertOutcome.REJECTED
     assert before.state is recovered
+    assert before.event is None
     assert boundary.state is not None
     assert boundary.state.lifecycle is AlertLifecycle.ARCHIVED
     assert boundary.event is AlertEvent.ARCHIVED
@@ -376,7 +378,7 @@ def test_scope_or_kind_mismatch_fails_closed() -> None:
     for request in (wrong_scope, wrong_kind):
         transition = evaluate_alert_lifecycle(state, request)
         assert transition.state is state
-        assert transition.event is AlertEvent.REJECTED_TRANSITION
+        assert transition.event is None
         assert transition.outcome is AlertOutcome.REJECTED
 
 
@@ -397,7 +399,7 @@ def test_no_alert_rejects_every_operation_except_open() -> None:
             ),
         )
         assert transition.state is None
-        assert transition.event is AlertEvent.REJECTED_TRANSITION
+        assert transition.event is None
         assert transition.outcome is AlertOutcome.REJECTED
 
 
@@ -408,7 +410,6 @@ def test_event_and_lifecycle_registries_are_exact() -> None:
         "acknowledged",
         "recovered",
         "archived",
-        "rejected_transition",
     }
     assert {lifecycle.value for lifecycle in AlertLifecycle} == {
         "open",

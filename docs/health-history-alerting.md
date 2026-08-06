@@ -30,10 +30,13 @@ reviewable boundaries without runtime integration:
   production/reference parity tests and no import from `m18_validation`;
 - SHA-256 canonical projection digests of exactly 32 bytes, independent of
   mapping insertion order, free-form messages, excluded detail values, and the
-  later recording time;
+  later recording time, while including schema version, observation time,
+  overall status, uptime, sample kind, missed intervals, and every fixed
+  component projection field;
 - fixed production SQLite `application_id` `0x41555248` and `user_version` 1;
 - exclusive new-file creation in an existing owned mode-`0700` directory, with
-  a mode-`0600` main file and no overwrite or reuse;
+  a mode-`0600` main file, preflight refusal if the main, `-wal`, or `-shm`
+  reserved name already exists, and no overwrite or reuse;
 - URI `mode=rw` opening of existing databases so a missing file is never
   created implicitly;
 - pre-open and post-open type, owner, mode, link-count, device, inode, and
@@ -323,6 +326,12 @@ Persistent history, alert records, query responses, and logs must never contain:
 Projection validation occurs before a writer lock or transaction. A malformed,
 unknown-version, oversized, non-finite, or unknown-component snapshot is
 rejected as one sanitized ingestion failure; it is never partially stored.
+The supplied overall status must exactly equal the worst validated component
+status under `healthy < degraded < unavailable`; the projector rejects an
+inconsistent report rather than rewriting it. Every component reason must use
+that component's prefix, be unique, and remain within the fixed per-component
+maximum of two WLED, three HyperHDR, two capture, or exactly one Raspberry Pi
+reason.
 
 ### Finalized normalized reason-code registry
 
@@ -402,7 +411,7 @@ backup, or restore method.
 
 ### `schema_migrations`
 
-- `version`: positive integer primary key;
+- `version`: bounded positive integer primary key from 1 through 2,147,483,647;
 - `applied_at_utc_us`: UTC microseconds; and
 - no free-form migration name, host, path, or operator metadata.
 
@@ -410,7 +419,10 @@ SQLite `application_id` identifies an Aurora history database and
 `user_version` is the authoritative current schema version. The migration table
 is an audit ledger. A mismatch among file identity, `user_version`, migration
 rows, and expected tables is corruption or an unsupported schema, never a cue
-to recreate the database.
+to recreate the database. Version-1 verification still requires `user_version`
+1 and exactly one valid-timestamp ledger row whose version is 1. The wider
+table constraint permits only a future code-owned migration to append a later
+positive version; no migration implementation exists in this slice.
 
 ### `health_samples`
 
@@ -433,8 +445,10 @@ idempotent.
 - fixed component name;
 - status;
 - one required normalized reason code plus two fixed nullable reason-code
-  slots, preserving the accepted maximum of three reasons without JSON or an
-  additional open-ended metadata table;
+  slots, without JSON or an additional open-ended metadata table; and
+- component-specific constraints permitting at most two WLED reasons, at most
+  three HyperHDR reasons, at most two capture reasons, and exactly one
+  Raspberry Pi reason, all unique and component-prefixed;
 - checked-at UTC microseconds;
 - bounded latency milliseconds; and
 - nullable last-successful UTC microseconds.
@@ -471,7 +485,12 @@ queries.
 This append-only lifecycle ledger contains an alert foreign key, fixed event
 type, UTC time, optional supporting sample reference, and resulting lifecycle
 state. It has no actor, comment, request, or arbitrary metadata. An index on
-`(alert, event time)` supports a bounded timeline.
+`(alert, event time)` supports a bounded timeline. Persisted events are exactly
+`opened`, `occurrence_updated`, `acknowledged`, `recovered`, and `archived`.
+An invalid transition is the fixed rejected operation outcome only: it has no
+alert ID or resulting lifecycle, does not create an `alert_events` row, and
+leaves state unchanged. A failed persistence attempt likewise creates no
+lifecycle event.
 
 All enums require database `CHECK` constraints as defense in depth. Foreign
 keys are mandatory. Unknown columns, versions, states, components, and reason
@@ -493,11 +512,18 @@ only with their alert. Retained alert and evaluator sample references use
 `SET NULL` so bounded history cleanup does not implicitly delete lifecycle
 evidence.
 
-Creation and open-existing are intentionally separate calls. Failed initial
-creation removes only the unpublished main file when its managed identity still
-matches the file exclusively created by that call. Opening always uses
-`mode=rw`, validates the exact schema and identities, and never repairs,
-replaces, or recreates operator evidence.
+Creation and open-existing are intentionally separate calls. Creation first
+requires the main, code-derived `-wal`, and code-derived `-shm` paths all to be
+absent; an object of any type at any reserved name produces the same fixed
+already-exists failure without content inspection or modification. After
+SQLite creates a sidecar,
+its device, inode, owner, mode, and link-count identity must remain stable
+through schema verification and fsync. Failed initial creation removes the main
+or a sidecar only when that exact identity was captured as created by the call
+and still matches; uncertain or replaced objects are preserved. Opening always
+uses `mode=rw`, applies the same progressive identity snapshots to newly
+created sidecars, validates the exact schema, and never repairs, replaces, or
+recreates operator evidence.
 
 Before a migration, the operator-visible migration workflow must create and
 verify a separate SQLite backup under the 16,384-page, 64-MiB, 30-second online
@@ -517,7 +543,13 @@ history feature; it must not alter the active Aurora YAML or device state.
 
 The scheduler asks the shared `HealthService` for one report at each monotonic
 deadline. It never performs catch-up polls. The projection is validated and
-canonically encoded in fixed field order before its digest is calculated.
+canonically encoded in fixed field order before its digest is calculated. The
+digest includes the schema version, observed UTC microseconds, supplied overall
+status, bounded uptime, sample kind, missed-interval count, and every fixed
+component field in code-owned component order. It excludes only local
+`recorded_at_utc_us`, so persistence retry time does not alter identity while
+distinct scheduler evidence at the same report observation time remains
+distinguishable.
 
 Within the one permitted transaction for that accepted scheduled sample, the
 writer:
@@ -664,13 +696,14 @@ The complete schema-version-1 lifecycle is:
 | `recovered` after cooldown eligibility or `archived` | A new opening threshold is satisfied | Preserve the old record; create a distinct `open` occurrence | `opened` on the new record |
 | `open` or `acknowledged` degraded alert | Code-owned escalation to unavailable | Preserve the old alert kind and lifecycle; create a distinct unavailable `open` alert | `opened` on the new record |
 | Any state | Duplicate acknowledgment, recovery, or archive already reflected by that state | Preserve state; no second event | none |
-| Any state | Invalid transition | Preserve state and create no alert | `rejected_transition` |
+| Any state | Invalid transition | Preserve state and create no alert or persisted lifecycle event | none; fixed rejected operation outcome only |
 
 The exact schema-version-1 event registry is `opened`, `occurrence_updated`,
-`acknowledged`, `recovered`, `archived`, and `rejected_transition`. There is no
-expired state or event. No acknowledged record returns to open. Escalation and
-a later episode create separate immutable occurrences, so the old alert's kind
-and meaning never change. `archived` is terminal. At most one open or
+`acknowledged`, `recovered`, and `archived`. A `rejected_transition` is a fixed
+operation outcome or sanitized audit result, not an `alert_events` row. There
+is no expired state or event. No acknowledged record returns to open.
+Escalation and a later episode create separate immutable occurrences, so the
+old alert's kind and meaning never change. `archived` is terminal. At most one open or
 acknowledged record exists for each fixed scope and kind. Occurrence counts
 saturate at 65,535, and repeated matches during cooldown cannot create a
 duplicate alert. Deletion after retention is storage cleanup, not a lifecycle
@@ -783,9 +816,11 @@ The feasible future procedure is:
    `-shm` names without following links. Reject symlinks, non-regular objects,
    an owner other than the effective service account, a mode other than `0600`,
    or a link count other than one.
-3. If the database does not exist, create only that final file with exclusive
-   creation, mode `0600`, and `O_NOFOLLOW` where supported, then close it. Never
-   ask SQLite to create a missing path or directory.
+3. For explicit creation, require the main database and both code-derived
+   sidecar names to be absent, then create only the main file with exclusive
+   creation, mode `0600`, and `O_NOFOLLOW` where supported before closing it.
+   Any object at a reserved name fails without content inspection or
+   modification. Never ask SQLite to create a missing main path or directory.
 4. Record the database's device, inode, type, owner, mode, and link count from
    both path and independently opened inspection descriptor. Set process umask
    `0077`, then connect to the validated pathname in existing-file `mode=rw`,
@@ -794,7 +829,8 @@ The feasible future procedure is:
    schema query, or write, repeat no-follow path and descriptor inspection for
    the database and any sidecars. Require the database device and inode to equal
    the pre-open identity and require every other attribute to remain valid.
-6. Recheck database and sidecar identity, ownership, type, link count, and mode
+6. Capture every SQLite-created sidecar's exact identity and recheck database
+   and sidecar identity, ownership, type, link count, and mode
    after startup validation and after every write or maintenance operation.
    A sidecar at any name other than the code-derived WAL/shared-memory names, or
    replacement of a previously observed file identity, is a fixed
@@ -822,7 +858,9 @@ Startup order is:
    post-open identity checks before application-issued database operations;
 4. set or verify the fixed page size, bounded pragmas, and application identity;
 5. verify schema version and required objects;
-6. run `quick_check(1)` under the explicit integrity budget; and
+6. run `quick_check(1)` under the explicit integrity budget, failing both when
+   the progress handler interrupts it and when a nominally successful result
+   returns after the two-second monotonic deadline; and
 7. start exactly one scheduler thread only after validation passes.
 
 There is no work queue. Scheduler and future acknowledgment writes use one

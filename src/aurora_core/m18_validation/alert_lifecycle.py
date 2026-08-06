@@ -47,7 +47,6 @@ class AlertEvent(StrEnum):
     ACKNOWLEDGED = "acknowledged"
     RECOVERED = "recovered"
     ARCHIVED = "archived"
-    REJECTED_TRANSITION = "rejected_transition"
 
 
 class AlertOutcome(StrEnum):
@@ -131,7 +130,7 @@ class AlertInput:
 
 @dataclass(frozen=True, slots=True)
 class AlertTransition:
-    """Immutable lifecycle result; a distinct new alert is returned separately."""
+    """Immutable result; only an applied persisted lifecycle change has an event."""
 
     previous: AlertState | None
     state: AlertState | None
@@ -302,10 +301,4 @@ def _idempotent(state: AlertState) -> AlertTransition:
 
 
 def _rejected(state: AlertState | None) -> AlertTransition:
-    return AlertTransition(
-        state,
-        state,
-        None,
-        AlertEvent.REJECTED_TRANSITION,
-        AlertOutcome.REJECTED,
-    )
+    return AlertTransition(state, state, None, None, AlertOutcome.REJECTED)

@@ -13,6 +13,7 @@ from aurora_core.health_history.models import (
     MAX_BOUNDED_COUNTER,
     MAX_COMPONENT_LATENCY_MS,
     MAX_SCHEMA_OBJECTS,
+    MAX_SCHEMA_VERSION,
     MAX_SERVICE_UPTIME_MS,
     MAX_TIMESTAMP_US,
     PROJECTION_DIGEST_BYTES,
@@ -57,7 +58,8 @@ _GAP_PHASE = _sql_values(SamplingGapPhase)
 TABLE_DDL: Final[dict[str, str]] = {
     "schema_migrations": f"""
         CREATE TABLE schema_migrations (
-            version INTEGER PRIMARY KEY CHECK (version = {SCHEMA_VERSION}),
+            version INTEGER PRIMARY KEY
+                CHECK (version BETWEEN 1 AND {MAX_SCHEMA_VERSION}),
             applied_at_utc_us INTEGER NOT NULL
                 CHECK (applied_at_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US})
         )
@@ -105,7 +107,12 @@ TABLE_DDL: Final[dict[str, str]] = {
             CHECK (reason_code_2 IS NULL OR reason_code_2 IS NOT reason_code_3),
             CHECK (reason_code_1 LIKE component || '.%'),
             CHECK (reason_code_2 IS NULL OR reason_code_2 LIKE component || '.%'),
-            CHECK (reason_code_3 IS NULL OR reason_code_3 LIKE component || '.%')
+            CHECK (reason_code_3 IS NULL OR reason_code_3 LIKE component || '.%'),
+            CHECK ((component = 'wled' AND reason_code_3 IS NULL)
+                OR component = 'hyperhdr'
+                OR (component = 'capture' AND reason_code_3 IS NULL)
+                OR (component = 'raspberry_pi'
+                    AND reason_code_2 IS NULL AND reason_code_3 IS NULL))
         )
     """,
     "alerts": f"""
@@ -188,7 +195,8 @@ TABLE_DDL: Final[dict[str, str]] = {
                     AND resulting_lifecycle = 'recovered')
                 OR (event_type = 'archived'
                     AND resulting_lifecycle = 'archived')
-                OR event_type IN ('occurrence_updated', 'rejected_transition'))
+                OR (event_type = 'occurrence_updated'
+                    AND resulting_lifecycle IN ('open', 'acknowledged', 'recovered')))
         )
     """,
 }
@@ -328,11 +336,12 @@ def _bounded_quick_check(
     connection.set_progress_handler(progress, PROGRESS_HANDLER_STEPS)
     try:
         rows = connection.execute("PRAGMA quick_check(1)").fetchmany(2)
+        completed_at = monotonic()
     except sqlite3.Error as error:
         raise SchemaVerificationError("quick_check_failed") from error
     finally:
         connection.set_progress_handler(None, 0)
-    if rows != [("ok",)]:
+    if completed_at > deadline or rows != [("ok",)]:
         raise SchemaVerificationError("quick_check_failed")
 
 
