@@ -75,17 +75,21 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; storage foundation slice):
+18. **Milestone 18 (implementation in progress; isolated storage and ingestion
+    slices):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
     registry plus explicit secure creation, fail-closed opening, and exact
-    SQLite schema version 1 verification. It is not imported by a runtime entry
+    SQLite schema version 1 verification. The second slice adds the
+    pre-deployment singleton ingestion checkpoint, atomic projection ingestion,
+    deterministic history compaction, health and sampling-gap evaluation, and
+    ingestion-driven alert lifecycle. It is not imported by a runtime entry
     point, creates no deployment database, and leaves production history
-    disabled and unavailable. Sample ingestion and deterministic alert-state
-    translation are next; routes, scheduling, notifications, and automation
-    remain unimplemented. It authorizes no device, service, configuration,
-    command, or arbitrary network action. See the
+    disabled and unavailable. Queries, acknowledgment, retention execution,
+    scheduling, notifications, and automation remain unimplemented. It
+    authorizes no device, service, configuration, command, or arbitrary network
+    action. See the
     [health-history and alerting design](health-history-alerting.md).
 19. **Milestone 19: Multi-zone virtual room model.**
 20. **Milestone 20: Real-time motion-tracking prototype.**

@@ -64,6 +64,32 @@ TABLE_DDL: Final[dict[str, str]] = {
                 CHECK (applied_at_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US})
         )
     """,
+    "ingestion_checkpoint": f"""
+        CREATE TABLE ingestion_checkpoint (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            last_accepted_observed_at_utc_us INTEGER
+                CHECK (last_accepted_observed_at_utc_us IS NULL
+                    OR last_accepted_observed_at_utc_us
+                        BETWEEN 0 AND {MAX_TIMESTAMP_US}),
+            last_accepted_projection_digest BLOB
+                CHECK (last_accepted_projection_digest IS NULL
+                    OR (typeof(last_accepted_projection_digest) = 'blob'
+                        AND length(last_accepted_projection_digest)
+                            = {PROJECTION_DIGEST_BYTES})),
+            last_accepted_sample_kind TEXT
+                CHECK (last_accepted_sample_kind IS NULL
+                    OR last_accepted_sample_kind IN ({_SAMPLE_KIND})),
+            accepted_observation_count INTEGER NOT NULL DEFAULT 0
+                CHECK (accepted_observation_count
+                    BETWEEN 0 AND {MAX_BOUNDED_COUNTER}),
+            CHECK ((last_accepted_observed_at_utc_us IS NULL
+                    AND last_accepted_projection_digest IS NULL
+                    AND last_accepted_sample_kind IS NULL)
+                OR (last_accepted_observed_at_utc_us IS NOT NULL
+                    AND last_accepted_projection_digest IS NOT NULL
+                    AND last_accepted_sample_kind IS NOT NULL))
+        )
+    """,
     "health_samples": f"""
         CREATE TABLE health_samples (
             id INTEGER PRIMARY KEY,
@@ -171,7 +197,6 @@ TABLE_DDL: Final[dict[str, str]] = {
                 CHECK (last_heartbeat_at_utc_us IS NULL
                     OR last_heartbeat_at_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US}),
             gap_phase TEXT NOT NULL DEFAULT 'clear' CHECK (gap_phase IN ({_GAP_PHASE})),
-            current_alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
             cooldown_until_utc_us INTEGER
                 CHECK (cooldown_until_utc_us IS NULL
                     OR cooldown_until_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US})
@@ -257,6 +282,7 @@ def create_schema_v1(connection: sqlite3.Connection, *, applied_at_utc_us: int) 
             "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)",
             (SCHEMA_VERSION, applied_at_utc_us),
         )
+        connection.execute("INSERT INTO ingestion_checkpoint(singleton_id) VALUES (1)")
         connection.executemany(
             "INSERT INTO evaluation_state(scope) VALUES (?)",
             ((scope.value,) for scope in AlertScope),
@@ -312,6 +338,13 @@ def verify_schema_v1(
             raise SchemaVerificationError("migration_ledger_mismatch")
         if type(ledger[0][1]) is not int or not 0 <= ledger[0][1] <= MAX_TIMESTAMP_US:
             raise SchemaVerificationError("migration_ledger_mismatch")
+        checkpoint = connection.execute(
+            "SELECT singleton_id, last_accepted_observed_at_utc_us, "
+            "last_accepted_projection_digest, last_accepted_sample_kind, "
+            "accepted_observation_count FROM ingestion_checkpoint LIMIT 2"
+        ).fetchall()
+        if len(checkpoint) != 1 or not _valid_checkpoint_row(checkpoint[0]):
+            raise SchemaVerificationError("ingestion_checkpoint_mismatch")
         scopes = connection.execute(
             "SELECT scope FROM evaluation_state ORDER BY scope LIMIT ?",
             (len(AlertScope) + 1,),
@@ -354,3 +387,22 @@ def _pragma_integer(connection: sqlite3.Connection, name: str) -> int:
 
 def _normalize_sql(statement: str) -> str:
     return " ".join(statement.rstrip().rstrip(";").split()).lower()
+
+
+def _valid_checkpoint_row(row: sqlite3.Row | tuple[object, ...]) -> bool:
+    singleton_id, observed_at, digest, sample_kind, count = row
+    if (
+        singleton_id != 1
+        or type(count) is not int
+        or not 0 <= count <= MAX_BOUNDED_COUNTER
+    ):
+        return False
+    empty = observed_at is None and digest is None and sample_kind is None
+    populated = (
+        type(observed_at) is int
+        and 0 <= observed_at <= MAX_TIMESTAMP_US
+        and type(digest) is bytes
+        and len(digest) == PROJECTION_DIGEST_BYTES
+        and sample_kind in {kind.value for kind in SampleKind}
+    )
+    return empty or populated

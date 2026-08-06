@@ -198,6 +198,28 @@ def project_health_report(
     )
 
 
+def validate_health_projection(projection: HealthProjection) -> None:
+    """Revalidate an immutable projection and its canonical digest before SQL."""
+    if type(projection) is not HealthProjection:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT)
+    try:
+        projection.__post_init__()
+        for component in projection.components:
+            component.__post_init__()
+        canonical = _canonical_bytes(
+            observed_at=projection.observed_at_utc_us,
+            status=projection.overall_status,
+            uptime=projection.service_uptime_ms,
+            sample_kind=projection.sample_kind,
+            missed_intervals=projection.missed_intervals,
+            components=projection.components,
+        )
+    except ValueError as error:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT) from error
+    if hashlib.sha256(canonical).digest() != projection.digest:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT)
+
+
 def _project_component(
     expected: ComponentName, component: ComponentHealth
 ) -> ComponentProjection:

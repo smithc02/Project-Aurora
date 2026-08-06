@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first Milestone 18 production slice supplies an isolated
+The first two Milestone 18 production slices supply an isolated
 `aurora_core.health_history` package. Its stricter code-owned projection accepts
 only complete `HealthReport` schema version 1 snapshots and retains status,
 timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
@@ -375,10 +375,21 @@ verification failures. The standard library opens SQLite files by pathname,
 not the already inspected descriptor, so the accepted owned mode-`0700`
 directory boundary remains required and no internal `O_NOFOLLOW` claim is made.
 
+Before any deployment database exists, schema version 1 is refined with one
+singleton accepted-observation checkpoint and no singular current-alert
+reference. The narrow store ingestion method revalidates one immutable
+projection, checks replay before mutation, and executes one fixed
+`BEGIN IMMEDIATE` transaction. It updates six evaluator scopes, optionally
+stores a transition, marker, or 15-minute heartbeat with four component rows,
+and applies bounded health, sampling-gap, and automatic alert transitions.
+Degraded and unavailable alerts remain distinct records for the same scope.
+Filesystem identity is checked before and after the transaction; failures are
+fixed sanitized results with no retry or queue.
+
 No current runtime entry point imports this package. There is no configuration,
-deployment database creation, sample ingestion, scheduler, query, route, alert
-mutation, maintenance execution, or device/service/network behavior. Atomic
-sample ingestion and deterministic alert-state translation are the next planned
-slice. Existing portal routes and public `GET /api/health` schema version 1
-remain independent and unchanged. See the detailed
+deployment database creation, scheduler, query, route, acknowledgment,
+retention execution, maintenance execution, or device/service/network
+behavior. Existing portal routes and public `GET /api/health` schema version 1
+remain independent and unchanged. The next slices are bounded history queries,
+retention/maintenance, and separately reviewed runtime integration. See the detailed
 [health-history and alerting design](health-history-alerting.md).

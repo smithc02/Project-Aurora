@@ -16,11 +16,12 @@
 > atomic activation, recovery, and operator-selected rollback. Its software is
 > merged and deployed, and controlled Linux filesystem validation passed; this
 > does not assert that production profiles were created or activated. Milestone
-> 18 implementation is in progress: its first isolated slice defines the strict
-> production health projection, finite reason registry, and exact SQLite
-> storage foundation. No runtime entry point imports it, no deployment database
-> is created, and no history, route, worker, notification, or automation
-> behavior is enabled. Broader device control,
+> 18 implementation is in progress: its isolated production package now
+> includes the strict projection and SQLite foundation plus atomic projection
+> ingestion, compacted history state, replay protection, and deterministic
+> automatic alert translation. No runtime entry point imports it, no deployment
+> database is created, and no scheduled history, route, query, acknowledgment,
+> worker, notification, or automation behavior is enabled. Broader device control,
 > browser configuration, room mapping, and spatial intelligence remain deferred.
 
 ## Architecture summary
@@ -205,7 +206,8 @@ four-operation registry and two-request verification boundary. See the
 the CLI, filesystem, backup, activation, and recovery boundaries. The in-progress
 [Milestone 18 health-history and alerting design](docs/health-history-alerting.md)
 documents the persistence, privacy, lifecycle, and bounded-automation decisions
-plus the isolated storage-foundation slice; it does not enable runtime behavior.
+plus the isolated storage and ingestion slices; it does not enable runtime
+behavior.
 
 ## Contributing
 

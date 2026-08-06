@@ -2,17 +2,20 @@
 
 ## Status
 
-Milestone 18 implementation is in progress. The first production slice adds an
-isolated strict health projection, an independent finite reason registry, exact
-SQLite schema version 1 DDL, and explicit secure create and fail-closed
-open-existing storage boundaries. No current runtime entry point imports the
-package, no deployment creates a database, and production history remains
-disabled and unavailable.
+Milestone 18 implementation is in progress. The first production slice added
+the isolated strict health projection, finite reason registry, exact SQLite
+schema version 1 foundation, and explicit secure create and fail-closed
+open-existing boundaries. The second isolated slice adds the narrow atomic
+ingestion method, deterministic evaluator state, compacted history, sampling-gap
+translation, and ingestion-driven alert lifecycle described below.
 
-This slice does not add configuration fields, a scheduler, worker, route,
-sample ingestion, alert mutation, query, migration, backup, restore,
-notification, or automation action. Milestones 12 through 17 remain the
-current behavior, including public `GET /api/health` schema version 1.
+No current runtime entry point imports the package, no installation or update
+creates a database, and production history remains disabled and unavailable.
+This slice adds no configuration field, scheduler, worker, route, runtime
+invocation, query API, acknowledgment action, migration, backup, restore,
+retention execution, notification, or automation action. Milestones 12 through
+17 remain the current behavior, including public `GET /api/health` schema
+version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -20,7 +23,7 @@ schema version 1 contract, the shared `HealthService` cache, authentication,
 WLED or HyperHDR controls, configuration-profile commands, or filesystem
 backup behavior.
 
-### First implementation slice
+### Implemented production slices
 
 The production-only `aurora_core.health_history` package establishes these
 reviewable boundaries without runtime integration:
@@ -43,6 +46,20 @@ reviewable boundaries without runtime integration:
   sidecar validation; and
 - exact object, definition, migration-ledger, pragma, and one bounded
   `quick_check(1)` verification with no repair or recreation.
+
+The second slice remains inside that isolated package and adds:
+
+- one singleton accepted-observation checkpoint, including replay identity for
+  observations whose history rows were compacted;
+- independent pure health, sampling-gap, and automatic-alert evaluators, with
+  parity tests against the accepted validation reference models;
+- one `BEGIN IMMEDIATE` transaction for every accepted non-replayed projection;
+- fixed transition and 15-minute heartbeat compaction with exactly four fixed
+  component rows whenever a sample is stored;
+- bounded threshold, occurrence, escalation, recovery, cooldown, and archive
+  behavior; and
+- six fixed sanitized ingestion outcomes with no SQL, path, raw exception, or
+  submitted value in the result.
 
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
@@ -402,12 +419,16 @@ inability of prohibited values to enter output.
 
 ## Schema version 1 storage foundation
 
-The first implementation slice supplies exact code-owned DDL for the following
-tables and indexes. Creation publishes them in one transaction, sets the fixed
+The production package supplies exact code-owned DDL for the following tables
+and indexes. Creation publishes them in one transaction, sets the fixed
 application and schema identities, inserts exactly one version-1 migration
-ledger row, and initializes one fixed `evaluation_state` row per scope. The
-store exposes no arbitrary SQL, ingestion, alert mutation, query, migration,
-backup, or restore method.
+ledger row, initializes the one ingestion checkpoint, and creates one fixed
+`evaluation_state` row per scope. The store exposes only create, open-existing,
+verify, close, and strict projection ingestion; it exposes no arbitrary SQL,
+query, acknowledgment, migration, backup, or restore method.
+
+This is a pre-deployment schema-version-1 refinement. No production history
+database exists, no deployment creates one, and no migration was added.
 
 ### `schema_migrations`
 
@@ -423,6 +444,23 @@ to recreate the database. Version-1 verification still requires `user_version`
 1 and exactly one valid-timestamp ledger row whose version is 1. The wider
 table constraint permits only a future code-owned migration to append a later
 positive version; no migration implementation exists in this slice.
+
+### `ingestion_checkpoint`
+
+Exactly one row with singleton ID 1 owns the global accepted-observation
+checkpoint. Its nullable observed UTC microseconds, 32-byte projection digest,
+and fixed sample kind must be jointly null or jointly present. Its accepted
+observation counter saturates at 65,535. Initial creation inserts exactly one
+empty checkpoint, and verification rejects missing, additional, malformed, or
+partially populated checkpoint state.
+
+Replay is checked before history, evaluator, counter, alert, event, or
+checkpoint mutation. Every committed non-replayed projection updates this row,
+including a projection compacted to state only. A rolled-back transaction
+cannot update it. The existing unique `(observed time, digest)` history index
+remains defense in depth for stored rows; the singleton checkpoint protects the
+most recently accepted compacted observation without copying replay identity
+into every evaluator scope.
 
 ### `health_samples`
 
@@ -459,10 +497,13 @@ The primary key is `(sample, component)`. An index on
 ### `evaluation_state`
 
 One row per fixed scope stores only the current observed status, candidate
-status, bounded consecutive count, last sample and heartbeat times, sampling-gap
-state, current alert reference, and cooldown deadline. It is updated within the
-single state transaction for every accepted scheduled sample even when snapshot
-history is compacted. It contains no raw snapshot.
+status, bounded consecutive count, last sample and heartbeat times,
+sampling-gap state, and an optional bounded cooldown deadline. It is updated
+within the single state transaction for every accepted scheduled sample even
+when snapshot history is compacted. It contains no raw snapshot and no singular
+current-alert foreign key. Active and recovered alerts are selected by fixed
+scope and kind through the bounded alert indexes, allowing degraded and
+unavailable alerts for one scope to coexist without an open-ended association.
 
 ### `alerts`
 
@@ -539,45 +580,60 @@ older Aurora release must refuse a newer schema. Software rollback therefore
 requires restoring the verified pre-migration history backup or disabling the
 history feature; it must not alter the active Aurora YAML or device state.
 
-## Future snapshot ingestion and deduplication
+## Isolated snapshot ingestion and deduplication
 
-The scheduler asks the shared `HealthService` for one report at each monotonic
-deadline. It never performs catch-up polls. The projection is validated and
-canonically encoded in fixed field order before its digest is calculated. The
-digest includes the schema version, observed UTC microseconds, supplied overall
-status, bounded uptime, sample kind, missed-interval count, and every fixed
-component field in code-owned component order. It excludes only local
-`recorded_at_utc_us`, so persistence retry time does not alter identity while
-distinct scheduler evidence at the same report observation time remains
-distinguishable.
+The isolated store now accepts one already projected `HealthProjection`; no
+scheduler or runtime caller exists. A future scheduler is still expected to ask
+the shared `HealthService` for one report at each monotonic deadline and never
+perform catch-up polls. Before SQL begins, ingestion revalidates the immutable
+projection and its canonical digest. The digest includes schema version,
+observed UTC microseconds, supplied overall status, bounded uptime, sample kind,
+missed-interval count, and every fixed component field in code-owned component
+order. It excludes only local `recorded_at_utc_us`, so a retry time does not
+alter identity while distinct scheduler evidence at the same report observation
+time remains distinguishable.
 
 Within the one permitted transaction for that accepted scheduled sample, the
 writer:
 
-1. rejects a replayed `(observed time, digest)`;
-2. updates consecutive transition state for every fixed scope;
-3. stores a history sample immediately when any permitted status or reason code
-   changed;
-4. otherwise stores one heartbeat only when the configured heartbeat interval
-   has elapsed;
-5. evaluates alert opening, escalation, recovery, and cooldown;
-6. adds fixed lifecycle events; and
-7. commits all state together.
+1. validates main-file and sidecar identity, then begins exactly one
+   `BEGIN IMMEDIATE` transaction with the existing 250-millisecond busy limit;
+2. reads the one checkpoint, six evaluator rows, latest supporting history,
+   and only the fixed bounded active/recovered alert set;
+3. rejects a replay before any history, counter, alert, event, or checkpoint
+   mutation;
+4. evaluates health and sampling-gap transitions for the fixed scopes;
+5. stores a sample plus exactly four component rows when compaction requires
+   history or alert opening/recovery requires attached evidence;
+6. updates evaluator state, alerts, lifecycle events, and the singleton
+   checkpoint; and
+7. commits once, revalidates main and sidecar identity, and returns one fixed
+   sanitized outcome. There is no retry, work queue, or generic SQL surface.
 
-Unchanged healthy snapshots are therefore compacted. History records changes
-plus periodic heartbeats, not every sample. The transaction still persists
-debounce, sampling-gap, and restart-checkpoint state for every accepted
-scheduled sample through `evaluation_state`. Compaction reduces history rows;
-it does not by itself reduce the transaction rate or guarantee low storage
-write volume.
+Ordinary first observations and changes use `transition`; unchanged observations
+before 15 minutes use `state_only`; unchanged observations at or after the
+boundary use `heartbeat`; and `startup_gap` and `clock_discontinuity` markers
+retain those exact sample kinds. A change means any overall status, component
+status, or normalized component-reason tuple changed. Messages, raw details,
+latency-only movement, and excluded values do not create a transition. Every
+stored sample has exactly four components in fixed code-owned order; a
+state-only observation has none. Alert opening or recovery forces one supporting
+transition record if compaction would otherwise omit it.
+
+The fixed result registry is `replayed`, `state_only`, `transition_stored`,
+`heartbeat_stored`, `startup_marker_stored`, and `clock_marker_stored`.
+Unchanged snapshots are therefore compacted, but evaluator and checkpoint state
+still commit for every accepted non-replayed observation. Compaction reduces
+history rows; it does not reduce the approved transaction rate or guarantee low
+storage write volume.
 
 If a dashboard request recently refreshed the cache, the scheduler may ingest
 that same report once. Repeated cache reads with the same observation time and
 digest are idempotent and do not inflate counters or history.
 
-Atomic sample ingestion and deterministic translation into evaluation and alert
-state are the next planned implementation slice. They are not enabled by the
-storage foundation.
+This method is reachable only through direct use of the isolated package. No
+runtime entry point imports it, and no production database or scheduled
+ingestion is enabled.
 
 ## Missed sampling periods
 
@@ -653,7 +709,7 @@ The fixed severity order is healthy, degraded, unavailable. Evaluation occurs
 for overall health and each fixed component. Known intentional-disabled reason
 codes are retained in history but suppressed from alert opening.
 
-Recommended defaults are:
+The isolated production evaluator now fixes these schema-version-1 constants:
 
 - degraded opens after three consecutive samples;
 - unavailable opens after two consecutive samples;
@@ -664,6 +720,20 @@ Recommended defaults are:
 Counts, not wall-clock duration alone, provide debounce. A gap, rejected
 snapshot, or failed database write neither advances nor resets a health
 transition counter.
+
+Each scope starts a degraded candidate at one and confirms it at three, or
+starts an unavailable candidate at one and confirms it at two. Switching
+between those statuses replaces the candidate and restarts its count. When an
+active health alert exists, the first healthy committed observation starts
+recovery and the second consecutive healthy observation recovers every open or
+acknowledged degraded/unavailable alert for that scope. A later nonhealthy
+observation resets recovery. All counters saturate at 65,535.
+
+Only `wled.disabled`, `hyperhdr.disabled`, and `capture.disabled` suppress alert
+opening. Their component observations remain in history. Overall suppression
+applies only when every component producing the overall worst nonhealthy status
+has exactly one of those disabled reasons. Collector and observation failures
+are never suppressed.
 
 The lifecycle is deterministic:
 
@@ -677,6 +747,13 @@ The lifecycle is deterministic:
 4. **Archived:** after the fixed 15-minute cooldown eligibility condition, a
    recovered record becomes read-only. It remains queryable until 30 days after
    `recovered_at`, then becomes eligible for bounded deletion.
+
+This slice implements only ingestion-driven open, occurrence update,
+degraded-to-unavailable escalation, recovery, and deterministic archival. It
+does not implement acknowledgment. A synthetically existing acknowledged row
+is preserved during occurrence updates and may be recovered, but ingestion
+never creates an `acknowledged` event or changes an alert to acknowledged.
+Retention deletion also remains unimplemented.
 
 Schema version 1 has no `expired` lifecycle or expiration event. An active or
 acknowledged alert never becomes terminal merely because it is old. Adding an
@@ -1200,12 +1277,15 @@ changes.
 | SQLite path-opening procedure | Accepted for the reviewed target platform. | Protected-directory, existing-file `mode=rw`, pre/post identity, ownership, sidecar, and no-recreation probes passed. The documented same-service-account pathname-open limitation remains. |
 | Integrity and maintenance budgets | Accepted for the reviewed target platform. | Cancellation, quick-check, checkpoint, online-backup probe, transaction rollback, restore validation, incremental-vacuum, and shutdown budgets passed. This does not implement production backup or restore. |
 | Sampling-gap transitions | Accepted. | The immutable isolated reference model and exhaustive synthetic tests implement immediate opening at two cumulative misses, two committed on-time recoveries, marker rules, persistence failure, replay idempotency, and bounded counters. |
-| Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the six-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
+| Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the five persisted-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
 
-The following work remains separately deferred and is not implemented by gate
-acceptance:
+The following work remains separately deferred and is not implemented by the
+isolated storage and ingestion slices:
 
-- the production SQLite schema and runtime integration;
+- runtime integration, scheduling, and production database deployment;
+- bounded history/alert query methods and authenticated presentation;
+- operator acknowledgment and its authentication/CSRF route;
+- retention and maintenance execution;
 - database migrations;
 - production database backup and restore commands;
 - portal grouping of overall and component alerts;
