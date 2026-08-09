@@ -522,7 +522,9 @@ def test_registry_is_message_and_mapping_order_independent() -> None:
 
 
 def test_projection_is_complete_bounded_and_deterministic() -> None:
-    first = project_health_report(_report(), recorded_at=_RECORDED)
+    first = project_health_report(
+        _report(), observation_sequence=1, recorded_at=_RECORDED
+    )
     reordered = _report(
         components=tuple(
             _component(
@@ -537,7 +539,9 @@ def test_projection_is_complete_bounded_and_deterministic() -> None:
             for component in reversed(_report().components)
         )
     )
-    second = project_health_report(reordered, recorded_at=_RECORDED)
+    second = project_health_report(
+        reordered, observation_sequence=1, recorded_at=_RECORDED
+    )
     assert first == second
     assert tuple(item.component for item in first.components) == COMPONENT_ORDER
     assert first.digest == second.digest
@@ -545,21 +549,34 @@ def test_projection_is_complete_bounded_and_deterministic() -> None:
     assert first.service_uptime_ms == 12_500
     assert all(component.latency_ms == 1 for component in first.components)
     replay = project_health_report(
-        _report(), recorded_at=datetime(2026, 8, 5, 12, 1, tzinfo=UTC)
+        _report(),
+        observation_sequence=1,
+        recorded_at=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
     )
     assert replay.digest == first.digest
 
 
 def test_projection_digest_includes_scheduler_evidence_but_not_recording_time() -> None:
-    base = project_health_report(_report(), recorded_at=_RECORDED)
+    base = project_health_report(
+        _report(), observation_sequence=1, recorded_at=_RECORDED
+    )
     retried = project_health_report(
         _report(),
+        observation_sequence=1,
         recorded_at=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
     )
     transition = project_health_report(
-        _report(), recorded_at=_RECORDED, sample_kind=SampleKind.TRANSITION
+        _report(),
+        observation_sequence=1,
+        recorded_at=_RECORDED,
+        sample_kind=SampleKind.TRANSITION,
     )
-    missed = project_health_report(_report(), recorded_at=_RECORDED, missed_intervals=1)
+    missed = project_health_report(
+        _report(),
+        observation_sequence=1,
+        recorded_at=_RECORDED,
+        missed_intervals=1,
+    )
     assert retried.recorded_at_utc_us != base.recorded_at_utc_us
     assert retried.digest == base.digest
     assert transition.digest != base.digest
@@ -569,18 +586,24 @@ def test_projection_digest_includes_scheduler_evidence_but_not_recording_time() 
 def test_replay_key_distinguishes_same_observation_with_distinct_scheduler_evidence(
     protected_directory: Path,
 ) -> None:
-    base = project_health_report(_report(), recorded_at=_RECORDED)
-    missed = project_health_report(_report(), recorded_at=_RECORDED, missed_intervals=1)
+    base = project_health_report(
+        _report(), observation_sequence=1, recorded_at=_RECORDED
+    )
+    missed = project_health_report(
+        _report(), observation_sequence=2, recorded_at=_RECORDED, missed_intervals=1
+    )
     path, store = _create_store(protected_directory)
     store.close()
     connection = _rw(path)
     _insert_health_sample(
         connection,
+        sequence=1,
         observed=base.observed_at_utc_us,
         digest=base.digest,
     )
     _insert_health_sample(
         connection,
+        sequence=2,
         observed=missed.observed_at_utc_us,
         digest=missed.digest,
     )
@@ -606,8 +629,12 @@ def test_projection_ignores_messages_and_excluded_detail_values() -> None:
         for component in original.components
     )
     changed = _report(components=changed_components)
-    assert project_health_report(original, recorded_at=_RECORDED).digest == (
-        project_health_report(changed, recorded_at=_RECORDED).digest
+    assert project_health_report(
+        original, observation_sequence=1, recorded_at=_RECORDED
+    ).digest == (
+        project_health_report(
+            changed, observation_sequence=1, recorded_at=_RECORDED
+        ).digest
     )
 
 
@@ -666,7 +693,7 @@ def test_projection_rejects_invalid_input_without_partial_result(
     report: HealthReport, recorded_at: datetime, reason: ProjectionRejection
 ) -> None:
     with pytest.raises(ProjectionError) as caught:
-        project_health_report(report, recorded_at=recorded_at)
+        project_health_report(report, observation_sequence=1, recorded_at=recorded_at)
     assert caught.value.reason is reason
 
 
@@ -675,6 +702,7 @@ def test_projection_rejects_invalid_missed_interval_counts(invalid: object) -> N
     with pytest.raises(ProjectionError) as caught:
         project_health_report(
             _report(),
+            observation_sequence=1,
             recorded_at=_RECORDED,
             missed_intervals=invalid,  # type: ignore[arg-type]
         )
@@ -727,13 +755,16 @@ def test_projection_requires_overall_status_to_equal_worst_component_exhaustivel
         )
         expected = max(combination, key=order.__getitem__)
         projection = project_health_report(
-            _report(status=expected, components=components), recorded_at=_RECORDED
+            _report(status=expected, components=components),
+            observation_sequence=1,
+            recorded_at=_RECORDED,
         )
         assert projection.overall_status.value == expected.value
         for inconsistent in set(statuses) - {expected}:
             with pytest.raises(ProjectionError) as caught:
                 project_health_report(
                     _report(status=inconsistent, components=components),
+                    observation_sequence=1,
                     recorded_at=_RECORDED,
                 )
             assert caught.value.reason is ProjectionRejection.INCONSISTENT_STATUS
@@ -757,7 +788,7 @@ def test_projection_sanitizes_extreme_integer_duration_overflow() -> None:
     )
     for report in (uptime_report, _report(components=latency_components)):
         with pytest.raises(ProjectionError) as caught:
-            project_health_report(report, recorded_at=_RECORDED)
+            project_health_report(report, observation_sequence=1, recorded_at=_RECORDED)
         assert caught.value.reason is ProjectionRejection.INVALID_DURATION
         assert repr(caught.value) == "ProjectionError('invalid_duration')"
 
@@ -782,6 +813,7 @@ def test_strict_production_models_reject_open_ended_values() -> None:
         )
     with pytest.raises(ValueError):
         HealthProjection(
+            1,
             1,
             1,
             1,
@@ -919,6 +951,12 @@ def test_create_sets_exact_identity_schema_pragmas_and_permissions(
                     "WHERE type='index' AND name NOT LIKE 'sqlite_%'"
                 )
             ) == set(schema.EXPECTED_INDEXES)
+            assert set(
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger'"
+                )
+            ) == set(schema.EXPECTED_TRIGGERS)
             assert connection.execute(
                 "SELECT version FROM schema_migrations"
             ).fetchall() == [(1,)]
@@ -1218,6 +1256,7 @@ def test_schema_object_count_cap_fails_before_unbounded_inspection(
 def _insert_health_sample(
     connection: sqlite3.Connection,
     *,
+    sequence: int = 1,
     observed: int = 1,
     digest: bytes = bytes(PROJECTION_DIGEST_BYTES),
     status: str = "healthy",
@@ -1225,10 +1264,11 @@ def _insert_health_sample(
 ) -> int:
     cursor = connection.execute(
         "INSERT INTO health_samples("
-        "observed_at_utc_us, recorded_at_utc_us, overall_status, "
-        "service_uptime_ms, sample_kind, projection_digest, missed_intervals"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (observed, 2, status, 3, sample_kind, digest, 0),
+        "observation_sequence, observed_at_utc_us, recorded_at_utc_us, "
+        "overall_status, service_uptime_ms, sample_kind, accepted_sample_kind, "
+        "projection_digest, missed_intervals"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (sequence, observed, 2, status, 3, sample_kind, sample_kind, digest, 0),
     )
     assert cursor.lastrowid is not None
     return cursor.lastrowid

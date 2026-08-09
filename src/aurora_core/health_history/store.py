@@ -19,10 +19,17 @@ from aurora_core.health_history.filesystem import (
     validate_database_file,
     validate_sidecars,
 )
+from aurora_core.health_history.ingestion import (
+    IngestionError,
+    IngestionRejection,
+    IngestionResult,
+    ingest_projection,
+)
 from aurora_core.health_history.models import (
     BUSY_TIMEOUT_MILLISECONDS,
     PAGE_SIZE_BYTES,
 )
+from aurora_core.health_history.projection import HealthProjection
 from aurora_core.health_history.schema import (
     SchemaVerificationError,
     create_schema_v1,
@@ -47,11 +54,13 @@ class HealthHistoryStore:
         path: Path,
         connection: sqlite3.Connection,
         identity: PathIdentity,
+        sidecars: dict[str, PathIdentity],
         monotonic: Callable[[], float],
     ) -> None:
         self._path = path
         self._connection = connection
         self._identity = identity
+        self._sidecars = sidecars
         self._monotonic = monotonic
         self._closed = False
 
@@ -84,11 +93,12 @@ class HealthHistoryStore:
             fsync_database_files(path)
             identity = validate_database_file(path, expected=identity)
             created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
-            _advance_sidecar_snapshot(path, created_sidecars)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             return cls(
                 path=path,
                 connection=connection,
                 identity=identity,
+                sidecars=created_sidecars,
                 monotonic=monotonic,
             )
         except (
@@ -135,11 +145,12 @@ class HealthHistoryStore:
             sidecars = _advance_sidecar_snapshot(path, sidecars)
             identity = validate_database_file(path, expected=identity)
             sidecars = _advance_sidecar_snapshot(path, sidecars)
-            _advance_sidecar_snapshot(path, sidecars)
+            sidecars = _advance_sidecar_snapshot(path, sidecars)
             return cls(
                 path=path,
                 connection=connection,
                 identity=identity,
+                sidecars=sidecars,
                 monotonic=monotonic,
             )
         except (
@@ -161,13 +172,13 @@ class HealthHistoryStore:
         self._require_open()
         try:
             validate_database_file(self._path, expected=self._identity)
-            sidecars = validate_sidecars(self._path)
+            sidecars = _advance_sidecar_snapshot(self._path, self._sidecars)
             _verify_connection_settings(self._connection)
             sidecars = _advance_sidecar_snapshot(self._path, sidecars)
             verify_schema_v1(self._connection, monotonic=self._monotonic)
             sidecars = _advance_sidecar_snapshot(self._path, sidecars)
             validate_database_file(self._path, expected=self._identity)
-            _advance_sidecar_snapshot(self._path, sidecars)
+            self._sidecars = _advance_sidecar_snapshot(self._path, sidecars)
         except (
             FilesystemBoundaryError,
             OSError,
@@ -176,6 +187,27 @@ class HealthHistoryStore:
         ) as error:
             self.close()
             raise StoreError("verification_failed") from error
+
+    def ingest(self, projection: HealthProjection) -> IngestionResult:
+        """Atomically ingest one strict projection without retry or queuing."""
+        self._require_open()
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, self._sidecars)
+            result = ingest_projection(self._connection, projection)
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+            self._sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+            return result
+        except IngestionError as error:
+            if error.trust_lost:
+                self.close()
+            raise
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise IngestionError(
+                IngestionRejection.TRUST_FAILED, trust_lost=True
+            ) from None
 
     def close(self) -> None:
         if self._closed:

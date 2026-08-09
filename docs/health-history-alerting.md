@@ -2,17 +2,20 @@
 
 ## Status
 
-Milestone 18 implementation is in progress. The first production slice adds an
-isolated strict health projection, an independent finite reason registry, exact
-SQLite schema version 1 DDL, and explicit secure create and fail-closed
-open-existing storage boundaries. No current runtime entry point imports the
-package, no deployment creates a database, and production history remains
-disabled and unavailable.
+Milestone 18 implementation is in progress. The first production slice added
+the isolated strict health projection, finite reason registry, exact SQLite
+schema version 1 foundation, and explicit secure create and fail-closed
+open-existing boundaries. The second isolated slice adds the narrow atomic
+ingestion method, deterministic evaluator state, compacted history, sampling-gap
+translation, and ingestion-driven alert lifecycle described below.
 
-This slice does not add configuration fields, a scheduler, worker, route,
-sample ingestion, alert mutation, query, migration, backup, restore,
-notification, or automation action. Milestones 12 through 17 remain the
-current behavior, including public `GET /api/health` schema version 1.
+No current runtime entry point imports the package, no installation or update
+creates a database, and production history remains disabled and unavailable.
+This slice adds no configuration field, scheduler, worker, route, runtime
+invocation, query API, acknowledgment action, migration, backup, restore,
+retention execution, notification, or automation action. Milestones 12 through
+17 remain the current behavior, including public `GET /api/health` schema
+version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -20,7 +23,7 @@ schema version 1 contract, the shared `HealthService` cache, authentication,
 WLED or HyperHDR controls, configuration-profile commands, or filesystem
 backup behavior.
 
-### First implementation slice
+### Implemented production slices
 
 The production-only `aurora_core.health_history` package establishes these
 reviewable boundaries without runtime integration:
@@ -31,8 +34,8 @@ reviewable boundaries without runtime integration:
 - SHA-256 canonical projection digests of exactly 32 bytes, independent of
   mapping insertion order, free-form messages, excluded detail values, and the
   later recording time, while including schema version, observation time,
-  overall status, uptime, sample kind, missed intervals, and every fixed
-  component projection field;
+  independent scheduler sequence, overall status, uptime, accepted projection
+  kind, missed intervals, and every fixed component projection field;
 - fixed production SQLite `application_id` `0x41555248` and `user_version` 1;
 - exclusive new-file creation in an existing owned mode-`0700` directory, with
   a mode-`0600` main file, preflight refusal if the main, `-wal`, or `-shm`
@@ -43,6 +46,23 @@ reviewable boundaries without runtime integration:
   sidecar validation; and
 - exact object, definition, migration-ledger, pragma, and one bounded
   `quick_check(1)` verification with no repair or recreation.
+
+The second slice remains inside that isolated package and adds:
+
+- one singleton accepted-observation checkpoint plus a fixed 64-entry replay
+  ledger, including sequence protection for observations whose history rows
+  were compacted;
+- independent pure health, sampling-gap, and automatic-alert evaluators, with
+  parity tests against the accepted validation reference models;
+- one `BEGIN IMMEDIATE` transaction for every accepted non-replayed projection;
+- fixed transition and 15-minute heartbeat compaction with exactly four fixed
+  component rows whenever a sample is stored;
+- exact health-evaluator, checkpoint, retention-cleared baseline, alert-index,
+  maximum-generation, and SQLite trust-loss invariants;
+- bounded threshold, occurrence, escalation, recovery, cooldown, and archive
+  behavior; and
+- six fixed sanitized ingestion outcomes with no SQL, path, raw exception, or
+  submitted value in the result.
 
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
@@ -402,12 +422,16 @@ inability of prohibited values to enter output.
 
 ## Schema version 1 storage foundation
 
-The first implementation slice supplies exact code-owned DDL for the following
-tables and indexes. Creation publishes them in one transaction, sets the fixed
+The production package supplies exact code-owned DDL for the following tables,
+indexes, and checkpoint-regression trigger. Creation publishes them in one transaction, sets the fixed
 application and schema identities, inserts exactly one version-1 migration
-ledger row, and initializes one fixed `evaluation_state` row per scope. The
-store exposes no arbitrary SQL, ingestion, alert mutation, query, migration,
-backup, or restore method.
+ledger row, initializes the one ingestion checkpoint, and creates one fixed
+`evaluation_state` row per scope. The store exposes only create, open-existing,
+verify, close, and strict projection ingestion; it exposes no arbitrary SQL,
+query, acknowledgment, migration, backup, or restore method.
+
+This is a pre-deployment schema-version-1 refinement. No production history
+database exists, no deployment creates one, and no migration was added.
 
 ### `schema_migrations`
 
@@ -424,20 +448,79 @@ to recreate the database. Version-1 verification still requires `user_version`
 table constraint permits only a future code-owned migration to append a later
 positive version; no migration implementation exists in this slice.
 
+### `ingestion_checkpoint`
+
+Exactly one row with singleton ID 1 owns the global accepted-observation
+checkpoint. Its nullable code-owned scheduler sequence is independent of both
+UTC timestamps and advances for every accepted observation, including clock
+discontinuity markers whose UTC value moves backward. The nullable observed UTC
+microseconds, 32-byte projection digest, and accepted projection kind remain the
+three replay-identity fields and must be jointly null or jointly present. Empty
+identity requires count zero and no committed sequence; populated identity
+requires a positive accepted count and a valid committed sequence. The count
+saturates at 65,535 while the sequence continues to advance. Exact DDL, schema
+verification, ingestion validation, a no-regression trigger, and a guarded
+checkpoint update reject partial state and count or sequence regression.
+
+Replay is checked before history, evaluator, counter, alert, event, or
+checkpoint mutation. Every committed non-replayed projection updates this row,
+including a projection compacted to state only. A rolled-back transaction
+cannot update it. The checkpoint's committed sequence is passed without
+substitution into the production sampling-gap evaluator.
+
+### `accepted_observation_replay`
+
+The fixed replay ledger retains exactly
+`min(accepted_observation_count, 64)` committed scheduler sequences with their
+observed UTC time, projection digest, and accepted projection kind: zero for an
+empty checkpoint, one through 63 before capacity, and exactly 64 thereafter.
+Scheduler gaps are valid, so retained sequences need not be contiguous. Schema
+verification and ingestion validate every retained identity and reject a
+missing, extra, or malformed row as trust loss. The newest ledger entry must
+exactly match the singleton checkpoint. A retained exact replay returns
+`replayed` without mutation; a retained sequence with conflicting digest or
+evidence fails as the fixed `sequence_conflict`; a sequence older than the
+committed sequence but outside the 64-entry horizon fails as fixed
+`stale_sequence`. All three paths mutate nothing. Insertion, oldest-sequence
+eviction, evaluator changes, and checkpoint advance share the one transaction,
+so failed persistence cannot advance either ledger or checkpoint. This bounded
+horizon is the schema-version-1 retention story: no unbounded replay history is
+accumulated, while strict monotonic ordering prevents every older observation,
+retained or evicted, from changing state.
+
 ### `health_samples`
 
-- integer primary key used as the stable sequence;
+- integer primary key used as the stored-row identifier;
+- the independent accepted scheduler sequence;
 - observed and recorded UTC microseconds;
 - overall status;
 - bounded service uptime milliseconds;
-- sample kind;
+- stored compaction kind and accepted projection kind as separate fixed fields;
 - fixed-size projection digest; and
 - bounded missed-interval count.
 
 An index on observed time supports newest-first retention and history queries.
 An index on `(overall_status, observed time)` supports transition views. A
-unique constraint on `(observed time, projection digest)` makes replayed input
-idempotent.
+unique index on stored scheduler sequence is defense in depth; the replay ledger
+also covers observations compacted to state only.
+
+The canonical digest uses the accepted projection kind, not the stored
+compaction kind. For an ordinary accepted heartbeat projection, storage may
+classify the row as `transition` because content changed or lifecycle evidence
+is required. The row therefore records `accepted_sample_kind=heartbeat` and
+`sample_kind=transition`; together with the stored scheduler sequence and fixed
+sample/component fields, this fully explains the digest and the compaction
+decision without overloading either kind.
+
+Before using a non-null evaluator baseline, ingestion reads its four fixed
+component rows in canonical component order, reconstructs the accepted schema-1
+projection from all stored canonical fields and `accepted_sample_kind`, and
+revalidates its canonical digest and derived overall status. The separate
+stored compaction `sample_kind` remains a fixed validated value but is not part
+of that digest. A baseline sequence newer than the singleton committed sequence
+is trust loss. The baseline need not remain in the 64-entry replay horizon, and
+retention-cleared all-null evaluator references remain the explicit signal to
+store the next ordinary projection as a new transition baseline.
 
 ### `component_samples`
 
@@ -459,10 +542,23 @@ The primary key is `(sample, component)`. An index on
 ### `evaluation_state`
 
 One row per fixed scope stores only the current observed status, candidate
-status, bounded consecutive count, last sample and heartbeat times, sampling-gap
-state, current alert reference, and cooldown deadline. It is updated within the
-single state transaction for every accepted scheduled sample even when snapshot
-history is compacted. It contains no raw snapshot.
+status, bounded consecutive count, last sample and heartbeat times,
+sampling-gap state, and an optional bounded cooldown deadline. It is updated
+within the single state transaction for every accepted scheduled sample even
+when snapshot history is compacted. It contains no raw snapshot and no singular
+current-alert foreign key. Active and recovered alerts are selected by fixed
+scope and kind through the bounded alert indexes, allowing degraded and
+unavailable alerts for one scope to coexist without an open-ended association.
+For health scopes, candidate status is null exactly at count zero; a non-null
+candidate equals current status; and null current status requires no candidate
+and count zero. The sampling scope keeps both health statuses null, while every
+non-sampling scope keeps a clear gap phase. Non-null sample references are
+positive. When retention clears all latest sample references through
+`ON DELETE SET NULL` while the checkpoint proves prior acceptance, the next
+ordinary projection is stored as a transition baseline with exactly four
+components and atomically becomes every evaluator's new reference. Existing
+alerts and checkpoint progress are not reconstructed or reset. A mixed,
+missing, or malformed non-null reference is trust loss.
 
 ### `alerts`
 
@@ -476,9 +572,11 @@ history is compacted. It contains no raw snapshot.
 - cooldown deadline.
 
 No acknowledgment username or note is stored. A partial unique index permits at
-most one open or acknowledged health alert per `(scope, alert kind)`. Indexes on
-`(lifecycle, opened time)` and recovery time support bounded alert and cleanup
-queries.
+most one open or acknowledged health alert per `(scope, alert kind)` and is the
+active lookup path. A partial `(scope, kind, id DESC)` terminal index serves the
+latest recovered/archived lookup. A partial `(cooldown, id)` recovered index
+serves eligible archival in exact order. Deterministic `EXPLAIN QUERY PLAN`
+tests use the production SQL strings and require these indexes.
 
 ### `alert_events`
 
@@ -504,8 +602,9 @@ must be a code-owned, forward-only migration from exactly one known predecessor.
 Opening refuses a newer, older, altered, additional-object, or unknown schema.
 
 The exact required indexes cover newest-first samples, overall transitions,
-component history, replay uniqueness, the single active alert per scope/kind,
-alert lifecycle and recovery, and event timelines. Database `CHECK`
+component history, stored-sequence uniqueness, the single active alert per
+scope/kind, latest terminal alerts, recovered cooldown order, and event
+timelines. Database `CHECK`
 constraints cover every fixed enum, digest length, timestamps, durations, and
 counters. Component rows cascade only with their sample; alert events cascade
 only with their alert. Retained alert and evaluator sample references use
@@ -539,45 +638,68 @@ older Aurora release must refuse a newer schema. Software rollback therefore
 requires restoring the verified pre-migration history backup or disabling the
 history feature; it must not alter the active Aurora YAML or device state.
 
-## Future snapshot ingestion and deduplication
+## Isolated snapshot ingestion and deduplication
 
-The scheduler asks the shared `HealthService` for one report at each monotonic
-deadline. It never performs catch-up polls. The projection is validated and
-canonically encoded in fixed field order before its digest is calculated. The
-digest includes the schema version, observed UTC microseconds, supplied overall
-status, bounded uptime, sample kind, missed-interval count, and every fixed
-component field in code-owned component order. It excludes only local
-`recorded_at_utc_us`, so persistence retry time does not alter identity while
-distinct scheduler evidence at the same report observation time remains
-distinguishable.
+The isolated store now accepts one already projected `HealthProjection`; no
+scheduler or runtime caller exists. A future scheduler is still expected to ask
+the shared `HealthService` for one report at each monotonic deadline and never
+perform catch-up polls. Before SQL begins, ingestion revalidates the immutable
+projection and its canonical digest. The digest includes schema version,
+the code-owned scheduler sequence, observed UTC microseconds, supplied overall
+status, bounded uptime, accepted projection kind, missed-interval count, and
+every fixed component field in code-owned component order. It excludes only
+local `recorded_at_utc_us`, so a retry time does not alter identity. Increasing
+sequences accept distinct approved scheduler evidence at one identical UTC
+observation time; increasing sequences also permit backward UTC values on clock
+discontinuity markers.
 
 Within the one permitted transaction for that accepted scheduled sample, the
 writer:
 
-1. rejects a replayed `(observed time, digest)`;
-2. updates consecutive transition state for every fixed scope;
-3. stores a history sample immediately when any permitted status or reason code
-   changed;
-4. otherwise stores one heartbeat only when the configured heartbeat interval
-   has elapsed;
-5. evaluates alert opening, escalation, recovery, and cooldown;
-6. adds fixed lifecycle events; and
-7. commits all state together.
+1. validates main-file and sidecar identity, then begins exactly one
+   `BEGIN IMMEDIATE` transaction with the existing 250-millisecond busy limit;
+2. reads the one checkpoint, at most 64 replay keys, six evaluator rows, latest
+   supporting history, and only the fixed bounded active/recovered alert set;
+3. returns an exact retained replay, rejects retained conflicts, and rejects all
+   older or duplicate sequences before any history, counter, alert, event, or
+   checkpoint mutation;
+4. evaluates health and sampling-gap transitions for the fixed scopes;
+5. stores a sample plus exactly four component rows when compaction requires
+   history or alert opening/recovery requires attached evidence;
+6. updates evaluator state, alerts, lifecycle events, and the singleton
+   checkpoint; and
+7. commits once, revalidates main and sidecar identity, and returns one fixed
+   sanitized outcome. There is no retry, work queue, or generic SQL surface.
 
-Unchanged healthy snapshots are therefore compacted. History records changes
-plus periodic heartbeats, not every sample. The transaction still persists
-debounce, sampling-gap, and restart-checkpoint state for every accepted
-scheduled sample through `evaluation_state`. Compaction reduces history rows;
-it does not by itself reduce the transaction rate or guarantee low storage
-write volume.
+Ordinary first observations and changes use `transition`; unchanged observations
+before 15 minutes use `state_only`; unchanged observations at or after the
+boundary use `heartbeat`; and `startup_gap` and `clock_discontinuity` markers
+retain those exact sample kinds. A change means any overall status, component
+status, or normalized component-reason tuple changed. Messages, raw details,
+latency-only movement, and excluded values do not create a transition. Every
+stored sample has exactly four components in fixed code-owned order; a
+state-only observation has none. Alert opening or recovery forces one supporting
+transition record if compaction would otherwise omit it. Both state-only and
+ordinary heartbeat decisions are promoted to `transition` for that lifecycle
+evidence; already-transition rows remain transitions and startup/clock markers
+retain their marker kinds. This holds just before, exactly at, and just after
+the heartbeat boundary.
+
+The fixed result registry is `replayed`, `state_only`, `transition_stored`,
+`heartbeat_stored`, `startup_marker_stored`, and `clock_marker_stored`.
+Unchanged snapshots are therefore compacted, but evaluator and checkpoint state
+still commit for every accepted non-replayed observation. Compaction reduces
+history rows; it does not reduce the approved transaction rate or guarantee low
+storage write volume.
 
 If a dashboard request recently refreshed the cache, the scheduler may ingest
-that same report once. Repeated cache reads with the same observation time and
-digest are idempotent and do not inflate counters or history.
+that same report once under its one approved sequence. Retained exact replay is
+idempotent and does not inflate counters or history. UTC timestamps are never
+used as sequence evidence.
 
-Atomic sample ingestion and deterministic translation into evaluation and alert
-state are the next planned implementation slice. They are not enabled by the
-storage foundation.
+This method is reachable only through direct use of the isolated package. No
+runtime entry point imports it, and no production database or scheduled
+ingestion is enabled.
 
 ## Missed sampling periods
 
@@ -598,11 +720,13 @@ scheduler observations, not on the number of delayed observations by itself:
   sample, even if its current health collection succeeded.
 
 An open or acknowledged sampling-gap alert recovers only after two consecutive
-on-time scheduled samples, each with zero missed intervals, successful health
-collection, and a committed persistence transaction. A delayed, failed,
-rejected, or unpersisted sample breaks that recovery sequence. This is the same
-two-sample recovery count as a health alert but uses an explicit on-time
-condition.
+on-time scheduled samples, each with zero missed intervals, a successfully
+validated health collection/projection, and a committed persistence
+transaction. Overall healthy, degraded, and unavailable projections all count:
+overall status describes the collected result and does not turn a successful
+collection into a failure. A delayed, failed, rejected, marker, or unpersisted
+sample cannot advance recovery. This is the same two-sample recovery count as a
+health alert but uses an explicit on-time condition.
 
 A failed persistence attempt cannot open, advance, acknowledge, recover, close,
 archive, increment, or otherwise mutate persisted gap state. The scheduler may
@@ -653,7 +777,7 @@ The fixed severity order is healthy, degraded, unavailable. Evaluation occurs
 for overall health and each fixed component. Known intentional-disabled reason
 codes are retained in history but suppressed from alert opening.
 
-Recommended defaults are:
+The isolated production evaluator now fixes these schema-version-1 constants:
 
 - degraded opens after three consecutive samples;
 - unavailable opens after two consecutive samples;
@@ -664,6 +788,20 @@ Recommended defaults are:
 Counts, not wall-clock duration alone, provide debounce. A gap, rejected
 snapshot, or failed database write neither advances nor resets a health
 transition counter.
+
+Each scope starts a degraded candidate at one and confirms it at three, or
+starts an unavailable candidate at one and confirms it at two. Switching
+between those statuses replaces the candidate and restarts its count. When an
+active health alert exists, the first healthy committed observation starts
+recovery and the second consecutive healthy observation recovers every open or
+acknowledged degraded/unavailable alert for that scope. A later nonhealthy
+observation resets recovery. All counters saturate at 65,535.
+
+Only `wled.disabled`, `hyperhdr.disabled`, and `capture.disabled` suppress alert
+opening. Their component observations remain in history. Overall suppression
+applies only when every component producing the overall worst nonhealthy status
+has exactly one of those disabled reasons. Collector and observation failures
+are never suppressed.
 
 The lifecycle is deterministic:
 
@@ -677,6 +815,13 @@ The lifecycle is deterministic:
 4. **Archived:** after the fixed 15-minute cooldown eligibility condition, a
    recovered record becomes read-only. It remains queryable until 30 days after
    `recovered_at`, then becomes eligible for bounded deletion.
+
+This slice implements only ingestion-driven open, occurrence update,
+degraded-to-unavailable escalation, recovery, and deterministic archival. It
+does not implement acknowledgment. A synthetically existing acknowledged row
+is preserved during occurrence updates and may be recovered, but ingestion
+never creates an `acknowledged` event or changes an alert to acknowledged.
+Retention deletion also remains unimplemented.
 
 Schema version 1 has no `expired` lifecycle or expiration event. An active or
 acknowledged alert never becomes terminal merely because it is old. Adding an
@@ -695,6 +840,8 @@ The complete schema-version-1 lifecycle is:
 | `recovered` before cooldown eligibility | Repeated matching observation | Preserve `recovered`, update bounded occurrence metadata, and extend cooldown | `occurrence_updated` |
 | `recovered` after cooldown eligibility or `archived` | A new opening threshold is satisfied | Preserve the old record; create a distinct `open` occurrence | `opened` on the new record |
 | `open` or `acknowledged` degraded alert | Code-owned escalation to unavailable | Preserve the old alert kind and lifecycle; create a distinct unavailable `open` alert | `opened` on the new record |
+| Terminal alert at generation 65,535 | A later opening would require generation 65,536 | Reject the ingestion transaction; preserve all rows | none |
+| Active degraded alert at generation 65,535 | Escalation would require generation 65,536 | Reject the ingestion transaction; preserve all rows | none |
 | Any state | Duplicate acknowledgment, recovery, or archive already reflected by that state | Preserve state; no second event | none |
 | Any state | Invalid transition | Preserve state and create no alert or persisted lifecycle event | none; fixed rejected operation outcome only |
 
@@ -706,7 +853,11 @@ Escalation and a later episode create separate immutable occurrences, so the
 old alert's kind and meaning never change. `archived` is terminal. At most one open or
 acknowledged record exists for each fixed scope and kind. Occurrence counts
 saturate at 65,535, and repeated matches during cooldown cannot create a
-duplicate alert. Deletion after retention is storage cleanup, not a lifecycle
+duplicate alert. Generation never saturates into a duplicate: opening after a
+maximum-generation recovered/archived record and escalation from a
+maximum-generation degraded record are fixed `generation_exhausted` rejections
+with a full transaction rollback. Occurrence saturation remains independently
+idempotent. Deletion after retention is storage cleanup, not a lifecycle
 transition.
 
 The accepted reference implementation is isolated in
@@ -753,6 +904,19 @@ expires, or free-space reserve is insufficient, the transaction fails. Aurora
 drops that one persistence attempt, records no in-memory retry queue, emits a
 rate-limited fixed log event, and continues serving live health through the
 existing path. It must not claim an alert or acknowledgment was persisted.
+
+Ingestion classifies SQLite failures by fixed error code without returning SQL,
+the database path, SQLite text, or submitted values. `SQLITE_BUSY` and
+`SQLITE_LOCKED` return `storage_busy` without retry and do not by themselves
+close the verified store. Expected capacity or read-only failures may return
+`persistence_failed` while file identity and schema trust remain intact.
+`SQLITE_CORRUPT`, `SQLITE_NOTADB`, `SQLITE_SCHEMA`, constraint failures that are
+impossible for validated code-owned writes, malformed persisted rows, and any
+rollback failure are trust loss and close the store. A started transaction gets
+exactly one rollback attempt; rollback failure replaces the original result
+with fixed `trust_failed`. Fault injection verifies every table, including the
+checkpoint and replay ledger, is unchanged whenever rollback succeeds. There
+is no retry or in-memory persistence queue.
 
 ## Integrity and maintenance budgets
 
@@ -1200,12 +1364,15 @@ changes.
 | SQLite path-opening procedure | Accepted for the reviewed target platform. | Protected-directory, existing-file `mode=rw`, pre/post identity, ownership, sidecar, and no-recreation probes passed. The documented same-service-account pathname-open limitation remains. |
 | Integrity and maintenance budgets | Accepted for the reviewed target platform. | Cancellation, quick-check, checkpoint, online-backup probe, transaction rollback, restore validation, incremental-vacuum, and shutdown budgets passed. This does not implement production backup or restore. |
 | Sampling-gap transitions | Accepted. | The immutable isolated reference model and exhaustive synthetic tests implement immediate opening at two cumulative misses, two committed on-time recoveries, marker rules, persistence failure, replay idempotency, and bounded counters. |
-| Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the six-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
+| Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the five persisted-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
 
-The following work remains separately deferred and is not implemented by gate
-acceptance:
+The following work remains separately deferred and is not implemented by the
+isolated storage and ingestion slices:
 
-- the production SQLite schema and runtime integration;
+- runtime integration, scheduling, and production database deployment;
+- bounded history/alert query methods and authenticated presentation;
+- operator acknowledgment and its authentication/CSRF route;
+- retention and maintenance execution;
 - database migrations;
 - production database backup and restore commands;
 - portal grouping of overall and component alerts;

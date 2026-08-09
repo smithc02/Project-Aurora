@@ -3,6 +3,12 @@
 This package is intentionally not imported by a current runtime entry point.
 """
 
+from aurora_core.health_history.ingestion import (
+    IngestionError,
+    IngestionOutcome,
+    IngestionRejection,
+    IngestionResult,
+)
 from aurora_core.health_history.models import (
     AlertKind,
     AlertLifecycle,
@@ -19,6 +25,7 @@ from aurora_core.health_history.projection import (
     ProjectionError,
     ProjectionRejection,
     project_health_report,
+    validate_health_projection,
 )
 from aurora_core.health_history.store import HealthHistoryStore
 
@@ -31,10 +38,15 @@ __all__ = [
     "HealthHistoryStatus",
     "HealthHistoryStore",
     "HealthProjection",
+    "IngestionError",
+    "IngestionOutcome",
+    "IngestionRejection",
+    "IngestionResult",
     "LifecycleEvent",
     "ProjectionError",
     "ProjectionRejection",
     "SampleKind",
     "SamplingGapPhase",
     "project_health_report",
+    "validate_health_projection",
 ]

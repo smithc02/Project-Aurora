@@ -14,6 +14,7 @@ from aurora_core.health_history.models import (
     COMPONENT_ORDER,
     MAX_BOUNDED_COUNTER,
     MAX_COMPONENT_LATENCY_MS,
+    MAX_OBSERVATION_SEQUENCE,
     MAX_SERVICE_UPTIME_MS,
     MAX_TIMESTAMP_US,
     PROJECTION_DIGEST_BYTES,
@@ -96,6 +97,7 @@ class ComponentProjection:
 @dataclass(frozen=True, slots=True)
 class HealthProjection:
     schema_version: int
+    observation_sequence: int
     observed_at_utc_us: int
     recorded_at_utc_us: int
     overall_status: HealthHistoryStatus
@@ -108,6 +110,11 @@ class HealthProjection:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("invalid_schema_version")
+        _bounded_integer(
+            self.observation_sequence,
+            MAX_OBSERVATION_SEQUENCE,
+            "observation_sequence",
+        )
         _bounded_integer(self.observed_at_utc_us, MAX_TIMESTAMP_US, "observed_at")
         _bounded_integer(self.recorded_at_utc_us, MAX_TIMESTAMP_US, "recorded_at")
         if not isinstance(self.overall_status, HealthHistoryStatus):
@@ -139,6 +146,7 @@ class HealthProjection:
 def project_health_report(
     report: HealthReport,
     *,
+    observation_sequence: int,
     recorded_at: datetime,
     sample_kind: SampleKind = SampleKind.HEARTBEAT,
     missed_intervals: int = 0,
@@ -148,6 +156,14 @@ def project_health_report(
         raise ProjectionError(ProjectionRejection.INVALID_REPORT)
     if type(report.schema_version) is not int or report.schema_version != 1:
         raise ProjectionError(ProjectionRejection.UNKNOWN_SCHEMA)
+    try:
+        _bounded_integer(
+            observation_sequence,
+            MAX_OBSERVATION_SEQUENCE,
+            "observation_sequence",
+        )
+    except ValueError as error:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT) from error
     status = _status(report.status)
     observed_at = _timestamp_from_text(report.checked_at)
     recorded_at_us = _timestamp_from_datetime(recorded_at)
@@ -178,6 +194,7 @@ def project_health_report(
     if status is not calculated_status:
         raise ProjectionError(ProjectionRejection.INCONSISTENT_STATUS)
     canonical = _canonical_bytes(
+        observation_sequence=observation_sequence,
         observed_at=observed_at,
         status=status,
         uptime=uptime,
@@ -187,6 +204,7 @@ def project_health_report(
     )
     return HealthProjection(
         schema_version=1,
+        observation_sequence=observation_sequence,
         observed_at_utc_us=observed_at,
         recorded_at_utc_us=recorded_at_us,
         overall_status=status,
@@ -196,6 +214,29 @@ def project_health_report(
         components=components,
         digest=hashlib.sha256(canonical).digest(),
     )
+
+
+def validate_health_projection(projection: HealthProjection) -> None:
+    """Revalidate an immutable projection and its canonical digest before SQL."""
+    if type(projection) is not HealthProjection:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT)
+    try:
+        projection.__post_init__()
+        for component in projection.components:
+            component.__post_init__()
+        canonical = _canonical_bytes(
+            observation_sequence=projection.observation_sequence,
+            observed_at=projection.observed_at_utc_us,
+            status=projection.overall_status,
+            uptime=projection.service_uptime_ms,
+            sample_kind=projection.sample_kind,
+            missed_intervals=projection.missed_intervals,
+            components=projection.components,
+        )
+    except ValueError as error:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT) from error
+    if hashlib.sha256(canonical).digest() != projection.digest:
+        raise ProjectionError(ProjectionRejection.INVALID_REPORT)
 
 
 def _project_component(
@@ -310,6 +351,7 @@ def _worst_component_status(
 
 def _canonical_bytes(
     *,
+    observation_sequence: int,
     observed_at: int,
     status: HealthHistoryStatus,
     uptime: int,
@@ -319,6 +361,7 @@ def _canonical_bytes(
 ) -> bytes:
     fields: list[object] = [
         1,
+        observation_sequence,
         observed_at,
         status.value,
         uptime,
