@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first three Milestone 18 production slices supply an isolated
+The first four Milestone 18 production slices supply an isolated
 `aurora_core.health_history` package. Its stricter code-owned projection accepts
 only complete `HealthReport` schema version 1 snapshots and retains status,
 timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
@@ -407,11 +407,33 @@ and full-table snapshot tests prove reads do not mutate schema-version-1 rows.
 Two minimal indexes serve global and lifecycle-filtered alert ordering; existing
 sample and event indexes serve the other keyset queries.
 
+The fourth slice corrects pre-deployment schema version 1 so new databases set
+and verify `auto_vacuum=INCREMENTAL` before application tables are created.
+Opening never converts or repairs another auto-vacuum mode. Three child-key
+indexes bound nullable sample-reference updates on alerts and events, and one
+partial index orders archived alerts by recovered time and ID. Because no
+production history database exists, these remain direct schema-version-1
+refinements with no migration.
+
+Two additional narrow store methods remain direct-only. `cleanup_retention`
+uses a strict default 30-day cutoff with a 1–365-day argument bound, one
+immediate transaction, deterministic health-first tie handling, and one total
+500-row budget across explicit sample, archived-event, and archived-parent
+deletions. Events are deleted in bounded order before an eligible parent, and
+foreign-key cascade/SET-NULL behavior changes only documented sample history
+and references. `incremental_vacuum` reads the freelist and makes at most one
+fixed 128-page request, consumes its bounded cursor to statement completion,
+and verifies that the freelist falls by no more than 128 pages. Both use
+one-second monotonic/progress bounds, including explicit Python-loop and
+post-commit checks, and pre/post main-file and sidecar identity checks. A
+post-commit timeout may leave the selected cleanup durable and therefore never
+claims rollback. There is no retry, full vacuum, WAL checkpoint, or drain loop.
+
 No current runtime entry point imports this package. There is no configuration,
-deployment database creation, scheduler, route, acknowledgment, retention
-execution, maintenance execution, or device/service/network
+deployment database creation, scheduler or maintenance cadence, route,
+acknowledgment, WAL checkpoint, capacity integration, or device/service/network
 behavior. Existing portal routes and public `GET /api/health` schema version 1
-remain independent and unchanged. The next slices are retention/maintenance,
-separately authenticated acknowledgment, and separately reviewed runtime
-integration. See the detailed [health-history and alerting
+remain independent and unchanged. The next slices are scheduler/storage-envelope
+integration, separately authenticated acknowledgment, and separately reviewed
+presentation/runtime integration. See the detailed [health-history and alerting
 design](health-history-alerting.md).

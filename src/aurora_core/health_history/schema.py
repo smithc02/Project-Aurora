@@ -10,6 +10,7 @@ from typing import Final, cast
 
 from aurora_core.health_history.models import (
     APPLICATION_ID,
+    AUTO_VACUUM_INCREMENTAL,
     MAX_BOUNDED_COUNTER,
     MAX_COMPONENT_LATENCY_MS,
     MAX_OBSERVATION_SEQUENCE,
@@ -307,9 +308,25 @@ INDEX_DDL: Final[dict[str, str]] = {
         CREATE INDEX idx_alerts_lifecycle_opened
         ON alerts(lifecycle, opened_at_utc_us DESC, id DESC)
     """,
+    "idx_alerts_first_sample_id": """
+        CREATE INDEX idx_alerts_first_sample_id
+        ON alerts(first_sample_id)
+    """,
+    "idx_alerts_latest_sample_id": """
+        CREATE INDEX idx_alerts_latest_sample_id
+        ON alerts(latest_sample_id)
+    """,
+    "idx_alerts_archived_recovered_id": """
+        CREATE INDEX idx_alerts_archived_recovered_id
+        ON alerts(recovered_at_utc_us, id) WHERE lifecycle = 'archived'
+    """,
     "idx_alert_events_alert_time": """
         CREATE INDEX idx_alert_events_alert_time
         ON alert_events(alert_id, event_at_utc_us, id)
+    """,
+    "idx_alert_events_supporting_sample_id": """
+        CREATE INDEX idx_alert_events_supporting_sample_id
+        ON alert_events(supporting_sample_id)
     """,
 }
 
@@ -347,6 +364,8 @@ def create_schema_v1(connection: sqlite3.Connection, *, applied_at_utc_us: int) 
     ):
         raise SchemaVerificationError("invalid_migration_timestamp")
     try:
+        if _pragma_integer(connection, "auto_vacuum") != AUTO_VACUUM_INCREMENTAL:
+            raise SchemaVerificationError("auto_vacuum_mismatch")
         connection.execute("BEGIN IMMEDIATE")
         for statement in TABLE_DDL.values():
             connection.execute(statement)
@@ -384,6 +403,8 @@ def verify_schema_v1(
             raise SchemaVerificationError("application_identity_mismatch")
         if _pragma_integer(connection, "user_version") != SCHEMA_VERSION:
             raise SchemaVerificationError("schema_version_mismatch")
+        if _pragma_integer(connection, "auto_vacuum") != AUTO_VACUUM_INCREMENTAL:
+            raise SchemaVerificationError("auto_vacuum_mismatch")
         foreign_keys = _pragma_integer(connection, "foreign_keys")
         if foreign_keys != 1:
             raise SchemaVerificationError("foreign_keys_disabled")

@@ -19,12 +19,12 @@
 > 18 implementation is in progress: its isolated production package now
 > includes the strict projection and SQLite foundation plus atomic projection
 > ingestion, compacted history state, monotonic sequence and bounded replay
-> protection, deterministic automatic alert translation, and bounded read-only
-> history, alert, and alert-event queries. No runtime entry point imports it, no
-> deployment database is created, and no scheduled history, route,
-> acknowledgment, retention, worker, notification, or automation behavior is
-> enabled. Broader device control, browser configuration, room mapping, and
-> spatial intelligence remain deferred.
+> protection, deterministic automatic alert translation, bounded read-only
+> queries, and direct-only retention cleanup and incremental-vacuum primitives.
+> No runtime entry point imports it, no deployment database is created, and no
+> scheduled history or maintenance cadence, route, acknowledgment, worker,
+> notification, or automation behavior is enabled. Broader device control,
+> browser configuration, room mapping, and spatial intelligence remain deferred.
 
 ## Architecture summary
 
@@ -208,8 +208,11 @@ four-operation registry and two-request verification boundary. See the
 the CLI, filesystem, backup, activation, and recovery boundaries. The in-progress
 [Milestone 18 health-history and alerting design](docs/health-history-alerting.md)
 documents the persistence, privacy, lifecycle, and bounded-automation decisions
-plus the isolated storage, ingestion, and read-query slices; it does not enable
-runtime behavior.
+plus the isolated storage, ingestion, read-query, and bounded-retention
+maintenance slices. The direct-only maintenance boundary uses one total
+500-logical-row cleanup budget and one fixed 128-page incremental-vacuum call;
+it does not enable a scheduler, WAL checkpoint, capacity integration,
+production database, route, or other runtime behavior.
 
 ## Contributing
 
