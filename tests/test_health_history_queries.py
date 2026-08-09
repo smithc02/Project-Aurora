@@ -622,6 +622,63 @@ def test_malformed_history_rows_are_trust_loss_and_never_skipped(
     _assert_malformed_query_closes(path, store, store.list_health_samples)
 
 
+def test_health_history_validates_malformed_digest_lookahead_before_returning_page(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    _seed_history(
+        path,
+        (
+            _projection(1, sample_kind=SampleKind.STARTUP_GAP),
+            _projection(2, sample_kind=SampleKind.STARTUP_GAP),
+        ),
+    )
+    connection = _connect(path)
+    connection.execute(
+        "UPDATE health_samples SET projection_digest = zeroblob(32) "
+        "WHERE observation_sequence = 1"
+    )
+    connection.close()
+
+    _assert_malformed_query_closes(
+        path, store, lambda: store.list_health_samples(page_size=1)
+    )
+
+
+def test_health_status_cursor_validates_malformed_digest_lookahead(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    _seed_history(
+        path,
+        tuple(
+            _projection(sequence, sample_kind=SampleKind.STARTUP_GAP)
+            for sequence in range(1, 4)
+        ),
+    )
+    first = store.list_health_samples(
+        page_size=1, overall_status=HealthHistoryStatus.HEALTHY
+    )
+    assert [item.observation_sequence for item in first.items] == [3]
+    assert first.next_cursor is not None
+    connection = _connect(path)
+    connection.execute(
+        "UPDATE health_samples SET projection_digest = zeroblob(32) "
+        "WHERE observation_sequence = 1"
+    )
+    connection.close()
+
+    _assert_malformed_query_closes(
+        path,
+        store,
+        lambda: store.list_health_samples(
+            page_size=1,
+            cursor=first.next_cursor,
+            overall_status=HealthHistoryStatus.HEALTHY,
+        ),
+    )
+
+
 def test_health_history_invalid_cursor_is_sanitized_and_read_only(
     store_path: tuple[Path, HealthHistoryStore],
 ) -> None:
@@ -633,6 +690,7 @@ def test_health_history_invalid_cursor_is_sanitized_and_read_only(
     with pytest.raises(QueryError) as caught:
         store.list_health_samples(cursor=object())  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_CURSOR
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -769,6 +827,7 @@ def test_alert_listing_rejects_invalid_page_sizes_without_mutation(
     with pytest.raises(QueryError) as caught:
         store.list_alerts(page_size=value)  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_QUERY
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -823,6 +882,7 @@ def test_get_alert_rejects_invalid_ids_without_mutation(
     with pytest.raises(QueryError) as caught:
         store.get_alert(value)  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_QUERY
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -887,6 +947,57 @@ def test_non_null_missing_alert_sample_reference_is_trust_loss(
     connection.execute("UPDATE alerts SET first_sample_id = 999")
     connection.close()
     _assert_malformed_query_closes(path, store, store.list_alerts)
+
+
+def test_alert_listing_validates_malformed_lookahead_before_returning_page(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    lookahead_id = _insert_alert(
+        path, lifecycle=AlertLifecycle.ARCHIVED, opened_at=_BASE_TIME
+    )
+    _insert_alert(path, lifecycle=AlertLifecycle.ARCHIVED, opened_at=_BASE_TIME + 1)
+    connection = _connect(path)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute(
+        "UPDATE alerts SET severity = 'unavailable' WHERE id = ?",
+        (lookahead_id,),
+    )
+    connection.execute("PRAGMA ignore_check_constraints = OFF")
+    connection.close()
+
+    _assert_malformed_query_closes(path, store, lambda: store.list_alerts(page_size=1))
+
+
+def test_alert_lifecycle_cursor_validates_malformed_lookahead(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    lookahead_id = _insert_alert(
+        path, lifecycle=AlertLifecycle.ARCHIVED, opened_at=_BASE_TIME
+    )
+    _insert_alert(path, lifecycle=AlertLifecycle.ARCHIVED, opened_at=_BASE_TIME + 1)
+    _insert_alert(path, lifecycle=AlertLifecycle.ARCHIVED, opened_at=_BASE_TIME + 2)
+    first = store.list_alerts(page_size=1, lifecycle=AlertLifecycle.ARCHIVED)
+    assert first.next_cursor is not None
+    connection = _connect(path)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute(
+        "UPDATE alerts SET severity = 'unavailable' WHERE id = ?",
+        (lookahead_id,),
+    )
+    connection.execute("PRAGMA ignore_check_constraints = OFF")
+    connection.close()
+
+    _assert_malformed_query_closes(
+        path,
+        store,
+        lambda: store.list_alerts(
+            page_size=1,
+            cursor=first.next_cursor,
+            lifecycle=AlertLifecycle.ARCHIVED,
+        ),
+    )
 
 
 def test_event_timeline_validates_fixed_events_and_orders_equal_times_by_id(
@@ -989,6 +1100,7 @@ def test_event_timeline_rejects_invalid_page_sizes_without_mutation(
     with pytest.raises(QueryError) as caught:
         store.list_alert_events(1, page_size=value)  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_QUERY
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -1013,6 +1125,7 @@ def test_event_timeline_rejects_invalid_alert_ids_without_mutation(
     with pytest.raises(QueryError) as caught:
         store.list_alert_events(value)  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_QUERY
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -1028,6 +1141,7 @@ def test_event_cursor_validation_is_fixed_and_read_only(
     with pytest.raises(QueryError) as caught:
         store.list_alert_events(alert_id, cursor=object())  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_CURSOR
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -1042,6 +1156,7 @@ def test_alert_cursor_validation_is_fixed_and_read_only(
     with pytest.raises(QueryError) as caught:
         store.list_alerts(cursor=object())  # type: ignore[arg-type]
     assert caught.value.reason is QueryRejection.INVALID_CURSOR
+    assert not store.closed
     assert _snapshot(path) == before
 
 
@@ -1088,6 +1203,74 @@ def test_non_null_missing_event_sample_reference_is_trust_loss(
     )
 
 
+def test_event_timeline_validates_malformed_lookahead_before_returning_page(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    alert_id = _insert_alert(path)
+    _insert_event(
+        path,
+        alert_id,
+        LifecycleEvent.OCCURRENCE_UPDATED,
+        AlertLifecycle.OPEN,
+        event_at=_BASE_TIME,
+    )
+    lookahead_id = _insert_event(
+        path,
+        alert_id,
+        LifecycleEvent.OPENED,
+        AlertLifecycle.OPEN,
+        event_at=_BASE_TIME + 1,
+    )
+    connection = _connect(path)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute(
+        "UPDATE alert_events SET resulting_lifecycle = 'archived' WHERE id = ?",
+        (lookahead_id,),
+    )
+    connection.execute("PRAGMA ignore_check_constraints = OFF")
+    connection.close()
+
+    _assert_malformed_query_closes(
+        path, store, lambda: store.list_alert_events(alert_id, page_size=1)
+    )
+
+
+def test_event_cursor_validates_malformed_lookahead(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    alert_id = _insert_alert(path)
+    event_ids = [
+        _insert_event(
+            path,
+            alert_id,
+            LifecycleEvent.OCCURRENCE_UPDATED,
+            AlertLifecycle.OPEN,
+            event_at=_BASE_TIME + index,
+        )
+        for index in range(3)
+    ]
+    first = store.list_alert_events(alert_id, page_size=1)
+    assert first.next_cursor is not None
+    connection = _connect(path)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute(
+        "UPDATE alert_events SET resulting_lifecycle = 'archived' WHERE id = ?",
+        (event_ids[-1],),
+    )
+    connection.execute("PRAGMA ignore_check_constraints = OFF")
+    connection.close()
+
+    _assert_malformed_query_closes(
+        path,
+        store,
+        lambda: store.list_alert_events(
+            alert_id, page_size=1, cursor=first.next_cursor
+        ),
+    )
+
+
 def test_mismatched_event_alert_id_is_not_returned_as_valid(
     store_path: tuple[Path, HealthHistoryStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1120,8 +1303,11 @@ def test_busy_and_locked_queries_are_sanitized_non_trust_failures(
 ) -> None:
     path, store = store_path
     before = _snapshot(path)
+    calls = 0
 
     def fail(stage: QueryStage) -> None:
+        nonlocal calls
+        calls += 1
         assert stage is QueryStage.HEALTH_SAMPLES
         error = sqlite3.OperationalError("private sqlite lock detail")
         error.sqlite_errorcode = error_code  # type: ignore[attr-defined]
@@ -1133,6 +1319,7 @@ def test_busy_and_locked_queries_are_sanitized_non_trust_failures(
     assert caught.value.reason is QueryRejection.STORAGE_BUSY
     assert str(caught.value) == "storage_busy"
     assert caught.value.__cause__ is None
+    assert calls == 1
     assert not store.closed
     assert _snapshot(path) == before
 
@@ -1162,6 +1349,45 @@ def test_corruption_and_schema_query_errors_close_the_store(
     assert _snapshot(path) == before
 
 
+def test_trust_losing_reader_skips_post_operation_identity_work(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    before = _snapshot(path)
+    original_main = store_module.validate_database_file
+    original_sidecar = store_module._advance_sidecar_snapshot
+    main_calls = 0
+    sidecar_calls = 0
+
+    def count_main(candidate: Path, *, expected: object | None = None) -> Any:
+        nonlocal main_calls
+        main_calls += 1
+        return original_main(candidate, expected=expected)  # type: ignore[arg-type]
+
+    def count_sidecar(candidate: Path, prior: object) -> Any:
+        nonlocal sidecar_calls
+        sidecar_calls += 1
+        return original_sidecar(candidate, prior)  # type: ignore[arg-type]
+
+    def fail(stage: QueryStage) -> None:
+        assert stage is QueryStage.HEALTH_SAMPLES
+        error = sqlite3.DatabaseError("private sqlite corruption detail")
+        error.sqlite_errorcode = sqlite3.SQLITE_CORRUPT  # type: ignore[attr-defined]
+        raise error
+
+    monkeypatch.setattr(store_module, "validate_database_file", count_main)
+    monkeypatch.setattr(store_module, "_advance_sidecar_snapshot", count_sidecar)
+    monkeypatch.setattr(queries, "_fault", fail)
+    with pytest.raises(QueryError) as caught:
+        store.list_health_samples()
+    assert caught.value.reason is QueryRejection.TRUST_FAILED
+    assert main_calls == 1
+    assert sidecar_calls == 1
+    assert store.closed
+    assert _snapshot(path) == before
+
+
 def test_generic_sqlite_query_error_is_sanitized_without_raw_text(
     store_path: tuple[Path, HealthHistoryStore],
     monkeypatch: pytest.MonkeyPatch,
@@ -1180,6 +1406,88 @@ def test_generic_sqlite_query_error_is_sanitized_without_raw_text(
     assert str(caught.value) == "persistence_failed"
     assert caught.value.__cause__ is None
     assert not store.closed
+    assert _snapshot(path) == before
+
+
+@pytest.mark.parametrize("identity_target", ["main", "sidecar"])
+@pytest.mark.parametrize(
+    "operation_case",
+    [
+        "successful_health",
+        "get_alert_not_found",
+        "alert_events_not_found",
+        "busy",
+        "locked",
+        "persistence_failed",
+        "invalid_query",
+        "invalid_cursor",
+    ],
+)
+def test_post_operation_identity_replacement_overrides_non_trust_query_result(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+    identity_target: str,
+    operation_case: str,
+) -> None:
+    path, store = store_path
+    before = _snapshot(path)
+
+    if operation_case in {"busy", "locked", "persistence_failed"}:
+
+        def fail(stage: QueryStage) -> None:
+            assert stage is QueryStage.HEALTH_SAMPLES
+            error = sqlite3.OperationalError("private sqlite query detail")
+            if operation_case == "busy":
+                error.sqlite_errorcode = sqlite3.SQLITE_BUSY  # type: ignore[attr-defined]
+            elif operation_case == "locked":
+                error.sqlite_errorcode = sqlite3.SQLITE_LOCKED  # type: ignore[attr-defined]
+            raise error
+
+        monkeypatch.setattr(queries, "_fault", fail)
+
+    if identity_target == "main":
+        original_main = store_module.validate_database_file
+        main_calls = 0
+
+        def changed_main(candidate: Path, *, expected: object | None = None) -> Any:
+            nonlocal main_calls
+            main_calls += 1
+            if main_calls == 2:
+                raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+            return original_main(candidate, expected=expected)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(store_module, "validate_database_file", changed_main)
+    else:
+        original_sidecar = store_module._advance_sidecar_snapshot
+        sidecar_calls = 0
+
+        def changed_sidecar(candidate: Path, prior: object) -> Any:
+            nonlocal sidecar_calls
+            sidecar_calls += 1
+            if sidecar_calls == 2:
+                raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+            return original_sidecar(candidate, prior)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(store_module, "_advance_sidecar_snapshot", changed_sidecar)
+
+    operation = {
+        "successful_health": store.list_health_samples,
+        "get_alert_not_found": lambda: store.get_alert(999),
+        "alert_events_not_found": lambda: store.list_alert_events(999),
+        "busy": store.list_health_samples,
+        "locked": store.list_health_samples,
+        "persistence_failed": store.list_health_samples,
+        "invalid_query": lambda: store.list_health_samples(page_size=0),
+        "invalid_cursor": lambda: store.list_health_samples(  # type: ignore[arg-type]
+            cursor=object()
+        ),
+    }[operation_case]
+    with pytest.raises(QueryError) as caught:
+        operation()
+    assert caught.value.reason is QueryRejection.TRUST_FAILED
+    assert str(caught.value) == "trust_failed"
+    assert caught.value.__cause__ is None
+    assert store.closed
     assert _snapshot(path) == before
 
 
@@ -1250,6 +1558,16 @@ def test_exact_query_plans_use_code_owned_indexes(
         (
             queries._HEALTH_SAMPLES_STATUS_SQL,
             (HealthHistoryStatus.HEALTHY.value, DEFAULT_HEALTH_SAMPLE_PAGE_SIZE + 1),
+            "idx_health_samples_status_observed",
+        ),
+        (
+            queries._HEALTH_SAMPLES_STATUS_CURSOR_SQL,
+            (
+                HealthHistoryStatus.HEALTHY.value,
+                _BASE_TIME,
+                1,
+                DEFAULT_HEALTH_SAMPLE_PAGE_SIZE + 1,
+            ),
             "idx_health_samples_status_observed",
         ),
         (

@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
+from typing import cast
 
 from aurora_core.health_history.filesystem import (
     FilesystemBoundaryError,
@@ -289,15 +290,30 @@ class HealthHistoryStore:
         try:
             validate_database_file(self._path, expected=self._identity)
             sidecars = _advance_sidecar_snapshot(self._path, self._sidecars)
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise QueryError(QueryRejection.TRUST_FAILED, trust_lost=True) from None
+        query_error: QueryError | None = None
+        result: T | object = object()
+        try:
             result = reader(self._connection)
-            validate_database_file(self._path, expected=self._identity)
-            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
-            self._sidecars = _advance_sidecar_snapshot(self._path, sidecars)
-            return result
         except QueryError as error:
             if error.trust_lost:
                 self.close()
-            raise
+                raise
+            query_error = error
+        self._finish_read_identity_validation(sidecars)
+        if query_error is not None:
+            raise query_error
+        return cast(T, result)
+
+    def _finish_read_identity_validation(
+        self, sidecars: dict[str, PathIdentity]
+    ) -> None:
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+            self._sidecars = _advance_sidecar_snapshot(self._path, sidecars)
         except (FilesystemBoundaryError, OSError):
             self.close()
             raise QueryError(QueryRejection.TRUST_FAILED, trust_lost=True) from None

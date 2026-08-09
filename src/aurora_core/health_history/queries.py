@@ -377,10 +377,11 @@ def _list_health_samples(
                     fetch_limit,
                 ),
             ).fetchall()
-        has_more = len(rows) > page_size
-        records = tuple(
-            _health_sample_record(connection, row) for row in rows[:page_size]
+        validated_records = tuple(
+            _health_sample_record(connection, row) for row in rows
         )
+        has_more = len(validated_records) > page_size
+        records = validated_records[:page_size]
         next_cursor = (
             HealthSampleCursor(records[-1].observed_at_utc_us, records[-1].id)
             if has_more and records
@@ -431,8 +432,9 @@ def _list_alerts(
                     fetch_limit,
                 ),
             ).fetchall()
-        has_more = len(rows) > page_size
-        records = tuple(_alert_record(connection, row) for row in rows[:page_size])
+        validated_records = tuple(_alert_record(connection, row) for row in rows)
+        has_more = len(validated_records) > page_size
+        records = validated_records[:page_size]
         next_cursor = (
             AlertCursor(records[-1].opened_at_utc_us, records[-1].id)
             if has_more and records
@@ -486,10 +488,11 @@ def _list_alert_events(
                 _ALERT_EVENTS_CURSOR_SQL,
                 (alert_id, cursor.event_at_utc_us, cursor.event_id, fetch_limit),
             ).fetchall()
-        has_more = len(rows) > page_size
-        records = tuple(
-            _alert_event_record(connection, row, alert_id) for row in rows[:page_size]
+        validated_records = tuple(
+            _alert_event_record(connection, row, alert_id) for row in rows
         )
+        has_more = len(validated_records) > page_size
+        records = validated_records[:page_size]
         next_cursor = (
             AlertEventCursor(records[-1].event_at_utc_us, records[-1].id)
             if has_more and records
