@@ -299,6 +299,14 @@ INDEX_DDL: Final[dict[str, str]] = {
         CREATE INDEX idx_alerts_recovered_cooldown_id
         ON alerts(cooldown_until_utc_us, id) WHERE lifecycle = 'recovered'
     """,
+    "idx_alerts_opened": """
+        CREATE INDEX idx_alerts_opened
+        ON alerts(opened_at_utc_us DESC, id DESC)
+    """,
+    "idx_alerts_lifecycle_opened": """
+        CREATE INDEX idx_alerts_lifecycle_opened
+        ON alerts(lifecycle, opened_at_utc_us DESC, id DESC)
+    """,
     "idx_alert_events_alert_time": """
         CREATE INDEX idx_alert_events_alert_time
         ON alert_events(alert_id, event_at_utc_us, id)

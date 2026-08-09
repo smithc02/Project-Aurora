@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first two Milestone 18 production slices supply an isolated
+The first three Milestone 18 production slices supply an isolated
 `aurora_core.health_history` package. Its stricter code-owned projection accepts
 only complete `HealthReport` schema version 1 snapshots and retains status,
 timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
@@ -391,10 +391,27 @@ Filesystem identity is checked before and after the transaction; SQLite trust
 loss closes the store, while busy/locked remains a non-trust failure. Results
 are fixed and sanitized with no retry or queue.
 
+The third slice adds only narrow read methods on the verified store. Samples
+use `(observed_at_utc_us DESC, id DESC)`, alerts use
+`(opened_at_utc_us DESC, id DESC)`, and one alert's events use
+`(event_at_utc_us ASC, id ASC)`. Immutable cursors contain only those two fixed
+bounded integers. Default pages are 50 records and hard maximum pages are 100;
+there is no offset, unlimited mode, caller-supplied SQL, ordering, predicate,
+or column. The only filters are exact overall health status for samples and
+exact lifecycle for alerts. Every returned history row is reconstructed with
+exactly four ordered components and its internal canonical digest is
+revalidated. Alert and event lifecycle fields and non-null retained sample
+references are likewise validated before return. Main-file and sidecar identity
+checks surround each read-only transaction, malformed state closes the store,
+and full-table snapshot tests prove reads do not mutate schema-version-1 rows.
+Two minimal indexes serve global and lifecycle-filtered alert ordering; existing
+sample and event indexes serve the other keyset queries.
+
 No current runtime entry point imports this package. There is no configuration,
-deployment database creation, scheduler, query, route, acknowledgment,
-retention execution, maintenance execution, or device/service/network
+deployment database creation, scheduler, route, acknowledgment, retention
+execution, maintenance execution, or device/service/network
 behavior. Existing portal routes and public `GET /api/health` schema version 1
-remain independent and unchanged. The next slices are bounded history queries,
-retention/maintenance, and separately reviewed runtime integration. See the detailed
-[health-history and alerting design](health-history-alerting.md).
+remain independent and unchanged. The next slices are retention/maintenance,
+separately authenticated acknowledgment, and separately reviewed runtime
+integration. See the detailed [health-history and alerting
+design](health-history-alerting.md).

@@ -7,15 +7,18 @@ the isolated strict health projection, finite reason registry, exact SQLite
 schema version 1 foundation, and explicit secure create and fail-closed
 open-existing boundaries. The second isolated slice adds the narrow atomic
 ingestion method, deterministic evaluator state, compacted history, sampling-gap
-translation, and ingestion-driven alert lifecycle described below.
+translation, and ingestion-driven alert lifecycle described below. The third
+isolated slice adds bounded read-only sample, alert, and event queries with
+immutable result models, deterministic keyset cursors, and strict persisted-row
+validation.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
 This slice adds no configuration field, scheduler, worker, route, runtime
-invocation, query API, acknowledgment action, migration, backup, restore,
-retention execution, notification, or automation action. Milestones 12 through
-17 remain the current behavior, including public `GET /api/health` schema
-version 1.
+invocation, acknowledgment action, migration, backup, restore, retention
+execution, notification, or automation action. The query API is reachable only
+through direct use of the isolated package. Milestones 12 through 17 remain the
+current behavior, including public `GET /api/health` schema version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -64,6 +67,20 @@ The second slice remains inside that isolated package and adds:
 - six fixed sanitized ingestion outcomes with no SQL, path, raw exception, or
   submitted value in the result.
 
+The third slice remains disconnected from runtime and adds:
+
+- immutable sample, component, alert, event, page, and typed cursor records;
+- `list_health_samples`, `list_alerts`, `get_alert`, and `list_alert_events` as
+  the only store read methods;
+- fixed default page sizes of 50 and hard maximum page sizes of 100;
+- indexed two-integer keyset pagination with no offset or unlimited mode;
+- exact overall-status filtering for samples and exact lifecycle filtering for
+  alerts, with no component filter or free-form search;
+- canonical digest reconstruction for every returned history record and strict
+  lifecycle/reference validation for every returned alert and event; and
+- read-only transactions surrounded by main-file and sidecar identity checks,
+  with fixed sanitized errors, no retry, and trust-loss closure.
+
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
 implementation does not claim that SQLite's internal open uses `O_NOFOLLOW`.
@@ -80,8 +97,8 @@ immutable, sanitized `HealthReport` snapshots:
 - deduplication, transition detection, and periodic heartbeat records;
 - alert creation, acknowledgment state, recovery detection, and archival;
 - deterministic retention and bounded storage maintenance; and
-- separately protected, read-only history and alert presentation in a future
-  implementation.
+- isolated bounded read methods, with separately protected presentation still
+  deferred to a future implementation.
 
 The alert engine is a state machine, not a general automation engine. The
 initial notification channel is the authenticated Aurora portal plus sanitized
@@ -575,8 +592,13 @@ No acknowledgment username or note is stored. A partial unique index permits at
 most one open or acknowledged health alert per `(scope, alert kind)` and is the
 active lookup path. A partial `(scope, kind, id DESC)` terminal index serves the
 latest recovered/archived lookup. A partial `(cooldown, id)` recovered index
-serves eligible archival in exact order. Deterministic `EXPLAIN QUERY PLAN`
-tests use the production SQL strings and require these indexes.
+serves eligible archival in exact order. Two minimal query-serving indexes on
+`(opened_at DESC, id DESC)` and `(lifecycle, opened_at DESC, id DESC)` serve
+newest-first alert pages and exact lifecycle pages. The archival query is
+explicitly pinned to its code-owned partial cooldown index so the additional
+lifecycle index cannot change that ingestion-time access path. Deterministic
+`EXPLAIN QUERY PLAN` tests use the production SQL strings and require these
+indexes.
 
 ### `alert_events`
 
@@ -603,8 +625,8 @@ Opening refuses a newer, older, altered, additional-object, or unknown schema.
 
 The exact required indexes cover newest-first samples, overall transitions,
 component history, stored-sequence uniqueness, the single active alert per
-scope/kind, latest terminal alerts, recovered cooldown order, and event
-timelines. Database `CHECK`
+scope/kind, latest terminal alerts, recovered cooldown order, newest and
+lifecycle-filtered alert pages, and event timelines. Database `CHECK`
 constraints cover every fixed enum, digest length, timestamps, durations, and
 counters. Component rows cascade only with their sample; alert events cascade
 only with their alert. Retained alert and evaluator sample references use
@@ -1063,6 +1085,79 @@ is safe. The clock marker does not contribute to sampling-gap state; only
 monotonic missed scheduler deadlines do. A wall-clock jump does not synthesize
 samples, recover or open an alert, or delete retention data.
 
+## Isolated bounded read-query boundary
+
+`HealthHistoryStore` exposes only four narrow reads. Each requires an already
+open verified store, checks the database main-file and WAL/SHM identities before
+and after one deferred read transaction, validates arguments before query SQL,
+and rolls back the read transaction after constructing an immutable result. It
+does not begin `BEGIN IMMEDIATE`, write a row, update state, retry, or queue
+work. Busy and locked errors are fixed non-trust `storage_busy` results;
+corruption, schema errors, impossible references, invalid enums, inconsistent
+lifecycle state, and malformed canonical history close the store with a fixed
+trust-loss result. No SQLite text, SQL, path, or persisted/submitted value is
+returned in an error.
+
+The fixed reads are:
+
+- `list_health_samples`: newest first by
+  `(observed_at_utc_us DESC, id DESC)`, optionally filtered by one exact
+  `HealthHistoryStatus`;
+- `list_alerts`: newest first by `(opened_at_utc_us DESC, id DESC)`, optionally
+  filtered by one exact `AlertLifecycle`;
+- `get_alert`: one positive bounded alert ID, returning the alert without its
+  events or fixed `not_found`; and
+- `list_alert_events`: one positive bounded alert ID, chronological by
+  `(event_at_utc_us ASC, id ASC)`.
+
+The sample read model contains only ID, accepted observation sequence, observed
+and recorded UTC microseconds, overall status, bounded uptime, stored
+compaction kind, accepted projection kind, missed intervals, and four component
+records. Each component contains only its fixed name, status, normalized reason
+tuple, checked time, bounded latency, and nullable last-successful time. The
+alert read model contains only ID, scope, kind, lifecycle, severity, four fixed
+lifecycle timestamps, nullable first/latest sample IDs, episode count,
+occurrence count, and cooldown time. The event read model contains only ID,
+alert ID, fixed event type, event time, nullable supporting sample ID, and
+resulting lifecycle. All records, pages, and cursors are frozen slot-based
+models.
+
+Every default page is 50 and every hard maximum is 100. Callers may request
+only a positive integer at or below the relevant maximum; Boolean, float,
+string, zero, negative, oversized, and unlimited values are rejected. Cursors
+are immutable typed pairs containing only the last returned timestamp and
+positive row ID. Descending queries seek strictly below the pair; event queries
+seek strictly above it. Equal timestamps therefore use the integer primary key
+without duplicate or omitted rows. No cursor contains JSON, SQL, filters,
+database values beyond the ordering pair, or user metadata. There is no OFFSET.
+
+Sample results omit the stored projection digest. Internally, each sample is
+joined through fixed bounded reads to exactly four unique component rows,
+ordered as WLED, HyperHDR, capture, and Raspberry Pi. The reader reconstructs
+the schema-1 accepted projection using `accepted_sample_kind`, verifies all
+fixed reasons and bounds, confirms overall status is the worst component, and
+revalidates the canonical digest. The independently stored compaction
+`sample_kind` is also validated and returned. A malformed row is trust loss,
+never a skipped record.
+
+Alert results contain only the fixed persisted lifecycle fields. Scope/kind,
+kind/severity, counts, timestamps, lifecycle-specific nullable timestamps, and
+positive nullable sample references are validated. Event results contain only
+the fixed event registry, timestamp, nullable supporting sample, and resulting
+lifecycle; each event/lifecycle pair is checked. Retention-cleared null sample
+references remain valid and deleted history is never reconstructed. A non-null
+reference to missing history is trust loss.
+
+All query SQL, columns, predicates, ordering, and limits are code-owned. There
+is no component filter in this slice, arbitrary search, caller-selected column
+or order, export, raw database download, or general SQL method. Full snapshots
+of all eight schema-version-1 tables prove successful, empty, rejected,
+not-found, and fault-injected reads make no changes.
+
+The two alert-listing indexes are a direct pre-deployment refinement of exact
+schema version 1. No production history database exists, so no migration is
+added; `application_id` remains `0x41555248` and `user_version` remains 1.
+
 ## Future dashboard and API boundaries
 
 No route is added by this design change. A future implementation should add
@@ -1071,12 +1166,10 @@ history and alert views beside, not inside, the existing public health contract:
 - `GET /api/health` remains public, read-only, schema version 1, and independent
   of SQLite;
 - new history and alert HTML/API reads require a valid authenticated session;
-- history query inputs are limited to code-owned status/component enums,
-  validated UTC bounds, an opaque or integer cursor, and a capped page size;
-- queries return a separate versioned response containing only persisted
-  allowlisted fields;
-- all queries use indexed seek pagination, not unbounded offsets, exports,
-  arbitrary filters, raw SQL, or caller-selected columns; and
+- a future route may translate only the existing typed query results and fixed
+  rejections into a separately reviewed versioned response;
+- presentation must preserve the code-owned filters, cursors, page caps, and
+  allowlisted fields without adding search, offsets, exports, or raw SQL; and
 - database unavailability returns a fixed sanitized response without changing
   public health or device controls.
 
@@ -1367,10 +1460,10 @@ changes.
 | Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the five persisted-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
 
 The following work remains separately deferred and is not implemented by the
-isolated storage and ingestion slices:
+isolated storage, ingestion, and read-query slices:
 
 - runtime integration, scheduling, and production database deployment;
-- bounded history/alert query methods and authenticated presentation;
+- authenticated history/alert presentation routes;
 - operator acknowledgment and its authentication/CSRF route;
 - retention and maintenance execution;
 - database migrations;
