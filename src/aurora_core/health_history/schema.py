@@ -501,12 +501,15 @@ def _valid_replay_rows(
     checkpoint: sqlite3.Row | tuple[object, ...],
     rows: list[sqlite3.Row] | list[tuple[object, ...]],
 ) -> bool:
-    if len(rows) > REPLAY_LEDGER_CAPACITY:
-        return False
     _singleton_id, sequence, observed_at, digest, sample_kind, count = checkpoint
+    if type(count) is not int:
+        return False
+    expected_rows = min(count, REPLAY_LEDGER_CAPACITY)
+    if len(rows) != expected_rows:
+        return False
     if sequence is None:
-        return not rows and count == 0
-    if type(count) is not int or not rows or len(rows) > count:
+        return count == 0
+    if not rows:
         return False
     for row in rows:
         row_sequence, row_observed, row_digest, row_kind = row

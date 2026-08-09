@@ -70,7 +70,7 @@ from aurora_core.health_history.sampling_gap import (
     SamplingGapState,
     evaluate_sampling_gap,
 )
-from aurora_core.health_history.store import HealthHistoryStore
+from aurora_core.health_history.store import HealthHistoryStore, StoreError
 from aurora_core.m18_validation import alert_lifecycle as reference_alerts
 from aurora_core.m18_validation import sampling_gap as reference_gap
 
@@ -239,6 +239,7 @@ def _table_snapshot(path: Path) -> dict[str, list[Any]]:
         table: _rows(path, f"SELECT * FROM {table} ORDER BY rowid")
         for table in (
             "ingestion_checkpoint",
+            "accepted_observation_replay",
             "health_samples",
             "component_samples",
             "evaluation_state",
@@ -280,6 +281,161 @@ def test_checkpoint_cardinality_is_verified(
         schema.verify_schema_v1(connection)
     assert caught.value.reason == "ingestion_checkpoint_mismatch"
     connection.close()
+
+
+@pytest.mark.parametrize("accepted_count", [0, 1, 63, 64, 65])
+def test_replay_ledger_cardinality_exactly_matches_accepted_count_or_capacity(
+    store_path: tuple[Path, HealthHistoryStore], accepted_count: int
+) -> None:
+    path, store = store_path
+    for sequence in range(1, accepted_count + 1):
+        store.ingest(_projection(sequence))
+    expected_rows = min(accepted_count, REPLAY_LEDGER_CAPACITY)
+    assert _rows(path, "SELECT COUNT(*) FROM accepted_observation_replay") == [
+        (expected_rows,)
+    ]
+    connection = _connect(path)
+    schema.verify_schema_v1(connection)
+    connection.close()
+
+
+@pytest.mark.parametrize("deleted_sequence", [2, 3])
+def test_schema_verification_rejects_missing_middle_or_newest_replay_entry(
+    store_path: tuple[Path, HealthHistoryStore], deleted_sequence: int
+) -> None:
+    path, store = store_path
+    for sequence in range(1, 4):
+        store.ingest(_projection(sequence))
+    store.close()
+    connection = _connect(path)
+    connection.execute(
+        "DELETE FROM accepted_observation_replay WHERE observation_sequence = ?",
+        (deleted_sequence,),
+    )
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema.verify_schema_v1(connection)
+    assert caught.value.reason == "ingestion_checkpoint_mismatch"
+    connection.close()
+
+
+def test_schema_verification_rejects_extra_retained_replay_entry(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    store.ingest(_projection(1))
+    store.close()
+    connection = _connect(path)
+    connection.execute(
+        "INSERT INTO accepted_observation_replay("
+        "observation_sequence, observed_at_utc_us, projection_digest, "
+        "accepted_sample_kind) VALUES (0, 1, ?, 'heartbeat')",
+        (bytes(32),),
+    )
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema.verify_schema_v1(connection)
+    assert caught.value.reason == "ingestion_checkpoint_mismatch"
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "observation_sequence = -1",
+        "observed_at_utc_us = -1",
+        "projection_digest = zeroblob(31)",
+        "accepted_sample_kind = 'invalid'",
+    ],
+)
+def test_schema_verification_checks_every_field_of_an_older_replay_entry(
+    store_path: tuple[Path, HealthHistoryStore], assignment: str
+) -> None:
+    path, store = store_path
+    store.ingest(_projection(1))
+    store.ingest(_projection(2))
+    store.close()
+    connection = _connect(path)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute(
+        f"UPDATE accepted_observation_replay SET {assignment} "
+        "WHERE observation_sequence = 1"
+    )
+    connection.execute("PRAGMA ignore_check_constraints = OFF")
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema.verify_schema_v1(connection)
+    assert caught.value.reason == "ingestion_checkpoint_mismatch"
+    connection.close()
+
+
+def test_open_existing_refuses_malformed_replay_ledger_cardinality(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    for sequence in range(1, 4):
+        store.ingest(_projection(sequence))
+    store.close()
+    connection = _connect(path)
+    connection.execute(
+        "DELETE FROM accepted_observation_replay WHERE observation_sequence = 2"
+    )
+    connection.close()
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.open_existing(path)
+    assert caught.value.reason == "open_failed"
+
+
+@pytest.mark.parametrize("malformation", ["missing_middle", "extra"])
+def test_ingestion_closes_on_malformed_replay_ledger_cardinality(
+    store_path: tuple[Path, HealthHistoryStore], malformation: str
+) -> None:
+    path, store = store_path
+    final_sequence = 3 if malformation == "missing_middle" else 1
+    for sequence in range(1, final_sequence + 1):
+        store.ingest(_projection(sequence))
+    connection = _connect(path)
+    if malformation == "missing_middle":
+        connection.execute(
+            "DELETE FROM accepted_observation_replay WHERE observation_sequence = 2"
+        )
+    else:
+        connection.execute(
+            "INSERT INTO accepted_observation_replay("
+            "observation_sequence, observed_at_utc_us, projection_digest, "
+            "accepted_sample_kind) VALUES (0, 1, ?, 'heartbeat')",
+            (bytes(32),),
+        )
+    connection.close()
+    before = _table_snapshot(path)
+    with pytest.raises(IngestionError) as caught:
+        store.ingest(_projection(final_sequence + 1))
+    assert caught.value.reason is IngestionRejection.MALFORMED_STATE
+    assert str(caught.value) == "malformed_state"
+    assert caught.value.__cause__ is None
+    assert store.closed
+    assert _table_snapshot(path) == before
+
+
+def test_ingestion_closes_on_malformed_older_replay_entry(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    store.ingest(_projection(1))
+    store.ingest(_projection(2))
+    connection = _connect(path)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute(
+        "UPDATE accepted_observation_replay SET accepted_sample_kind = 'invalid' "
+        "WHERE observation_sequence = 1"
+    )
+    connection.execute("PRAGMA ignore_check_constraints = OFF")
+    connection.close()
+    before = _table_snapshot(path)
+    with pytest.raises(IngestionError) as caught:
+        store.ingest(_projection(3))
+    assert caught.value.reason is IngestionRejection.MALFORMED_STATE
+    assert str(caught.value) == "malformed_state"
+    assert caught.value.__cause__ is None
+    assert store.closed
+    assert _table_snapshot(path) == before
 
 
 def test_checkpoint_constraints_require_one_complete_bounded_identity(
@@ -604,6 +760,22 @@ def test_replay_ledger_is_fixed_and_evicted_sequences_fail_stale_without_mutatio
     assert _table_snapshot(path) == before
 
 
+def test_replay_ledger_allows_increasing_scheduler_sequence_gaps(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    for sequence in (1, 4, 10):
+        store.ingest(_projection(sequence))
+    assert _rows(
+        path,
+        "SELECT observation_sequence FROM accepted_observation_replay "
+        "ORDER BY observation_sequence",
+    ) == [(1,), (4,), (10,)]
+    connection = _connect(path)
+    schema.verify_schema_v1(connection)
+    connection.close()
+
+
 def test_unchanged_compaction_and_exact_heartbeat_boundary(
     store_path: tuple[Path, HealthHistoryStore],
 ) -> None:
@@ -772,6 +944,33 @@ def test_retention_cleared_evaluator_reference_creates_next_ordinary_baseline(
     assert store.ingest(reason_change).outcome is IngestionOutcome.TRANSITION_STORED
 
 
+def test_baseline_older_than_replay_horizon_remains_valid(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    fixed_recorded_at = _BASE_TIME + 1_000_000
+    store.ingest(_projection(1, recorded_at=fixed_recorded_at))
+    for sequence in range(2, REPLAY_LEDGER_CAPACITY + 3):
+        assert (
+            store.ingest(_projection(sequence, recorded_at=fixed_recorded_at)).outcome
+            is IngestionOutcome.STATE_ONLY
+        )
+    assert _rows(
+        path,
+        "SELECT observation_sequence FROM health_samples ORDER BY id",
+    ) == [(1,)]
+    assert _rows(
+        path,
+        "SELECT MIN(observation_sequence) FROM accepted_observation_replay",
+    ) == [(3,)]
+    reason_change = _projection(
+        REPLAY_LEDGER_CAPACITY + 3,
+        recorded_at=fixed_recorded_at,
+        reasons={ComponentName.WLED: (NormalizedReason.WLED_INFO_HTTP_ERROR,)},
+    )
+    assert store.ingest(reason_change).outcome is IngestionOutcome.TRANSITION_STORED
+
+
 @pytest.mark.parametrize("malformation", ["missing", "component"])
 def test_non_null_missing_or_malformed_evaluator_reference_loses_trust(
     store_path: tuple[Path, HealthHistoryStore], malformation: str
@@ -794,6 +993,62 @@ def test_non_null_missing_or_malformed_evaluator_reference_loses_trust(
         store.ingest(_projection(2))
     assert caught.value.reason is IngestionRejection.MALFORMED_STATE
     assert store.closed
+
+
+@pytest.mark.parametrize(
+    ("mutation", "parameters"),
+    [
+        pytest.param(
+            "UPDATE component_samples SET reason_code_1 = ? WHERE component = 'wled'",
+            (NormalizedReason.WLED_INFO_HTTP_ERROR.value,),
+            id="valid-wled-reason",
+        ),
+        pytest.param(
+            "UPDATE component_samples SET status = 'degraded', "
+            "reason_code_1 = ? WHERE component = 'wled'",
+            (NormalizedReason.WLED_INFO_LED_COUNT_MISMATCH.value,),
+            id="valid-component-status-and-reason",
+        ),
+        pytest.param(
+            "UPDATE health_samples SET overall_status = 'degraded'",
+            (),
+            id="inconsistent-overall-status",
+        ),
+        pytest.param(
+            "UPDATE health_samples SET projection_digest = ?",
+            (b"x" * 32,),
+            id="different-valid-digest",
+        ),
+        pytest.param(
+            "UPDATE health_samples SET accepted_sample_kind = 'startup_gap'",
+            (),
+            id="different-accepted-kind",
+        ),
+        pytest.param(
+            "UPDATE health_samples SET observation_sequence = 2",
+            (),
+            id="baseline-newer-than-checkpoint",
+        ),
+    ],
+)
+def test_persisted_baseline_must_reconstruct_its_canonical_projection(
+    store_path: tuple[Path, HealthHistoryStore],
+    mutation: str,
+    parameters: tuple[object, ...],
+) -> None:
+    path, store = store_path
+    assert store.ingest(_projection(1)).outcome is IngestionOutcome.TRANSITION_STORED
+    connection = _connect(path)
+    connection.execute(mutation, parameters)
+    connection.close()
+    before = _table_snapshot(path)
+    with pytest.raises(IngestionError) as caught:
+        store.ingest(_projection(2))
+    assert caught.value.reason is IngestionRejection.MALFORMED_STATE
+    assert str(caught.value) == "malformed_state"
+    assert caught.value.__cause__ is None
+    assert store.closed
+    assert _table_snapshot(path) == before
 
 
 @pytest.mark.parametrize(
@@ -1742,14 +1997,18 @@ def test_accepted_checkpoint_counter_saturates_without_blocking_ingestion(
     store_path: tuple[Path, HealthHistoryStore],
 ) -> None:
     path, store = store_path
-    store.ingest(_projection(1))
+    for sequence in range(1, REPLAY_LEDGER_CAPACITY + 1):
+        store.ingest(_projection(sequence))
     connection = _connect(path)
     connection.execute(
         "UPDATE ingestion_checkpoint SET accepted_observation_count = ?",
         (MAX_BOUNDED_COUNTER,),
     )
     connection.close()
-    assert store.ingest(_projection(2)).outcome is IngestionOutcome.STATE_ONLY
+    assert (
+        store.ingest(_projection(REPLAY_LEDGER_CAPACITY + 1)).outcome
+        is IngestionOutcome.STATE_ONLY
+    )
     assert _rows(
         path, "SELECT accepted_observation_count FROM ingestion_checkpoint"
     ) == [(MAX_BOUNDED_COUNTER,)]

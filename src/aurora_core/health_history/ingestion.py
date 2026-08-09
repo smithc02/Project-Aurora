@@ -330,13 +330,13 @@ def _validate_replay_anchor(
         "ORDER BY observation_sequence DESC LIMIT ?",
         (REPLAY_LEDGER_CAPACITY + 1,),
     ).fetchall()
-    if checkpoint.sequence is None:
-        if rows:
-            raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-        return
-    if not rows or len(rows) > REPLAY_LEDGER_CAPACITY:
+    expected_rows = min(checkpoint.accepted_count, REPLAY_LEDGER_CAPACITY)
+    if len(rows) != expected_rows:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    latest = _replay_entry(rows[0])
+    if checkpoint.sequence is None:
+        return
+    retained = tuple(_replay_entry(row) for row in rows)
+    latest = retained[0]
     if (
         latest.sequence != checkpoint.sequence
         or latest.observed_at != checkpoint.observed_at
@@ -546,7 +546,11 @@ def _storage_decision(
     checkpoint: _Checkpoint,
     projection: HealthProjection,
 ) -> _StorageDecision:
-    baseline_sample_id = _baseline_sample_reference(connection, evaluation_rows)
+    baseline_sample_id = _baseline_sample_reference(
+        connection,
+        evaluation_rows,
+        last_committed_sequence=checkpoint.sequence,
+    )
     if checkpoint.sequence is None and baseline_sample_id is not None:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
     if projection.sample_kind is SampleKind.STARTUP_GAP:
@@ -569,7 +573,12 @@ def _storage_decision(
         return _StorageDecision(
             IngestionOutcome.TRANSITION_STORED, SampleKind.TRANSITION
         )
-    if _projection_changed(connection, baseline_sample_id, projection):
+    if _projection_changed(
+        connection,
+        baseline_sample_id,
+        projection,
+        last_committed_sequence=checkpoint.sequence,
+    ):
         return _StorageDecision(
             IngestionOutcome.TRANSITION_STORED, SampleKind.TRANSITION
         )
@@ -587,6 +596,8 @@ def _storage_decision(
 def _baseline_sample_reference(
     connection: sqlite3.Connection,
     rows: dict[AlertScope, _EvaluationRow],
+    *,
+    last_committed_sequence: int | None,
 ) -> int | None:
     references = {row.last_sample_id for row in rows.values()}
     if references == {None}:
@@ -596,7 +607,11 @@ def _baseline_sample_reference(
     sample_id = next(iter(references))
     if sample_id is None:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    _read_baseline_sample(connection, sample_id)
+    _read_baseline_sample(
+        connection,
+        sample_id,
+        last_committed_sequence=last_committed_sequence,
+    )
     return sample_id
 
 
@@ -604,8 +619,14 @@ def _projection_changed(
     connection: sqlite3.Connection,
     sample_id: int,
     projection: HealthProjection,
+    *,
+    last_committed_sequence: int | None,
 ) -> bool:
-    previous_status, previous = _read_baseline_sample(connection, sample_id)
+    previous_status, previous = _read_baseline_sample(
+        connection,
+        sample_id,
+        last_committed_sequence=last_committed_sequence,
+    )
     if previous_status is not projection.overall_status:
         return True
 
@@ -618,6 +639,8 @@ def _projection_changed(
 def _read_baseline_sample(
     connection: sqlite3.Connection,
     sample_id: int,
+    *,
+    last_committed_sequence: int | None,
 ) -> tuple[
     HealthHistoryStatus,
     dict[ComponentName, tuple[HealthHistoryStatus, tuple[NormalizedReason, ...]]],
@@ -645,11 +668,13 @@ def _read_baseline_sample(
             or len(sample[7]) != PROJECTION_DIGEST_BYTES
             or type(sample[8]) is not int
             or not 0 <= sample[8] <= MAX_BOUNDED_COUNTER
+            or last_committed_sequence is None
+            or sample[0] > last_committed_sequence
         ):
             raise ValueError("invalid_sample")
-        overall_status = HealthHistoryStatus(sample[3])
         SampleKind(sample[5])
-        SampleKind(sample[6])
+        accepted_sample_kind = SampleKind(sample[6])
+        overall_status = HealthHistoryStatus(sample[3])
     except (TypeError, ValueError):
         raise IngestionError(
             IngestionRejection.MALFORMED_STATE, trust_lost=True
@@ -662,9 +687,7 @@ def _read_baseline_sample(
     ).fetchall()
     if len(rows) != len(COMPONENT_ORDER):
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    previous: dict[
-        ComponentName, tuple[HealthHistoryStatus, tuple[NormalizedReason, ...]]
-    ] = {}
+    components: dict[ComponentName, ComponentProjection] = {}
     try:
         for row in rows:
             component = ComponentName(row[0])
@@ -672,7 +695,7 @@ def _read_baseline_sample(
             reasons = tuple(
                 NormalizedReason(value) for value in row[2:5] if value is not None
             )
-            ComponentProjection(
+            projected = ComponentProjection(
                 component=component,
                 status=status,
                 reasons=reasons,
@@ -680,16 +703,37 @@ def _read_baseline_sample(
                 latency_ms=row[6],
                 last_successful_at_utc_us=row[7],
             )
-            if component in previous:
+            if component in components:
                 raise ValueError("duplicate_component")
-            previous[component] = (status, reasons)
+            components[component] = projected
     except (TypeError, ValueError):
         raise IngestionError(
             IngestionRejection.MALFORMED_STATE, trust_lost=True
         ) from None
-    if set(previous) != set(COMPONENT_ORDER):
+    if set(components) != set(COMPONENT_ORDER):
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    return overall_status, previous
+    try:
+        accepted_projection = HealthProjection(
+            schema_version=1,
+            observation_sequence=sample[0],
+            observed_at_utc_us=sample[1],
+            recorded_at_utc_us=sample[2],
+            overall_status=overall_status,
+            service_uptime_ms=sample[4],
+            sample_kind=accepted_sample_kind,
+            missed_intervals=sample[8],
+            components=tuple(components[name] for name in COMPONENT_ORDER),
+            digest=sample[7],
+        )
+        validate_health_projection(accepted_projection)
+    except (ProjectionError, TypeError, ValueError):
+        raise IngestionError(
+            IngestionRejection.MALFORMED_STATE, trust_lost=True
+        ) from None
+    return overall_status, {
+        component.component: (component.status, component.reasons)
+        for component in accepted_projection.components
+    }
 
 
 def _plan_automatic_alerts(

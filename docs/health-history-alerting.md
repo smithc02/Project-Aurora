@@ -470,19 +470,23 @@ substitution into the production sampling-gap evaluator.
 
 ### `accepted_observation_replay`
 
-The fixed replay ledger retains exactly the 64 most recent committed scheduler
-sequences with their observed UTC time, projection digest, and accepted
-projection kind. The newest ledger entry must exactly match the singleton
-checkpoint. A retained exact replay returns `replayed` without mutation; a
-retained sequence with conflicting digest or evidence fails as the fixed
-`sequence_conflict`; a sequence older than the committed sequence but outside
-the 64-entry horizon fails as fixed `stale_sequence`. All three paths mutate
-nothing. Insertion, oldest-sequence eviction, evaluator changes, and checkpoint
-advance share the one transaction, so failed persistence cannot advance either
-ledger or checkpoint. This bounded horizon is the schema-version-1 retention
-story: no unbounded replay history is accumulated, while strict monotonic
-ordering prevents every older observation, retained or evicted, from changing
-state.
+The fixed replay ledger retains exactly
+`min(accepted_observation_count, 64)` committed scheduler sequences with their
+observed UTC time, projection digest, and accepted projection kind: zero for an
+empty checkpoint, one through 63 before capacity, and exactly 64 thereafter.
+Scheduler gaps are valid, so retained sequences need not be contiguous. Schema
+verification and ingestion validate every retained identity and reject a
+missing, extra, or malformed row as trust loss. The newest ledger entry must
+exactly match the singleton checkpoint. A retained exact replay returns
+`replayed` without mutation; a retained sequence with conflicting digest or
+evidence fails as the fixed `sequence_conflict`; a sequence older than the
+committed sequence but outside the 64-entry horizon fails as fixed
+`stale_sequence`. All three paths mutate nothing. Insertion, oldest-sequence
+eviction, evaluator changes, and checkpoint advance share the one transaction,
+so failed persistence cannot advance either ledger or checkpoint. This bounded
+horizon is the schema-version-1 retention story: no unbounded replay history is
+accumulated, while strict monotonic ordering prevents every older observation,
+retained or evicted, from changing state.
 
 ### `health_samples`
 
@@ -507,6 +511,16 @@ is required. The row therefore records `accepted_sample_kind=heartbeat` and
 `sample_kind=transition`; together with the stored scheduler sequence and fixed
 sample/component fields, this fully explains the digest and the compaction
 decision without overloading either kind.
+
+Before using a non-null evaluator baseline, ingestion reads its four fixed
+component rows in canonical component order, reconstructs the accepted schema-1
+projection from all stored canonical fields and `accepted_sample_kind`, and
+revalidates its canonical digest and derived overall status. The separate
+stored compaction `sample_kind` remains a fixed validated value but is not part
+of that digest. A baseline sequence newer than the singleton committed sequence
+is trust loss. The baseline need not remain in the 64-entry replay horizon, and
+retention-cleared all-null evaluator references remain the explicit signal to
+store the next ordinary projection as a new transition baseline.
 
 ### `component_samples`
 
