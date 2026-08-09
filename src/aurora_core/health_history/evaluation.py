@@ -43,6 +43,15 @@ class HealthEvaluationState:
             raise ValueError("invalid_consecutive_count")
         if (self.candidate_status is None) != (self.consecutive_count == 0):
             raise ValueError("inconsistent_candidate_count")
+        if (
+            self.candidate_status is not None
+            and self.candidate_status is not self.current_status
+        ):
+            raise ValueError("inconsistent_candidate_status")
+        if self.current_status is None and (
+            self.candidate_status is not None or self.consecutive_count != 0
+        ):
+            raise ValueError("inconsistent_current_status")
 
 
 @dataclass(frozen=True, slots=True)

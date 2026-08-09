@@ -376,15 +376,20 @@ not the already inspected descriptor, so the accepted owned mode-`0700`
 directory boundary remains required and no internal `O_NOFOLLOW` claim is made.
 
 Before any deployment database exists, schema version 1 is refined with one
-singleton accepted-observation checkpoint and no singular current-alert
+singleton accepted-observation checkpoint, an independent monotonic scheduler
+sequence, a fixed 64-entry replay ledger, and no singular current-alert
 reference. The narrow store ingestion method revalidates one immutable
-projection, checks replay before mutation, and executes one fixed
+projection, rejects replay, stale ordering, and conflicts before mutation, and executes one fixed
 `BEGIN IMMEDIATE` transaction. It updates six evaluator scopes, optionally
 stores a transition, marker, or 15-minute heartbeat with four component rows,
 and applies bounded health, sampling-gap, and automatic alert transitions.
+Lifecycle evidence promotes ordinary heartbeat compaction to transition;
+retention-cleared evaluator references establish the next ordinary transition
+baseline. Exact active, terminal, and archival indexes bound alert lookup.
 Degraded and unavailable alerts remain distinct records for the same scope.
-Filesystem identity is checked before and after the transaction; failures are
-fixed sanitized results with no retry or queue.
+Filesystem identity is checked before and after the transaction; SQLite trust
+loss closes the store, while busy/locked remains a non-trust failure. Results
+are fixed and sanitized with no retry or queue.
 
 No current runtime entry point imports this package. There is no configuration,
 deployment database creation, scheduler, query, route, acknowledgment,

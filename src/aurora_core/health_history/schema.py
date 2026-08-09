@@ -6,17 +6,19 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from enum import StrEnum
-from typing import Final
+from typing import Final, cast
 
 from aurora_core.health_history.models import (
     APPLICATION_ID,
     MAX_BOUNDED_COUNTER,
     MAX_COMPONENT_LATENCY_MS,
+    MAX_OBSERVATION_SEQUENCE,
     MAX_SCHEMA_OBJECTS,
     MAX_SCHEMA_VERSION,
     MAX_SERVICE_UPTIME_MS,
     MAX_TIMESTAMP_US,
     PROJECTION_DIGEST_BYTES,
+    REPLAY_LEDGER_CAPACITY,
     SCHEMA_VERSION,
     AlertKind,
     AlertLifecycle,
@@ -67,6 +69,10 @@ TABLE_DDL: Final[dict[str, str]] = {
     "ingestion_checkpoint": f"""
         CREATE TABLE ingestion_checkpoint (
             singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            last_committed_sequence INTEGER
+                CHECK (last_committed_sequence IS NULL
+                    OR last_committed_sequence
+                        BETWEEN 0 AND {MAX_OBSERVATION_SEQUENCE}),
             last_accepted_observed_at_utc_us INTEGER
                 CHECK (last_accepted_observed_at_utc_us IS NULL
                     OR last_accepted_observed_at_utc_us
@@ -84,15 +90,36 @@ TABLE_DDL: Final[dict[str, str]] = {
                     BETWEEN 0 AND {MAX_BOUNDED_COUNTER}),
             CHECK ((last_accepted_observed_at_utc_us IS NULL
                     AND last_accepted_projection_digest IS NULL
-                    AND last_accepted_sample_kind IS NULL)
+                    AND last_accepted_sample_kind IS NULL
+                    AND accepted_observation_count = 0
+                    AND last_committed_sequence IS NULL)
                 OR (last_accepted_observed_at_utc_us IS NOT NULL
                     AND last_accepted_projection_digest IS NOT NULL
-                    AND last_accepted_sample_kind IS NOT NULL))
+                    AND last_accepted_sample_kind IS NOT NULL
+                    AND accepted_observation_count >= 1
+                    AND last_committed_sequence IS NOT NULL))
+        )
+    """,
+    "accepted_observation_replay": f"""
+        CREATE TABLE accepted_observation_replay (
+            observation_sequence INTEGER PRIMARY KEY
+                CHECK (observation_sequence
+                    BETWEEN 0 AND {MAX_OBSERVATION_SEQUENCE}),
+            observed_at_utc_us INTEGER NOT NULL
+                CHECK (observed_at_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US}),
+            projection_digest BLOB NOT NULL
+                CHECK (typeof(projection_digest) = 'blob'
+                    AND length(projection_digest) = {PROJECTION_DIGEST_BYTES}),
+            accepted_sample_kind TEXT NOT NULL
+                CHECK (accepted_sample_kind IN ({_SAMPLE_KIND}))
         )
     """,
     "health_samples": f"""
         CREATE TABLE health_samples (
             id INTEGER PRIMARY KEY,
+            observation_sequence INTEGER NOT NULL
+                CHECK (observation_sequence
+                    BETWEEN 0 AND {MAX_OBSERVATION_SEQUENCE}),
             observed_at_utc_us INTEGER NOT NULL
                 CHECK (observed_at_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US}),
             recorded_at_utc_us INTEGER NOT NULL
@@ -101,6 +128,8 @@ TABLE_DDL: Final[dict[str, str]] = {
             service_uptime_ms INTEGER NOT NULL
                 CHECK (service_uptime_ms BETWEEN 0 AND {MAX_SERVICE_UPTIME_MS}),
             sample_kind TEXT NOT NULL CHECK (sample_kind IN ({_SAMPLE_KIND})),
+            accepted_sample_kind TEXT NOT NULL
+                CHECK (accepted_sample_kind IN ({_SAMPLE_KIND})),
             projection_digest BLOB NOT NULL
                 CHECK (typeof(projection_digest) = 'blob'
                     AND length(projection_digest) = {PROJECTION_DIGEST_BYTES}),
@@ -192,14 +221,28 @@ TABLE_DDL: Final[dict[str, str]] = {
                 CHECK (candidate_status IS NULL OR candidate_status IN ({_STATUS})),
             consecutive_count INTEGER NOT NULL DEFAULT 0
                 CHECK (consecutive_count BETWEEN 0 AND {MAX_BOUNDED_COUNTER}),
-            last_sample_id INTEGER REFERENCES health_samples(id) ON DELETE SET NULL,
+            last_sample_id INTEGER
+                REFERENCES health_samples(id) ON DELETE SET NULL
+                CHECK (last_sample_id IS NULL OR last_sample_id > 0),
             last_heartbeat_at_utc_us INTEGER
                 CHECK (last_heartbeat_at_utc_us IS NULL
                     OR last_heartbeat_at_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US}),
             gap_phase TEXT NOT NULL DEFAULT 'clear' CHECK (gap_phase IN ({_GAP_PHASE})),
             cooldown_until_utc_us INTEGER
                 CHECK (cooldown_until_utc_us IS NULL
-                    OR cooldown_until_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US})
+                    OR cooldown_until_utc_us BETWEEN 0 AND {MAX_TIMESTAMP_US}),
+            CHECK ((scope = 'sampling'
+                    AND current_status IS NULL
+                    AND candidate_status IS NULL)
+                OR (scope != 'sampling'
+                    AND gap_phase = 'clear'
+                    AND ((candidate_status IS NULL AND consecutive_count = 0)
+                        OR (candidate_status IS NOT NULL
+                            AND consecutive_count >= 1
+                            AND candidate_status = current_status))
+                    AND (current_status IS NOT NULL
+                        OR (candidate_status IS NULL
+                            AND consecutive_count = 0))))
         )
     """,
     "alert_events": f"""
@@ -227,9 +270,9 @@ TABLE_DDL: Final[dict[str, str]] = {
 }
 
 INDEX_DDL: Final[dict[str, str]] = {
-    "uq_health_samples_replay": """
-        CREATE UNIQUE INDEX uq_health_samples_replay
-        ON health_samples(observed_at_utc_us, projection_digest)
+    "uq_health_samples_sequence": """
+        CREATE UNIQUE INDEX uq_health_samples_sequence
+        ON health_samples(observation_sequence)
     """,
     "idx_health_samples_observed": """
         CREATE INDEX idx_health_samples_observed
@@ -247,13 +290,14 @@ INDEX_DDL: Final[dict[str, str]] = {
         CREATE UNIQUE INDEX uq_alerts_active_scope_kind
         ON alerts(scope, kind) WHERE lifecycle IN ('open', 'acknowledged')
     """,
-    "idx_alerts_lifecycle_opened": """
-        CREATE INDEX idx_alerts_lifecycle_opened
-        ON alerts(lifecycle, opened_at_utc_us DESC, id DESC)
+    "idx_alerts_terminal_scope_kind_id": """
+        CREATE INDEX idx_alerts_terminal_scope_kind_id
+        ON alerts(scope, kind, id DESC)
+        WHERE lifecycle IN ('recovered', 'archived')
     """,
-    "idx_alerts_recovered": """
-        CREATE INDEX idx_alerts_recovered
-        ON alerts(recovered_at_utc_us, id) WHERE recovered_at_utc_us IS NOT NULL
+    "idx_alerts_recovered_cooldown_id": """
+        CREATE INDEX idx_alerts_recovered_cooldown_id
+        ON alerts(cooldown_until_utc_us, id) WHERE lifecycle = 'recovered'
     """,
     "idx_alert_events_alert_time": """
         CREATE INDEX idx_alert_events_alert_time
@@ -261,8 +305,30 @@ INDEX_DDL: Final[dict[str, str]] = {
     """,
 }
 
+TRIGGER_DDL: Final[dict[str, str]] = {
+    "trg_ingestion_checkpoint_no_regression": """
+        CREATE TRIGGER trg_ingestion_checkpoint_no_regression
+        BEFORE UPDATE ON ingestion_checkpoint
+        WHEN NEW.accepted_observation_count < OLD.accepted_observation_count
+            OR (OLD.last_committed_sequence IS NOT NULL
+                AND (NEW.last_committed_sequence IS NULL
+                    OR NEW.last_committed_sequence < OLD.last_committed_sequence))
+            OR (NEW.last_committed_sequence IS OLD.last_committed_sequence
+                AND (NEW.last_accepted_observed_at_utc_us
+                        IS NOT OLD.last_accepted_observed_at_utc_us
+                    OR NEW.last_accepted_projection_digest
+                        IS NOT OLD.last_accepted_projection_digest
+                    OR NEW.last_accepted_sample_kind
+                        IS NOT OLD.last_accepted_sample_kind))
+        BEGIN
+            SELECT RAISE(ABORT, 'checkpoint_regression');
+        END
+    """,
+}
+
 EXPECTED_TABLES: Final = frozenset(TABLE_DDL)
 EXPECTED_INDEXES: Final = frozenset(INDEX_DDL)
+EXPECTED_TRIGGERS: Final = frozenset(TRIGGER_DDL)
 
 
 def create_schema_v1(connection: sqlite3.Connection, *, applied_at_utc_us: int) -> None:
@@ -277,6 +343,8 @@ def create_schema_v1(connection: sqlite3.Connection, *, applied_at_utc_us: int) 
         for statement in TABLE_DDL.values():
             connection.execute(statement)
         for statement in INDEX_DDL.values():
+            connection.execute(statement)
+        for statement in TRIGGER_DDL.values():
             connection.execute(statement)
         connection.execute(
             "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (?, ?)",
@@ -322,6 +390,7 @@ def verify_schema_v1(
         expected = {
             **{("table", name): sql for name, sql in TABLE_DDL.items()},
             **{("index", name): sql for name, sql in INDEX_DDL.items()},
+            **{("trigger", name): sql for name, sql in TRIGGER_DDL.items()},
         }
         if set(actual) != set(expected):
             raise SchemaVerificationError("schema_objects_mismatch")
@@ -339,17 +408,28 @@ def verify_schema_v1(
         if type(ledger[0][1]) is not int or not 0 <= ledger[0][1] <= MAX_TIMESTAMP_US:
             raise SchemaVerificationError("migration_ledger_mismatch")
         checkpoint = connection.execute(
-            "SELECT singleton_id, last_accepted_observed_at_utc_us, "
+            "SELECT singleton_id, last_committed_sequence, "
+            "last_accepted_observed_at_utc_us, "
             "last_accepted_projection_digest, last_accepted_sample_kind, "
             "accepted_observation_count FROM ingestion_checkpoint LIMIT 2"
         ).fetchall()
         if len(checkpoint) != 1 or not _valid_checkpoint_row(checkpoint[0]):
             raise SchemaVerificationError("ingestion_checkpoint_mismatch")
-        scopes = connection.execute(
-            "SELECT scope FROM evaluation_state ORDER BY scope LIMIT ?",
+        replay_rows = connection.execute(
+            "SELECT observation_sequence, observed_at_utc_us, projection_digest, "
+            "accepted_sample_kind FROM accepted_observation_replay "
+            "ORDER BY observation_sequence LIMIT ?",
+            (REPLAY_LEDGER_CAPACITY + 1,),
+        ).fetchall()
+        if not _valid_replay_rows(checkpoint[0], replay_rows):
+            raise SchemaVerificationError("ingestion_checkpoint_mismatch")
+        evaluation_rows = connection.execute(
+            "SELECT scope, current_status, candidate_status, consecutive_count, "
+            "last_sample_id, last_heartbeat_at_utc_us, gap_phase, "
+            "cooldown_until_utc_us FROM evaluation_state ORDER BY scope LIMIT ?",
             (len(AlertScope) + 1,),
         ).fetchall()
-        if {row[0] for row in scopes} != {scope.value for scope in AlertScope}:
+        if not _valid_evaluation_rows(evaluation_rows):
             raise SchemaVerificationError("evaluation_state_mismatch")
         _bounded_quick_check(connection, monotonic=monotonic)
     except SchemaVerificationError:
@@ -390,19 +470,100 @@ def _normalize_sql(statement: str) -> str:
 
 
 def _valid_checkpoint_row(row: sqlite3.Row | tuple[object, ...]) -> bool:
-    singleton_id, observed_at, digest, sample_kind, count = row
+    singleton_id, sequence, observed_at, digest, sample_kind, count = row
     if (
         singleton_id != 1
         or type(count) is not int
         or not 0 <= count <= MAX_BOUNDED_COUNTER
     ):
         return False
-    empty = observed_at is None and digest is None and sample_kind is None
+    empty = (
+        sequence is None
+        and observed_at is None
+        and digest is None
+        and sample_kind is None
+        and count == 0
+    )
     populated = (
-        type(observed_at) is int
+        type(sequence) is int
+        and 0 <= sequence <= MAX_OBSERVATION_SEQUENCE
+        and type(observed_at) is int
         and 0 <= observed_at <= MAX_TIMESTAMP_US
         and type(digest) is bytes
         and len(digest) == PROJECTION_DIGEST_BYTES
         and sample_kind in {kind.value for kind in SampleKind}
+        and count >= 1
     )
     return empty or populated
+
+
+def _valid_replay_rows(
+    checkpoint: sqlite3.Row | tuple[object, ...],
+    rows: list[sqlite3.Row] | list[tuple[object, ...]],
+) -> bool:
+    if len(rows) > REPLAY_LEDGER_CAPACITY:
+        return False
+    _singleton_id, sequence, observed_at, digest, sample_kind, count = checkpoint
+    if sequence is None:
+        return not rows and count == 0
+    if type(count) is not int or not rows or len(rows) > count:
+        return False
+    for row in rows:
+        row_sequence, row_observed, row_digest, row_kind = row
+        if (
+            type(row_sequence) is not int
+            or not 0 <= row_sequence <= MAX_OBSERVATION_SEQUENCE
+            or type(row_observed) is not int
+            or not 0 <= row_observed <= MAX_TIMESTAMP_US
+            or type(row_digest) is not bytes
+            or len(row_digest) != PROJECTION_DIGEST_BYTES
+            or row_kind not in {kind.value for kind in SampleKind}
+        ):
+            return False
+    latest = rows[-1]
+    return latest == (sequence, observed_at, digest, sample_kind)
+
+
+def _valid_evaluation_rows(
+    rows: list[sqlite3.Row] | list[tuple[object, ...]],
+) -> bool:
+    if len(rows) != len(AlertScope):
+        return False
+    seen: set[AlertScope] = set()
+    for row in rows:
+        try:
+            scope = AlertScope(cast(str, row[0]))
+            current = None if row[1] is None else HealthHistoryStatus(cast(str, row[1]))
+            candidate = (
+                None if row[2] is None else HealthHistoryStatus(cast(str, row[2]))
+            )
+            gap_phase = SamplingGapPhase(cast(str, row[6]))
+        except (TypeError, ValueError):
+            return False
+        count, sample_id, heartbeat_at, cooldown_until = row[3], row[4], row[5], row[7]
+        if (
+            scope in seen
+            or type(count) is not int
+            or not 0 <= count <= MAX_BOUNDED_COUNTER
+            or (sample_id is not None and (type(sample_id) is not int or sample_id < 1))
+        ):
+            return False
+        for timestamp in (heartbeat_at, cooldown_until):
+            if timestamp is not None and (
+                type(timestamp) is not int or not 0 <= timestamp <= MAX_TIMESTAMP_US
+            ):
+                return False
+        if scope is AlertScope.SAMPLING:
+            if current is not None or candidate is not None:
+                return False
+        else:
+            if gap_phase is not SamplingGapPhase.CLEAR:
+                return False
+            try:
+                from aurora_core.health_history.evaluation import HealthEvaluationState
+
+                HealthEvaluationState(current, candidate, count)
+            except ValueError:
+                return False
+        seen.add(scope)
+    return seen == set(AlertScope)

@@ -18,8 +18,9 @@
 > does not assert that production profiles were created or activated. Milestone
 > 18 implementation is in progress: its isolated production package now
 > includes the strict projection and SQLite foundation plus atomic projection
-> ingestion, compacted history state, replay protection, and deterministic
-> automatic alert translation. No runtime entry point imports it, no deployment
+> ingestion, compacted history state, monotonic sequence and bounded replay
+> protection, and deterministic automatic alert translation. No runtime entry
+> point imports it, no deployment
 > database is created, and no scheduled history, route, query, acknowledgment,
 > worker, notification, or automation behavior is enabled. Broader device control,
 > browser configuration, room mapping, and spatial intelligence remain deferred.

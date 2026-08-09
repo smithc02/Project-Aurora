@@ -25,7 +25,11 @@ from aurora_core.health_history.lifecycle import (
 from aurora_core.health_history.models import (
     COMPONENT_ORDER,
     MAX_BOUNDED_COUNTER,
+    MAX_OBSERVATION_SEQUENCE,
+    MAX_SERVICE_UPTIME_MS,
     MAX_TIMESTAMP_US,
+    PROJECTION_DIGEST_BYTES,
+    REPLAY_LEDGER_CAPACITY,
     AlertKind,
     AlertLifecycle,
     AlertScope,
@@ -53,6 +57,36 @@ from aurora_core.health_history.sampling_gap import (
 HEARTBEAT_INTERVAL_US: Final = 15 * 60 * 1_000_000
 MAX_RELEVANT_ALERTS: Final = 11
 
+_ALERT_COLUMNS: Final = (
+    "id, scope, kind, lifecycle, episode_count, occurrence_count, "
+    "cooldown_until_utc_us, recovered_at_utc_us"
+)
+ACTIVE_HEALTH_ALERTS_SQL: Final = (
+    f"SELECT {_ALERT_COLUMNS} FROM alerts "
+    "WHERE scope = ? AND kind IN ('degraded', 'unavailable') "
+    "AND lifecycle IN ('open', 'acknowledged') ORDER BY kind, id LIMIT 3"
+)
+ACTIVE_PAIR_ALERT_SQL: Final = (
+    f"SELECT {_ALERT_COLUMNS} FROM alerts "
+    "WHERE scope = ? AND kind = ? "
+    "AND lifecycle IN ('open', 'acknowledged') ORDER BY id LIMIT 2"
+)
+CURRENT_ACTIVE_ALERT_SQL: Final = (
+    f"SELECT {_ALERT_COLUMNS} FROM alerts "
+    "WHERE scope = ? AND kind = ? "
+    "AND lifecycle IN ('open', 'acknowledged') ORDER BY id DESC LIMIT 2"
+)
+LATEST_TERMINAL_ALERT_SQL: Final = (
+    f"SELECT {_ALERT_COLUMNS} FROM alerts "
+    "WHERE scope = ? AND kind = ? AND lifecycle IN ('recovered', 'archived') "
+    "ORDER BY id DESC LIMIT 1"
+)
+ELIGIBLE_RECOVERED_ALERTS_SQL: Final = (
+    f"SELECT {_ALERT_COLUMNS} FROM alerts "
+    "WHERE lifecycle = 'recovered' AND cooldown_until_utc_us <= ? "
+    "ORDER BY cooldown_until_utc_us, id LIMIT ?"
+)
+
 
 class IngestionOutcome(StrEnum):
     REPLAYED = "replayed"
@@ -65,6 +99,9 @@ class IngestionOutcome(StrEnum):
 
 class IngestionRejection(StrEnum):
     INVALID_PROJECTION = "invalid_projection"
+    STALE_SEQUENCE = "stale_sequence"
+    SEQUENCE_CONFLICT = "sequence_conflict"
+    GENERATION_EXHAUSTED = "generation_exhausted"
     STORAGE_BUSY = "storage_busy"
     PERSISTENCE_FAILED = "persistence_failed"
     MALFORMED_STATE = "malformed_state"
@@ -101,10 +138,19 @@ class IngestionResult:
 
 @dataclass(frozen=True, slots=True)
 class _Checkpoint:
+    sequence: int | None
     observed_at: int | None
     digest: bytes | None
     sample_kind: SampleKind | None
     accepted_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayEntry:
+    sequence: int
+    observed_at: int
+    digest: bytes
+    sample_kind: SampleKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +181,7 @@ class _AlertPlan:
 class _StorageDecision:
     outcome: IngestionOutcome
     stored_kind: SampleKind | None
+    updates_evaluator_baseline: bool = True
 
 
 def ingest_projection(
@@ -151,8 +198,9 @@ def ingest_projection(
         connection.execute("BEGIN IMMEDIATE")
         transaction_started = True
         checkpoint = _read_checkpoint(connection)
-        if _is_replay(connection, checkpoint, projection):
-            connection.rollback()
+        _validate_replay_anchor(connection, checkpoint)
+        if _is_replay_or_reject_stale(connection, checkpoint, projection):
+            _rollback_after_failure(connection)
             transaction_started = False
             return IngestionResult(IngestionOutcome.REPLAYED)
 
@@ -165,7 +213,7 @@ def ingest_projection(
         )
         gap_transition = _evaluate_gap(evaluation_rows, checkpoint, projection)
         decision = _storage_decision(
-            connection, evaluation_rows[AlertScope.OVERALL], checkpoint, projection
+            connection, evaluation_rows, checkpoint, projection
         )
 
         alert_plans = _plan_automatic_alerts(
@@ -196,7 +244,7 @@ def ingest_projection(
             evaluation_rows,
             health_transitions,
             gap_transition,
-            sample_id=sample_id,
+            sample_id=(sample_id if decision.updates_evaluator_baseline else None),
             heartbeat_at=(
                 projection.recorded_at_utc_us if sample_id is not None else None
             ),
@@ -211,7 +259,7 @@ def ingest_projection(
             )
         _fault(IngestionStage.ALERTS)
 
-        _write_checkpoint(connection, checkpoint, projection)
+        _write_checkpoint_and_replay_ledger(connection, checkpoint, projection)
         _fault(IngestionStage.CHECKPOINT)
         _fault(IngestionStage.BEFORE_COMMIT)
         connection.commit()
@@ -219,21 +267,15 @@ def ingest_projection(
         return IngestionResult(decision.outcome)
     except IngestionError:
         if transaction_started:
-            connection.rollback()
+            _rollback_after_failure(connection)
         raise
     except sqlite3.Error as error:
         if transaction_started:
-            connection.rollback()
-        reason = (
-            IngestionRejection.STORAGE_BUSY
-            if getattr(error, "sqlite_errorcode", None)
-            in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
-            else IngestionRejection.PERSISTENCE_FAILED
-        )
-        raise IngestionError(reason) from None
+            _rollback_after_failure(connection)
+        raise _classified_sqlite_error(error) from None
     except (TypeError, ValueError):
         if transaction_started:
-            connection.rollback()
+            _rollback_after_failure(connection)
         raise IngestionError(
             IngestionRejection.MALFORMED_STATE, trust_lost=True
         ) from None
@@ -241,23 +283,33 @@ def ingest_projection(
 
 def _read_checkpoint(connection: sqlite3.Connection) -> _Checkpoint:
     rows = connection.execute(
-        "SELECT singleton_id, last_accepted_observed_at_utc_us, "
+        "SELECT singleton_id, last_committed_sequence, "
+        "last_accepted_observed_at_utc_us, "
         "last_accepted_projection_digest, last_accepted_sample_kind, "
         "accepted_observation_count FROM ingestion_checkpoint LIMIT 2"
     ).fetchall()
     if len(rows) != 1 or rows[0][0] != 1:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    observed, digest, raw_kind, count = rows[0][1:]
+    sequence, observed, digest, raw_kind, count = rows[0][1:]
     if type(count) is not int or not 0 <= count <= MAX_BOUNDED_COUNTER:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    empty = observed is None and digest is None and raw_kind is None
+    empty = (
+        sequence is None
+        and observed is None
+        and digest is None
+        and raw_kind is None
+        and count == 0
+    )
     if empty:
-        return _Checkpoint(None, None, None, count)
+        return _Checkpoint(None, None, None, None, 0)
     if (
-        type(observed) is not int
+        type(sequence) is not int
+        or not 0 <= sequence <= MAX_OBSERVATION_SEQUENCE
+        or type(observed) is not int
         or not 0 <= observed <= MAX_TIMESTAMP_US
         or type(digest) is not bytes
-        or len(digest) != 32
+        or len(digest) != PROJECTION_DIGEST_BYTES
+        or count < 1
     ):
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
     try:
@@ -266,26 +318,79 @@ def _read_checkpoint(connection: sqlite3.Connection) -> _Checkpoint:
         raise IngestionError(
             IngestionRejection.MALFORMED_STATE, trust_lost=True
         ) from None
-    return _Checkpoint(observed, digest, sample_kind, count)
+    return _Checkpoint(sequence, observed, digest, sample_kind, count)
 
 
-def _is_replay(
+def _validate_replay_anchor(
+    connection: sqlite3.Connection, checkpoint: _Checkpoint
+) -> None:
+    rows = connection.execute(
+        "SELECT observation_sequence, observed_at_utc_us, projection_digest, "
+        "accepted_sample_kind FROM accepted_observation_replay "
+        "ORDER BY observation_sequence DESC LIMIT ?",
+        (REPLAY_LEDGER_CAPACITY + 1,),
+    ).fetchall()
+    if checkpoint.sequence is None:
+        if rows:
+            raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+        return
+    if not rows or len(rows) > REPLAY_LEDGER_CAPACITY:
+        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+    latest = _replay_entry(rows[0])
+    if (
+        latest.sequence != checkpoint.sequence
+        or latest.observed_at != checkpoint.observed_at
+        or latest.digest != checkpoint.digest
+        or latest.sample_kind is not checkpoint.sample_kind
+    ):
+        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+
+
+def _is_replay_or_reject_stale(
     connection: sqlite3.Connection,
     checkpoint: _Checkpoint,
     projection: HealthProjection,
 ) -> bool:
-    if checkpoint.observed_at is not None:
-        if (
-            projection.observed_at_utc_us == checkpoint.observed_at
-            and projection.digest == checkpoint.digest
-        ):
-            return True
-    stored = connection.execute(
-        "SELECT id FROM health_samples "
-        "WHERE observed_at_utc_us = ? AND projection_digest = ? LIMIT 1",
-        (projection.observed_at_utc_us, projection.digest),
+    if (
+        checkpoint.sequence is None
+        or projection.observation_sequence > checkpoint.sequence
+    ):
+        return False
+    row = connection.execute(
+        "SELECT observation_sequence, observed_at_utc_us, projection_digest, "
+        "accepted_sample_kind FROM accepted_observation_replay "
+        "WHERE observation_sequence = ? LIMIT 1",
+        (projection.observation_sequence,),
     ).fetchone()
-    return stored is not None
+    if row is None:
+        raise IngestionError(IngestionRejection.STALE_SEQUENCE)
+    accepted = _replay_entry(row)
+    if (
+        projection.observed_at_utc_us == accepted.observed_at
+        and projection.digest == accepted.digest
+        and projection.sample_kind is accepted.sample_kind
+    ):
+        return True
+    raise IngestionError(IngestionRejection.SEQUENCE_CONFLICT)
+
+
+def _replay_entry(row: tuple[object, ...]) -> _ReplayEntry:
+    try:
+        if (
+            type(row[0]) is not int
+            or not 0 <= row[0] <= MAX_OBSERVATION_SEQUENCE
+            or type(row[1]) is not int
+            or not 0 <= row[1] <= MAX_TIMESTAMP_US
+            or type(row[2]) is not bytes
+            or len(row[2]) != PROJECTION_DIGEST_BYTES
+            or type(row[3]) is not str
+        ):
+            raise ValueError("invalid_replay_entry")
+        return _ReplayEntry(row[0], row[1], row[2], SampleKind(row[3]))
+    except (TypeError, ValueError):
+        raise IngestionError(
+            IngestionRejection.MALFORMED_STATE, trust_lost=True
+        ) from None
 
 
 def _read_evaluation_rows(
@@ -314,7 +419,9 @@ def _read_evaluation_rows(
                 raise IngestionError(
                     IngestionRejection.MALFORMED_STATE, trust_lost=True
                 )
-        for value in (row[4], row[5], row[7]):
+        if row[4] is not None and (type(row[4]) is not int or row[4] < 1):
+            raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+        for value in (row[5], row[7]):
             if value is not None and (
                 type(value) is not int or not 0 <= value <= MAX_TIMESTAMP_US
             ):
@@ -419,13 +526,12 @@ def _evaluate_gap(
             phase=row.gap_phase,
             committed_observations=checkpoint.accepted_count,
             largest_missed_interval_report=row.consecutive_count,
+            last_committed_sequence=checkpoint.sequence,
         ),
         SamplingGapObservation(
-            sequence=projection.observed_at_utc_us,
+            sequence=projection.observation_sequence,
             missed_intervals=projection.missed_intervals,
-            health_collection_succeeded=(
-                projection.overall_status is HealthHistoryStatus.HEALTHY
-            ),
+            health_collection_succeeded=True,
             startup_gap_marker=projection.sample_kind is SampleKind.STARTUP_GAP,
             clock_discontinuity_marker=(
                 projection.sample_kind is SampleKind.CLOCK_DISCONTINUITY
@@ -436,29 +542,38 @@ def _evaluate_gap(
 
 def _storage_decision(
     connection: sqlite3.Connection,
-    overall_row: _EvaluationRow,
+    evaluation_rows: dict[AlertScope, _EvaluationRow],
     checkpoint: _Checkpoint,
     projection: HealthProjection,
 ) -> _StorageDecision:
+    baseline_sample_id = _baseline_sample_reference(connection, evaluation_rows)
+    if checkpoint.sequence is None and baseline_sample_id is not None:
+        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
     if projection.sample_kind is SampleKind.STARTUP_GAP:
         return _StorageDecision(
-            IngestionOutcome.STARTUP_MARKER_STORED, SampleKind.STARTUP_GAP
+            IngestionOutcome.STARTUP_MARKER_STORED,
+            SampleKind.STARTUP_GAP,
+            updates_evaluator_baseline=not (
+                checkpoint.sequence is not None and baseline_sample_id is None
+            ),
         )
     if projection.sample_kind is SampleKind.CLOCK_DISCONTINUITY:
         return _StorageDecision(
-            IngestionOutcome.CLOCK_MARKER_STORED, SampleKind.CLOCK_DISCONTINUITY
+            IngestionOutcome.CLOCK_MARKER_STORED,
+            SampleKind.CLOCK_DISCONTINUITY,
+            updates_evaluator_baseline=not (
+                checkpoint.sequence is not None and baseline_sample_id is None
+            ),
         )
-    if checkpoint.observed_at is None:
+    if checkpoint.sequence is None or baseline_sample_id is None:
         return _StorageDecision(
             IngestionOutcome.TRANSITION_STORED, SampleKind.TRANSITION
         )
-    if overall_row.last_sample_id is None:
-        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    if _projection_changed(connection, overall_row.last_sample_id, projection):
+    if _projection_changed(connection, baseline_sample_id, projection):
         return _StorageDecision(
             IngestionOutcome.TRANSITION_STORED, SampleKind.TRANSITION
         )
-    last_heartbeat = overall_row.last_heartbeat_at
+    last_heartbeat = evaluation_rows[AlertScope.OVERALL].last_heartbeat_at
     if last_heartbeat is None:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
     if (
@@ -469,36 +584,112 @@ def _storage_decision(
     return _StorageDecision(IngestionOutcome.STATE_ONLY, None)
 
 
+def _baseline_sample_reference(
+    connection: sqlite3.Connection,
+    rows: dict[AlertScope, _EvaluationRow],
+) -> int | None:
+    references = {row.last_sample_id for row in rows.values()}
+    if references == {None}:
+        return None
+    if None in references or len(references) != 1:
+        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+    sample_id = next(iter(references))
+    if sample_id is None:
+        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+    _read_baseline_sample(connection, sample_id)
+    return sample_id
+
+
 def _projection_changed(
     connection: sqlite3.Connection,
     sample_id: int,
     projection: HealthProjection,
 ) -> bool:
-    sample = connection.execute(
-        "SELECT overall_status FROM health_samples WHERE id = ? LIMIT 1", (sample_id,)
-    ).fetchone()
-    if sample is None:
-        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    if sample[0] != projection.overall_status.value:
+    previous_status, previous = _read_baseline_sample(connection, sample_id)
+    if previous_status is not projection.overall_status:
         return True
+
+    return any(
+        previous[component.component] != (component.status, component.reasons)
+        for component in projection.components
+    )
+
+
+def _read_baseline_sample(
+    connection: sqlite3.Connection,
+    sample_id: int,
+) -> tuple[
+    HealthHistoryStatus,
+    dict[ComponentName, tuple[HealthHistoryStatus, tuple[NormalizedReason, ...]]],
+]:
+    sample = connection.execute(
+        "SELECT observation_sequence, observed_at_utc_us, recorded_at_utc_us, "
+        "overall_status, service_uptime_ms, sample_kind, accepted_sample_kind, "
+        "projection_digest, missed_intervals FROM health_samples "
+        "WHERE id = ? LIMIT 1",
+        (sample_id,),
+    ).fetchone()
+    try:
+        if sample is None:
+            raise ValueError("missing_sample")
+        if (
+            type(sample[0]) is not int
+            or not 0 <= sample[0] <= MAX_OBSERVATION_SEQUENCE
+            or type(sample[1]) is not int
+            or not 0 <= sample[1] <= MAX_TIMESTAMP_US
+            or type(sample[2]) is not int
+            or not 0 <= sample[2] <= MAX_TIMESTAMP_US
+            or type(sample[4]) is not int
+            or not 0 <= sample[4] <= MAX_SERVICE_UPTIME_MS
+            or type(sample[7]) is not bytes
+            or len(sample[7]) != PROJECTION_DIGEST_BYTES
+            or type(sample[8]) is not int
+            or not 0 <= sample[8] <= MAX_BOUNDED_COUNTER
+        ):
+            raise ValueError("invalid_sample")
+        overall_status = HealthHistoryStatus(sample[3])
+        SampleKind(sample[5])
+        SampleKind(sample[6])
+    except (TypeError, ValueError):
+        raise IngestionError(
+            IngestionRejection.MALFORMED_STATE, trust_lost=True
+        ) from None
     rows = connection.execute(
-        "SELECT component, status, reason_code_1, reason_code_2, reason_code_3 "
+        "SELECT component, status, reason_code_1, reason_code_2, reason_code_3, "
+        "checked_at_utc_us, latency_ms, last_successful_at_utc_us "
         "FROM component_samples WHERE sample_id = ? LIMIT 5",
         (sample_id,),
     ).fetchall()
     if len(rows) != len(COMPONENT_ORDER):
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    previous = {
-        row[0]: (row[1], tuple(value for value in row[2:] if value is not None))
-        for row in rows
-    }
-    if set(previous) != {component.value for component in COMPONENT_ORDER}:
+    previous: dict[
+        ComponentName, tuple[HealthHistoryStatus, tuple[NormalizedReason, ...]]
+    ] = {}
+    try:
+        for row in rows:
+            component = ComponentName(row[0])
+            status = HealthHistoryStatus(row[1])
+            reasons = tuple(
+                NormalizedReason(value) for value in row[2:5] if value is not None
+            )
+            ComponentProjection(
+                component=component,
+                status=status,
+                reasons=reasons,
+                checked_at_utc_us=row[5],
+                latency_ms=row[6],
+                last_successful_at_utc_us=row[7],
+            )
+            if component in previous:
+                raise ValueError("duplicate_component")
+            previous[component] = (status, reasons)
+    except (TypeError, ValueError):
+        raise IngestionError(
+            IngestionRejection.MALFORMED_STATE, trust_lost=True
+        ) from None
+    if set(previous) != set(COMPONENT_ORDER):
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
-    return any(
-        previous[component.component.value]
-        != (component.status.value, tuple(reason.value for reason in component.reasons))
-        for component in projection.components
-    )
+    return overall_status, previous
 
 
 def _plan_automatic_alerts(
@@ -586,6 +777,8 @@ def _plan_health_condition(
             escalation_kind=AlertKind.UNAVAILABLE,
         ),
     )
+    if transition.outcome is AutomaticAlertOutcome.REJECTED:
+        raise IngestionError(IngestionRejection.GENERATION_EXHAUSTED)
     if transition.event is not LifecycleEvent.OPENED:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
     return _AlertPlan(degraded.alert_id, transition)
@@ -595,10 +788,7 @@ def _active_health_alerts(
     connection: sqlite3.Connection, scope: AlertScope
 ) -> list[_StoredAlert]:
     rows = connection.execute(
-        "SELECT id, scope, kind, lifecycle, episode_count, occurrence_count, "
-        "cooldown_until_utc_us, recovered_at_utc_us FROM alerts "
-        "WHERE scope = ? AND kind IN ('degraded', 'unavailable') "
-        "AND lifecycle IN ('open', 'acknowledged') ORDER BY kind, id LIMIT 3",
+        ACTIVE_HEALTH_ALERTS_SQL,
         (scope.value,),
     ).fetchall()
     if len(rows) > 2:
@@ -622,6 +812,8 @@ def _plan_open_alert(
             now_utc_us=now_utc_us,
         ),
     )
+    if transition.outcome is AutomaticAlertOutcome.REJECTED:
+        raise IngestionError(IngestionRejection.GENERATION_EXHAUSTED)
     if transition.outcome not in {
         AutomaticAlertOutcome.APPLIED,
         AutomaticAlertOutcome.IDEMPOTENT,
@@ -646,10 +838,7 @@ def _plan_pair_recovery(
     now_utc_us: int,
 ) -> list[_AlertPlan]:
     rows = connection.execute(
-        "SELECT id, scope, kind, lifecycle, episode_count, occurrence_count, "
-        "cooldown_until_utc_us, recovered_at_utc_us FROM alerts "
-        "WHERE scope = ? AND kind = ? "
-        "AND lifecycle IN ('open', 'acknowledged') ORDER BY id LIMIT 2",
+        ACTIVE_PAIR_ALERT_SQL,
         (scope.value, kind.value),
     ).fetchall()
     if len(rows) > 1:
@@ -676,10 +865,7 @@ def _current_or_latest_alert(
     connection: sqlite3.Connection, scope: AlertScope, kind: AlertKind
 ) -> _StoredAlert | None:
     active = connection.execute(
-        "SELECT id, scope, kind, lifecycle, episode_count, occurrence_count, "
-        "cooldown_until_utc_us, recovered_at_utc_us FROM alerts "
-        "WHERE scope = ? AND kind = ? "
-        "AND lifecycle IN ('open', 'acknowledged') ORDER BY id DESC LIMIT 2",
+        CURRENT_ACTIVE_ALERT_SQL,
         (scope.value, kind.value),
     ).fetchall()
     if len(active) > 1:
@@ -687,10 +873,7 @@ def _current_or_latest_alert(
     if active:
         return _stored_alert(active[0])
     terminal = connection.execute(
-        "SELECT id, scope, kind, lifecycle, episode_count, occurrence_count, "
-        "cooldown_until_utc_us, recovered_at_utc_us FROM alerts "
-        "WHERE scope = ? AND kind = ? AND lifecycle IN ('recovered', 'archived') "
-        "ORDER BY id DESC LIMIT 1",
+        LATEST_TERMINAL_ALERT_SQL,
         (scope.value, kind.value),
     ).fetchone()
     return None if terminal is None else _stored_alert(terminal)
@@ -732,10 +915,7 @@ def _stored_alert(row: tuple[object, ...]) -> _StoredAlert:
 
 def _archive_eligible_alerts(connection: sqlite3.Connection, now_utc_us: int) -> None:
     rows = connection.execute(
-        "SELECT id, scope, kind, lifecycle, episode_count, occurrence_count, "
-        "cooldown_until_utc_us, recovered_at_utc_us FROM alerts "
-        "WHERE lifecycle = 'recovered' AND cooldown_until_utc_us <= ? "
-        "ORDER BY cooldown_until_utc_us, id LIMIT ?",
+        ELIGIBLE_RECOVERED_ALERTS_SQL,
         (now_utc_us, MAX_RELEVANT_ALERTS + 1),
     ).fetchall()
     if len(rows) > MAX_RELEVANT_ALERTS:
@@ -772,7 +952,11 @@ def _requires_supporting_sample(plans: list[_AlertPlan]) -> bool:
 
 
 def _force_transition_storage(decision: _StorageDecision) -> _StorageDecision:
-    if decision.stored_kind is not None:
+    if decision.stored_kind in {
+        SampleKind.TRANSITION,
+        SampleKind.STARTUP_GAP,
+        SampleKind.CLOCK_DISCONTINUITY,
+    }:
         return decision
     return _StorageDecision(IngestionOutcome.TRANSITION_STORED, SampleKind.TRANSITION)
 
@@ -784,15 +968,18 @@ def _insert_health_sample(
 ) -> int:
     cursor = connection.execute(
         "INSERT INTO health_samples("
-        "observed_at_utc_us, recorded_at_utc_us, overall_status, "
-        "service_uptime_ms, sample_kind, projection_digest, missed_intervals"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "observation_sequence, observed_at_utc_us, recorded_at_utc_us, "
+        "overall_status, service_uptime_ms, sample_kind, accepted_sample_kind, "
+        "projection_digest, missed_intervals"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            projection.observation_sequence,
             projection.observed_at_utc_us,
             projection.recorded_at_utc_us,
             projection.overall_status.value,
             projection.service_uptime_ms,
             stored_kind.value,
+            projection.sample_kind.value,
             projection.digest,
             projection.missed_intervals,
         ),
@@ -999,24 +1186,80 @@ def _insert_alert_event(
         raise IngestionError(IngestionRejection.PERSISTENCE_FAILED)
 
 
-def _write_checkpoint(
+def _write_checkpoint_and_replay_ledger(
     connection: sqlite3.Connection,
     previous: _Checkpoint,
     projection: HealthProjection,
 ) -> None:
-    cursor = connection.execute(
-        "UPDATE ingestion_checkpoint SET last_accepted_observed_at_utc_us = ?, "
-        "last_accepted_projection_digest = ?, last_accepted_sample_kind = ?, "
-        "accepted_observation_count = ? WHERE singleton_id = 1",
+    if (
+        previous.sequence is not None
+        and projection.observation_sequence <= previous.sequence
+    ):
+        raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+    connection.execute(
+        "INSERT INTO accepted_observation_replay("
+        "observation_sequence, observed_at_utc_us, projection_digest, "
+        "accepted_sample_kind) VALUES (?, ?, ?, ?)",
         (
+            projection.observation_sequence,
             projection.observed_at_utc_us,
             projection.digest,
             projection.sample_kind.value,
-            min(previous.accepted_count + 1, MAX_BOUNDED_COUNTER),
+        ),
+    )
+    connection.execute(
+        "DELETE FROM accepted_observation_replay "
+        "WHERE observation_sequence < ("
+        "SELECT observation_sequence FROM accepted_observation_replay "
+        "ORDER BY observation_sequence DESC LIMIT 1 OFFSET ?)",
+        (REPLAY_LEDGER_CAPACITY - 1,),
+    )
+    accepted_count = min(previous.accepted_count + 1, MAX_BOUNDED_COUNTER)
+    cursor = connection.execute(
+        "UPDATE ingestion_checkpoint SET last_committed_sequence = ?, "
+        "last_accepted_observed_at_utc_us = ?, "
+        "last_accepted_projection_digest = ?, last_accepted_sample_kind = ?, "
+        "accepted_observation_count = ? WHERE singleton_id = 1 "
+        "AND last_committed_sequence IS ? "
+        "AND accepted_observation_count = ?",
+        (
+            projection.observation_sequence,
+            projection.observed_at_utc_us,
+            projection.digest,
+            projection.sample_kind.value,
+            accepted_count,
+            previous.sequence,
+            previous.accepted_count,
         ),
     )
     if cursor.rowcount != 1:
         raise IngestionError(IngestionRejection.MALFORMED_STATE, trust_lost=True)
+
+
+def _classified_sqlite_error(error: sqlite3.Error) -> IngestionError:
+    raw_code = getattr(error, "sqlite_errorcode", None)
+    primary_code = raw_code & 0xFF if type(raw_code) is int else None
+    if primary_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+        return IngestionError(IngestionRejection.STORAGE_BUSY)
+    if isinstance(error, sqlite3.IntegrityError) or primary_code in {
+        sqlite3.SQLITE_CORRUPT,
+        sqlite3.SQLITE_NOTADB,
+        sqlite3.SQLITE_SCHEMA,
+        sqlite3.SQLITE_CONSTRAINT,
+    }:
+        return IngestionError(IngestionRejection.TRUST_FAILED, trust_lost=True)
+    return IngestionError(IngestionRejection.PERSISTENCE_FAILED)
+
+
+def _rollback_after_failure(connection: sqlite3.Connection) -> None:
+    try:
+        _rollback_transaction(connection)
+    except sqlite3.Error:
+        raise IngestionError(IngestionRejection.TRUST_FAILED, trust_lost=True) from None
+
+
+def _rollback_transaction(connection: sqlite3.Connection) -> None:
+    connection.rollback()
 
 
 def _fault(stage: IngestionStage) -> None:

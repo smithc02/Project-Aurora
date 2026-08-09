@@ -165,8 +165,14 @@ def _open_or_update(
         and request.now_utc_us < state.cooldown_until_utc_us
     ):
         return _occurrence_transition(state, request.now_utc_us)
-    generation = min(state.generation + 1, MAX_BOUNDED_COUNTER)
-    created = _new_alert(request.scope, request.kind, request.now_utc_us, generation)
+    if state.generation == MAX_BOUNDED_COUNTER:
+        return _rejected(state)
+    created = _new_alert(
+        request.scope,
+        request.kind,
+        request.now_utc_us,
+        state.generation + 1,
+    )
     return AutomaticAlertTransition(
         state,
         state,
@@ -223,13 +229,14 @@ def _escalate(
         state.lifecycle not in {AlertLifecycle.OPEN, AlertLifecycle.ACKNOWLEDGED}
         or state.kind is not AlertKind.DEGRADED
         or request.escalation_kind is not AlertKind.UNAVAILABLE
+        or state.generation == MAX_BOUNDED_COUNTER
     ):
         return _rejected(state)
     created = _new_alert(
         state.scope,
         AlertKind.UNAVAILABLE,
         request.now_utc_us,
-        min(state.generation + 1, MAX_BOUNDED_COUNTER),
+        state.generation + 1,
     )
     return AutomaticAlertTransition(
         state,

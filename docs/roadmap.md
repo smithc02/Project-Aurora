@@ -82,9 +82,10 @@
     snapshots. Its first production slice adds the strict projection and reason
     registry plus explicit secure creation, fail-closed opening, and exact
     SQLite schema version 1 verification. The second slice adds the
-    pre-deployment singleton ingestion checkpoint, atomic projection ingestion,
-    deterministic history compaction, health and sampling-gap evaluation, and
-    ingestion-driven alert lifecycle. It is not imported by a runtime entry
+    pre-deployment singleton ingestion checkpoint, monotonic scheduler sequence,
+    fixed replay ledger, atomic projection ingestion, deterministic history
+    compaction, health and sampling-gap evaluation, and ingestion-driven alert
+    lifecycle. It is not imported by a runtime entry
     point, creates no deployment database, and leaves production history
     disabled and unavailable. Queries, acknowledgment, retention execution,
     scheduling, notifications, and automation remain unimplemented. It
