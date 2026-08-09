@@ -1214,16 +1214,27 @@ unsafe follow-up database work. There is no retry or queue.
   counts whose sum cannot exceed 500.
 - `incremental_vacuum()` accepts no page argument. It verifies incremental
   auto-vacuum, reads `freelist_count` once, returns `no_work` for zero, or issues
-  exactly one code-owned `PRAGMA incremental_vacuum(128)` and reads the freelist
-  once more. Its frozen result never claims more than 128 requested pages.
+  exactly one code-owned `PRAGMA incremental_vacuum(128)`. The returned cursor
+  is retained and fetched with the fixed 129-row sentinel bound, which drives
+  at most 128 result steps to statement completion and treats an impossible
+  extra row as trust loss. Only after completion is the freelist read once more;
+  it may decrease by zero through 128 pages and must never increase. Its frozen
+  result reports 128 requested pages without claiming that all 128 were
+  reclaimed.
 
 Both operations use a one-second injected monotonic deadline and temporary
-progress handler, always clear the handler, and preserve the 250-millisecond
-busy timeout. Cleanup begins one immediate transaction and attempts rollback
-exactly once for a pre-commit failure. Rollback failure is trust loss. If the
-cleanup commit succeeds but the following filesystem identity check fails, the
-store closes and reports only `trust_failed`; it does not claim that committed
-deletions rolled back or that tables are unchanged.
+progress handler, plus explicit checks throughout bounded candidate validation,
+event planning, deletion actions, pre-commit work, the post-commit boundary,
+and the vacuum no-work path. The handler is always cleared, and the
+250-millisecond busy timeout is preserved. Cleanup begins one immediate
+transaction and attempts rollback exactly once for a pre-commit failure.
+Rollback failure is trust loss. If commit returns after the deadline, cleanup
+reports `timed_out` only after marking the transaction non-rollback-capable:
+selected deletions may already be durable, the stable store remains open, and
+there is no retry. Likewise, if commit succeeds but the following filesystem
+identity check fails, the store closes and reports only `trust_failed`; neither
+post-commit failure claims that committed deletions rolled back or that tables
+are unchanged.
 
 The archived-parent candidate path uses
 `idx_alerts_archived_recovered_id`. Health candidates use the existing observed

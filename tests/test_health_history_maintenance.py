@@ -349,7 +349,7 @@ def _insert_event(
     return cursor.lastrowid
 
 
-def _make_freelist(path: Path) -> int:
+def _make_freelist(path: Path, *, event_count: int = 3_000) -> int:
     alert_id = _insert_alert(
         path, lifecycle=AlertLifecycle.ARCHIVED, recovered_at=_CUTOFF
     )
@@ -359,7 +359,7 @@ def _make_freelist(path: Path) -> int:
         "INSERT INTO alert_events("
         "alert_id, event_type, event_at_utc_us, resulting_lifecycle) "
         "VALUES (?, 'occurrence_updated', ?, 'recovered')",
-        ((alert_id, _CUTOFF + index) for index in range(3_000)),
+        ((alert_id, _CUTOFF + index) for index in range(event_count)),
     )
     connection.execute("DELETE FROM alert_events WHERE alert_id = ?", (alert_id,))
     connection.commit()
@@ -1152,11 +1152,70 @@ def test_incremental_vacuum_zero_freelist_returns_no_work(
     assert _snapshot(path) == before
 
 
-def test_incremental_vacuum_executes_one_fixed_128_page_request(
+def test_incremental_vacuum_zero_freelist_checks_deadline_before_no_work(
     store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path, store = store_path
-    before = _make_freelist(path)
+    before = _snapshot(path)
+    now = 0.0
+    freelist_reads = 0
+    original_freelist_count = maintenance._freelist_count
+
+    def monotonic() -> float:
+        return now
+
+    def freelist_count(connection: sqlite3.Connection) -> int:
+        nonlocal freelist_reads, now
+        freelist_reads += 1
+        result = original_freelist_count(connection)
+        assert result == 0
+        now = 2.0
+        return result
+
+    statements: list[str] = []
+    monkeypatch.setattr(store, "_monotonic", monotonic)
+    monkeypatch.setattr(maintenance, "_freelist_count", freelist_count)
+    store._connection.set_trace_callback(statements.append)  # noqa: SLF001
+    try:
+        with pytest.raises(MaintenanceError) as caught:
+            store.incremental_vacuum()
+    finally:
+        store._connection.set_trace_callback(None)  # noqa: SLF001
+    assert caught.value.reason is MaintenanceRejection.TIMED_OUT
+    assert freelist_reads == 1
+    assert not any("incremental_vacuum(128)" in item for item in statements)
+    assert not store.closed
+    assert _snapshot(path) == before
+
+
+def test_incremental_vacuum_executes_one_fixed_128_page_request(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    before = _make_freelist(path, event_count=30_000)
+    assert before > INCREMENTAL_VACUUM_PAGES
+    cursor_consumed = False
+    freelist_reads = 0
+    original_consume = maintenance._consume_incremental_vacuum_cursor
+    original_freelist_count = maintenance._freelist_count
+
+    def consume(cursor: sqlite3.Cursor) -> int:
+        nonlocal cursor_consumed
+        consumed_rows = original_consume(cursor)
+        cursor_consumed = True
+        return consumed_rows
+
+    def freelist_count(connection: sqlite3.Connection) -> int:
+        nonlocal freelist_reads
+        freelist_reads += 1
+        if freelist_reads == 2:
+            assert cursor_consumed
+        return original_freelist_count(connection)
+
+    monkeypatch.setattr(maintenance, "_consume_incremental_vacuum_cursor", consume)
+    monkeypatch.setattr(maintenance, "_freelist_count", freelist_count)
     statements: list[str] = []
     store._connection.set_trace_callback(statements.append)  # noqa: SLF001
     try:
@@ -1167,9 +1226,44 @@ def test_incremental_vacuum_executes_one_fixed_128_page_request(
     assert result.pages_requested == INCREMENTAL_VACUUM_PAGES
     assert result.freelist_before == before
     assert 0 <= result.freelist_after <= before
+    reclaimed = result.freelist_before - result.freelist_after
+    assert 1 < reclaimed <= INCREMENTAL_VACUUM_PAGES
+    assert cursor_consumed
+    assert freelist_reads == 2
     normalized = [" ".join(statement.lower().split()) for statement in statements]
     assert normalized.count("pragma incremental_vacuum(128)") == 1
     assert "vacuum" not in normalized
+
+
+def test_incremental_vacuum_cursor_consumption_is_fixed_and_bounded() -> None:
+    class FakeVacuumCursor:
+        def __init__(self, row_count: int) -> None:
+            self.remaining = [()] * row_count
+            self.fetch_sizes: list[int] = []
+            self.done = False
+
+        def fetchmany(self, size: int) -> list[tuple[()]]:
+            self.fetch_sizes.append(size)
+            rows = self.remaining[:size]
+            self.remaining = self.remaining[size:]
+            self.done = len(rows) < size
+            return rows
+
+    cursor = FakeVacuumCursor(INCREMENTAL_VACUUM_PAGES)
+    consumed = maintenance._consume_incremental_vacuum_cursor(
+        cast(sqlite3.Cursor, cursor)
+    )
+    assert consumed == INCREMENTAL_VACUUM_PAGES
+    assert cursor.fetch_sizes == [INCREMENTAL_VACUUM_PAGES + 1]
+    assert cursor.done
+    assert cursor.remaining == []
+
+    overflow = FakeVacuumCursor(INCREMENTAL_VACUUM_PAGES + 100)
+    with pytest.raises(MaintenanceError) as caught:
+        maintenance._consume_incremental_vacuum_cursor(cast(sqlite3.Cursor, overflow))
+    assert caught.value.reason is MaintenanceRejection.MALFORMED_STATE
+    assert caught.value.trust_lost
+    assert overflow.fetch_sizes == [INCREMENTAL_VACUUM_PAGES + 1]
 
 
 def test_cleanup_timeout_rolls_back_and_clears_progress_handler(
@@ -1194,6 +1288,111 @@ def test_cleanup_timeout_rolls_back_and_clears_progress_handler(
     assert not store.closed
     assert _snapshot(path) == before
     assert store.list_health_samples().items
+
+
+def test_cleanup_checks_deadline_after_python_candidate_validation(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    _seed_history(path, (_projection(1, observed_at=_CUTOFF - 1),))
+    before = _snapshot(path)
+    now = 0.0
+    validation_calls = 0
+    original_record = maintenance._health_sample_record
+
+    def monotonic() -> float:
+        return now
+
+    def validate(connection: sqlite3.Connection, row: tuple[object, ...]) -> object:
+        nonlocal now, validation_calls
+        validation_calls += 1
+        result = original_record(connection, row)
+        now = 2.0
+        return result
+
+    monkeypatch.setattr(store, "_monotonic", monotonic)
+    monkeypatch.setattr(maintenance, "_health_sample_record", validate)
+    with pytest.raises(MaintenanceError) as caught:
+        store.cleanup_retention(now_utc_us=_NOW)
+    assert caught.value.reason is MaintenanceRejection.TIMED_OUT
+    assert validation_calls == 1
+    assert not store.closed
+    assert _snapshot(path) == before
+
+
+def test_cleanup_checks_deadline_before_python_deletion_action(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    _seed_history(path, (_projection(1, observed_at=_CUTOFF - 1),))
+    before = _snapshot(path)
+    now = 0.0
+    planning_calls = 0
+    original_plan = maintenance._retention_plan
+
+    def monotonic() -> float:
+        return now
+
+    def plan(
+        connection: sqlite3.Connection,
+        cutoff: int,
+        deadline: maintenance._Deadline,
+    ) -> tuple[maintenance._DeletionAction, ...]:
+        nonlocal now, planning_calls
+        planning_calls += 1
+        result = original_plan(connection, cutoff, deadline)
+        now = 2.0
+        return result
+
+    monkeypatch.setattr(store, "_monotonic", monotonic)
+    monkeypatch.setattr(maintenance, "_retention_plan", plan)
+    with pytest.raises(MaintenanceError) as caught:
+        store.cleanup_retention(now_utc_us=_NOW)
+    assert caught.value.reason is MaintenanceRejection.TIMED_OUT
+    assert planning_calls == 1
+    assert not store.closed
+    assert _snapshot(path) == before
+
+
+def test_cleanup_post_commit_timeout_preserves_committed_deletion_without_rollback(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    _seed_history(path, (_projection(1, observed_at=_CUTOFF - 1),))
+    now = 0.0
+    commit_calls = 0
+    rollback_calls = 0
+    original_commit = maintenance._commit_transaction
+    original_rollback = maintenance._rollback_transaction
+
+    def monotonic() -> float:
+        return now
+
+    def commit(connection: sqlite3.Connection) -> None:
+        nonlocal now, commit_calls
+        commit_calls += 1
+        original_commit(connection)
+        now = 2.0
+
+    def rollback(connection: sqlite3.Connection) -> None:
+        nonlocal rollback_calls
+        rollback_calls += 1
+        original_rollback(connection)
+
+    monkeypatch.setattr(store, "_monotonic", monotonic)
+    monkeypatch.setattr(maintenance, "_commit_transaction", commit)
+    monkeypatch.setattr(maintenance, "_rollback_transaction", rollback)
+    with pytest.raises(MaintenanceError) as caught:
+        store.cleanup_retention(now_utc_us=_NOW)
+    assert caught.value.reason is MaintenanceRejection.TIMED_OUT
+    assert commit_calls == 1
+    assert rollback_calls == 0
+    assert not store.closed
+    assert _rows(path, "SELECT COUNT(*) FROM health_samples") == [(0,)]
+    assert _rows(path, "SELECT COUNT(*) FROM component_samples") == [(0,)]
 
 
 def test_incremental_vacuum_timeout_makes_no_vacuum_call(
@@ -1679,3 +1878,10 @@ def test_maintenance_result_models_are_immutable_and_validate_budget() -> None:
         RetentionCleanupResult(MaintenanceOutcome.COMPLETED, RETENTION_ROW_BUDGET, 1, 0)
     with pytest.raises(ValueError):
         IncrementalVacuumResult(MaintenanceOutcome.COMPLETED, 129, 1, 0)
+    with pytest.raises(ValueError):
+        IncrementalVacuumResult(
+            MaintenanceOutcome.COMPLETED,
+            INCREMENTAL_VACUUM_PAGES,
+            INCREMENTAL_VACUUM_PAGES + 1,
+            0,
+        )

@@ -422,9 +422,12 @@ immediate transaction, deterministic health-first tie handling, and one total
 deletions. Events are deleted in bounded order before an eligible parent, and
 foreign-key cascade/SET-NULL behavior changes only documented sample history
 and references. `incremental_vacuum` reads the freelist and makes at most one
-fixed 128-page request. Both use one-second monotonic/progress bounds and
-pre/post main-file and sidecar identity checks, with no retry, full vacuum, WAL
-checkpoint, or drain loop.
+fixed 128-page request, consumes its bounded cursor to statement completion,
+and verifies that the freelist falls by no more than 128 pages. Both use
+one-second monotonic/progress bounds, including explicit Python-loop and
+post-commit checks, and pre/post main-file and sidecar identity checks. A
+post-commit timeout may leave the selected cleanup durable and therefore never
+claims rollback. There is no retry, full vacuum, WAL checkpoint, or drain loop.
 
 No current runtime entry point imports this package. There is no configuration,
 deployment database creation, scheduler or maintenance cadence, route,

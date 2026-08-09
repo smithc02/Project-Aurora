@@ -17,6 +17,7 @@ from aurora_core.health_history.queries import (
     _ALERT_COLUMNS,
     _ALERT_EVENT_COLUMNS,
     _HEALTH_SAMPLE_COLUMNS,
+    AlertEventRecord,
     QueryError,
     QueryRejection,
     _alert_event_record,
@@ -159,6 +160,7 @@ class IncrementalVacuumResult:
             or not 0 <= self.freelist_before <= MAX_SQLITE_PAGE_COUNT
             or not 0 <= self.freelist_after <= MAX_SQLITE_PAGE_COUNT
             or self.freelist_after > self.freelist_before
+            or self.freelist_before - self.freelist_after > self.pages_requested
             or (
                 self.outcome is MaintenanceOutcome.NO_WORK
                 and (
@@ -228,14 +230,15 @@ def _cleanup_retention(
             connection.execute("BEGIN IMMEDIATE")
             transaction_started = True
             _fault(MaintenanceStage.AFTER_BEGIN)
-            plan = _retention_plan(connection, cutoff)
+            plan = _retention_plan(connection, cutoff, deadline)
             _fault(MaintenanceStage.AFTER_PLAN)
-            counts = _execute_retention_plan(connection, plan, cutoff)
+            counts = _execute_retention_plan(connection, plan, cutoff, deadline)
             _fault(MaintenanceStage.AFTER_MUTATION)
             deadline.check()
             _fault(MaintenanceStage.BEFORE_COMMIT)
-            connection.commit()
+            _commit_transaction(connection)
             transaction_started = False
+            deadline.check()
             deleted = sum(counts)
             return RetentionCleanupResult(
                 outcome=(
@@ -290,6 +293,7 @@ def _incremental_vacuum(
                 )
             before = _bounded_page_count(_freelist_count(connection))
             if before == 0:
+                deadline.check()
                 return IncrementalVacuumResult(
                     MaintenanceOutcome.NO_WORK,
                     pages_requested=0,
@@ -298,14 +302,16 @@ def _incremental_vacuum(
                 )
             deadline.check()
             _fault(MaintenanceStage.VACUUM_BEFORE)
-            connection.execute(_INCREMENTAL_VACUUM_SQL)
+            vacuum_cursor = connection.execute(_INCREMENTAL_VACUUM_SQL)
+            _consume_incremental_vacuum_cursor(vacuum_cursor)
             _fault(MaintenanceStage.VACUUM_AFTER)
             deadline.check()
             after = _bounded_page_count(_freelist_count(connection))
-            if after > before:
+            if after > before or before - after > INCREMENTAL_VACUUM_PAGES:
                 raise MaintenanceError(
                     MaintenanceRejection.MALFORMED_STATE, trust_lost=True
                 )
+            deadline.check()
             return IncrementalVacuumResult(
                 MaintenanceOutcome.COMPLETED,
                 pages_requested=INCREMENTAL_VACUUM_PAGES,
@@ -336,17 +342,21 @@ def _retention_cutoff(now_utc_us: object, retention_days: object) -> int:
 
 
 def _retention_plan(
-    connection: sqlite3.Connection, cutoff: int
+    connection: sqlite3.Connection, cutoff: int, deadline: _Deadline
 ) -> tuple[_DeletionAction, ...]:
     health_rows = connection.execute(
         _HEALTH_RETENTION_CANDIDATES_SQL, (cutoff, RETENTION_ROW_BUDGET)
     ).fetchall()
+    deadline.check()
     alert_rows = connection.execute(
         _ARCHIVED_ALERT_CANDIDATES_SQL, (cutoff, RETENTION_ROW_BUDGET)
     ).fetchall()
+    deadline.check()
     candidates: list[_RetentionCandidate] = []
     for row in health_rows:
+        deadline.check()
         health_record = _health_sample_record(connection, row)
+        deadline.check()
         if health_record.observed_at_utc_us >= cutoff:
             raise MaintenanceError(
                 MaintenanceRejection.MALFORMED_STATE, trust_lost=True
@@ -357,7 +367,9 @@ def _retention_plan(
             )
         )
     for row in alert_rows:
+        deadline.check()
         alert_record = _alert_record(connection, row)
+        deadline.check()
         if (
             alert_record.lifecycle is not AlertLifecycle.ARCHIVED
             or alert_record.recovered_at_utc_us is None
@@ -371,6 +383,7 @@ def _retention_plan(
                 alert_record.recovered_at_utc_us, 1, alert_record.id, "alert"
             )
         )
+    deadline.check()
     candidates.sort(
         key=lambda candidate: (
             candidate.retained_at_utc_us,
@@ -378,26 +391,31 @@ def _retention_plan(
             candidate.row_id,
         )
     )
+    deadline.check()
     actions: list[_DeletionAction] = []
     for candidate in candidates:
+        deadline.check()
         remaining = RETENTION_ROW_BUDGET - len(actions)
         if remaining == 0:
             break
         if candidate.kind == "health":
             actions.append(_DeletionAction("health", candidate.row_id))
             continue
+        deadline.check()
         event_rows = connection.execute(
             _ALERT_EVENTS_FOR_RETENTION_SQL,
             (candidate.row_id, remaining + 1),
         ).fetchall()
-        events = tuple(
-            _alert_event_record(connection, row, candidate.row_id) for row in event_rows
-        )
+        deadline.check()
+        events: list[AlertEventRecord] = []
+        for row in event_rows:
+            deadline.check()
+            events.append(_alert_event_record(connection, row, candidate.row_id))
+            deadline.check()
         selected_events = events[:remaining]
-        actions.extend(
-            _DeletionAction("event", event.id, candidate.row_id)
-            for event in selected_events
-        )
+        for event in selected_events:
+            deadline.check()
+            actions.append(_DeletionAction("event", event.id, candidate.row_id))
         if len(events) <= remaining and len(actions) < RETENTION_ROW_BUDGET:
             actions.append(_DeletionAction("alert", candidate.row_id))
     if len(actions) > RETENTION_ROW_BUDGET:
@@ -409,11 +427,13 @@ def _execute_retention_plan(
     connection: sqlite3.Connection,
     actions: tuple[_DeletionAction, ...],
     cutoff: int,
+    deadline: _Deadline,
 ) -> tuple[int, int, int]:
     health_deleted = 0
     events_deleted = 0
     alerts_deleted = 0
     for action in actions:
+        deadline.check()
         if action.kind == "health":
             cursor = connection.execute(
                 _DELETE_HEALTH_SAMPLE_SQL, (action.row_id, cutoff)
@@ -446,6 +466,13 @@ def _execute_retention_plan(
                 MaintenanceRejection.MALFORMED_STATE, trust_lost=True
             )
     return health_deleted, events_deleted, alerts_deleted
+
+
+def _consume_incremental_vacuum_cursor(cursor: sqlite3.Cursor) -> int:
+    rows = cursor.fetchmany(INCREMENTAL_VACUUM_PAGES + 1)
+    if len(rows) > INCREMENTAL_VACUUM_PAGES:
+        raise MaintenanceError(MaintenanceRejection.MALFORMED_STATE, trust_lost=True)
+    return len(rows)
 
 
 def _auto_vacuum_mode(connection: sqlite3.Connection) -> int:
@@ -516,6 +543,10 @@ def _rollback_after_failure(connection: sqlite3.Connection) -> None:
 
 def _rollback_transaction(connection: sqlite3.Connection) -> None:
     connection.rollback()
+
+
+def _commit_transaction(connection: sqlite3.Connection) -> None:
+    connection.commit()
 
 
 def _fault(stage: MaintenanceStage) -> None:
