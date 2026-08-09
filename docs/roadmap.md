@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; isolated storage and ingestion
-    slices):
+18. **Milestone 18 (implementation in progress; isolated storage, ingestion,
+    and read-query slices):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -85,10 +85,12 @@
     pre-deployment singleton ingestion checkpoint, monotonic scheduler sequence,
     fixed replay ledger, atomic projection ingestion, deterministic history
     compaction, health and sampling-gap evaluation, and ingestion-driven alert
-    lifecycle. It is not imported by a runtime entry
-    point, creates no deployment database, and leaves production history
-    disabled and unavailable. Queries, acknowledgment, retention execution,
-    scheduling, notifications, and automation remain unimplemented. It
+    lifecycle. The third slice adds immutable bounded history, alert, and event
+    read models with fixed keyset cursors, strict row/digest validation, and no
+    mutation. It is not imported by a runtime entry point, creates no deployment
+    database, and leaves production history disabled and unavailable.
+    Presentation routes, acknowledgment, retention execution, scheduling,
+    notifications, and automation remain unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).

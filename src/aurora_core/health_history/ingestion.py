@@ -83,6 +83,7 @@ LATEST_TERMINAL_ALERT_SQL: Final = (
 )
 ELIGIBLE_RECOVERED_ALERTS_SQL: Final = (
     f"SELECT {_ALERT_COLUMNS} FROM alerts "
+    "INDEXED BY idx_alerts_recovered_cooldown_id "
     "WHERE lifecycle = 'recovered' AND cooldown_until_utc_us <= ? "
     "ORDER BY cooldown_until_utc_us, id LIMIT ?"
 )

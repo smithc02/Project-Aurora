@@ -28,8 +28,28 @@ from aurora_core.health_history.ingestion import (
 from aurora_core.health_history.models import (
     BUSY_TIMEOUT_MILLISECONDS,
     PAGE_SIZE_BYTES,
+    AlertLifecycle,
+    HealthHistoryStatus,
 )
 from aurora_core.health_history.projection import HealthProjection
+from aurora_core.health_history.queries import (
+    DEFAULT_ALERT_EVENT_PAGE_SIZE,
+    DEFAULT_ALERT_PAGE_SIZE,
+    DEFAULT_HEALTH_SAMPLE_PAGE_SIZE,
+    AlertCursor,
+    AlertEventCursor,
+    AlertEventPage,
+    AlertPage,
+    AlertRecord,
+    HealthSampleCursor,
+    HealthSamplePage,
+    QueryError,
+    QueryRejection,
+    _get_alert,
+    _list_alert_events,
+    _list_alerts,
+    _list_health_samples,
+)
 from aurora_core.health_history.schema import (
     SchemaVerificationError,
     create_schema_v1,
@@ -208,6 +228,79 @@ class HealthHistoryStore:
             raise IngestionError(
                 IngestionRejection.TRUST_FAILED, trust_lost=True
             ) from None
+
+    def list_health_samples(
+        self,
+        *,
+        page_size: int = DEFAULT_HEALTH_SAMPLE_PAGE_SIZE,
+        cursor: HealthSampleCursor | None = None,
+        overall_status: HealthHistoryStatus | None = None,
+    ) -> HealthSamplePage:
+        """Return one bounded newest-first page of validated history."""
+        return self._read_query(
+            lambda connection: _list_health_samples(
+                connection,
+                page_size=page_size,
+                cursor=cursor,
+                overall_status=overall_status,
+            )
+        )
+
+    def list_alerts(
+        self,
+        *,
+        page_size: int = DEFAULT_ALERT_PAGE_SIZE,
+        cursor: AlertCursor | None = None,
+        lifecycle: AlertLifecycle | None = None,
+    ) -> AlertPage:
+        """Return one bounded newest-first page of validated alerts."""
+        return self._read_query(
+            lambda connection: _list_alerts(
+                connection,
+                page_size=page_size,
+                cursor=cursor,
+                lifecycle=lifecycle,
+            )
+        )
+
+    def get_alert(self, alert_id: int) -> AlertRecord:
+        """Return one validated alert without its event timeline."""
+        return self._read_query(lambda connection: _get_alert(connection, alert_id))
+
+    def list_alert_events(
+        self,
+        alert_id: int,
+        *,
+        page_size: int = DEFAULT_ALERT_EVENT_PAGE_SIZE,
+        cursor: AlertEventCursor | None = None,
+    ) -> AlertEventPage:
+        """Return one bounded chronological page for exactly one alert."""
+        return self._read_query(
+            lambda connection: _list_alert_events(
+                connection,
+                alert_id,
+                page_size=page_size,
+                cursor=cursor,
+            )
+        )
+
+    def _read_query[T](self, reader: Callable[[sqlite3.Connection], T]) -> T:
+        self._require_open()
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, self._sidecars)
+            result = reader(self._connection)
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+            self._sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+            return result
+        except QueryError as error:
+            if error.trust_lost:
+                self.close()
+            raise
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise QueryError(QueryRejection.TRUST_FAILED, trust_lost=True) from None
 
     def close(self) -> None:
         if self._closed:
