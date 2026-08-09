@@ -5,20 +5,22 @@
 Milestone 18 implementation is in progress. The first production slice added
 the isolated strict health projection, finite reason registry, exact SQLite
 schema version 1 foundation, and explicit secure create and fail-closed
-open-existing boundaries. The second isolated slice adds the narrow atomic
+open-existing boundaries. The second isolated slice added the narrow atomic
 ingestion method, deterministic evaluator state, compacted history, sampling-gap
 translation, and ingestion-driven alert lifecycle described below. The third
-isolated slice adds bounded read-only sample, alert, and event queries with
+isolated slice added bounded read-only sample, alert, and event queries with
 immutable result models, deterministic keyset cursors, and strict persisted-row
-validation.
+validation. The fourth isolated slice adds bounded deterministic retention and
+one fixed incremental-vacuum primitive, still without runtime invocation.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
 This slice adds no configuration field, scheduler, worker, route, runtime
-invocation, acknowledgment action, migration, backup, restore, retention
-execution, notification, or automation action. The query API is reachable only
-through direct use of the isolated package. Milestones 12 through 17 remain the
-current behavior, including public `GET /api/health` schema version 1.
+invocation, acknowledgment action, migration, backup, restore, WAL checkpoint,
+notification, or automation action. The query and maintenance APIs are
+reachable only through direct use of the isolated package. Milestones 12
+through 17 remain the current behavior, including public `GET /api/health`
+schema version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -80,6 +82,24 @@ The third slice remains disconnected from runtime and adds:
   lifecycle/reference validation for every returned alert and event; and
 - read-only transactions surrounded by main-file and sidecar identity checks,
   with fixed sanitized errors, no retry, and trust-loss closure.
+
+The fourth slice also remains disconnected from runtime and adds:
+
+- `auto_vacuum=INCREMENTAL` as a required schema-version-1 creation and opening
+  invariant, set before application tables are created;
+- indexes for archived-alert recovery ordering and the three unbounded nullable
+  sample-reference foreign-key lookup paths;
+- `cleanup_retention`, with a default of 30 days, an accepted 1–365-day caller
+  bound, strict timestamp-before-cutoff eligibility, one `BEGIN IMMEDIATE`, and
+  a total budget of 500 explicitly deleted samples, events, and alerts;
+- deterministic health-first tie handling, oldest-first sample and archived
+  parent ordering, event-first archived-alert deletion, and no unknown event
+  cascade;
+- documented `CASCADE` component removal and `SET NULL` evaluator, alert, and
+  event sample-reference effects without lifecycle or checkpoint mutation; and
+- `incremental_vacuum`, which reads the freelist and issues at most one fixed
+  `incremental_vacuum(128)` call under one second, without full `VACUUM`, retry,
+  looping, or WAL checkpointing.
 
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
@@ -209,7 +229,7 @@ fields or active runtime behavior:
 | Scheduled state transactions | At most 120 per hour and 2,880 per day at the 30-second default | At most one transaction per accepted scheduled sample; no retry. |
 | History query page | 100 rows | Hard maximum 500 rows. |
 | Alert query page | 50 rows | Hard maximum 200 rows. |
-| Cleanup transaction | At most 500 history or event rows and 128 incremental-vacuum pages | One transaction per maintenance opportunity; no drain loop. |
+| Cleanup transaction | At most 500 total explicit sample, event, and archived-alert rows | One transaction per direct maintenance opportunity; no drain loop. Incremental vacuum is a separate one-call primitive. |
 | SQLite busy timeout | 250 milliseconds | No retry loop after timeout. |
 | Shutdown join | 5 seconds | No indefinite wait. |
 
@@ -906,26 +926,45 @@ delivery must never change alert truth or trigger remediation.
 
 ## Retention, cleanup, and storage failure
 
-The default 30-day policy applies to compacted history and terminal alert
-events. Active and acknowledged alerts are never deleted by age. Recovered
-alerts become archived only after the 15-minute duplicate cooldown elapses
-without recurrence. An archived alert and its events may be deleted only after
-`recovered_at` is more than 30 days old. Schema version 1 has no age-based
-expiration transition.
+The implemented default 30-day policy applies to compacted history and archived
+alerts and events. Callers may supply only an integer from 1 through 365 days.
+Eligibility is strictly timestamp-before-cutoff: a history row with
+`observed_at_utc_us < cutoff` is eligible, while an archived alert becomes
+eligible only when `recovered_at_utc_us < cutoff`. Active, acknowledged, and
+recovered alerts are never deleted by age, and a row exactly at the cutoff is
+retained. Schema version 1 has no age-based expiration transition.
 
-Cleanup runs at startup and at most once per hour or after 120 stored history
-rows, whichever occurs first. Each opportunity deletes at most 500 oldest
-eligible rows and releases at most 128 pages with incremental vacuum. It does
-not loop until empty. Deletion order is deterministic by timestamp and primary
-key. No automatic full `VACUUM` is allowed because it can require large
-temporary space and an unbounded exclusive operation.
+One direct `cleanup_retention` call opens at most one `BEGIN IMMEDIATE`
+transaction and deletes at most 500 logical rows total. Explicit sample, alert
+event, and alert deletions each consume one budget unit; four cascading
+component rows do not consume four extra units. Sample and archived-parent
+candidates are oldest first by timestamp and ID, with health samples first at
+an equal retention timestamp. An eligible archived parent is processed by
+event time and ID. Its events are explicitly deleted within the remaining
+budget, and the parent is deleted only after a fixed indexed check proves no
+events remain. A large event timeline therefore retires across later direct
+maintenance calls without an unbounded cascade or drain loop. Deletion creates
+no lifecycle event and changes no alert lifecycle, count, generation,
+cooldown, acknowledgment, checkpoint, replay, or evaluator status fields.
 
-When the database approaches its configured limit, cleanup runs once before the
-new write. If the file remains full, storage is read-only, the busy timeout
-expires, or free-space reserve is insufficient, the transaction fails. Aurora
-drops that one persistence attempt, records no in-memory retry queue, emits a
-rate-limited fixed log event, and continues serving live health through the
-existing path. It must not claim an alert or acknowledgment was persisted.
+History deletion cascades to that sample's four component rows. Existing
+foreign keys set evaluator `last_sample_id`, alert `first_sample_id` and
+`latest_sample_id`, and event `supporting_sample_id` to null. The next ordinary
+ingestion after all evaluator sample references are cleared establishes a new
+transition baseline; deleted history is not reconstructed.
+
+Schema version 1 is now created with `auto_vacuum=INCREMENTAL` before any
+application table. Because no production history database exists, this is a
+direct pre-deployment schema-version-1 correction, not a migration. Opening or
+verification rejects none/full auto-vacuum mode and never runs `VACUUM` to
+repair it. One separate direct `incremental_vacuum` call reads the freelist and,
+when nonzero, requests exactly 128 pages once. It does not run full `VACUUM`,
+loop, retry, or checkpoint the WAL.
+
+Startup, hourly, and 120-stored-row cleanup cadence remains deferred. The
+future scheduler/storage-envelope slice will also decide cleanup-before-capacity
+integration, WAL checkpoint thresholds, main-database page limits, and
+free-space policy. None of those paths invokes these primitives yet.
 
 Ingestion classifies SQLite failures by fixed error code without returning SQL,
 the database path, SQLite text, or submitted values. `SQLITE_BUSY` and
@@ -1157,6 +1196,48 @@ not-found, and fault-injected reads make no changes.
 The two alert-listing indexes are a direct pre-deployment refinement of exact
 schema version 1. No production history database exists, so no migration is
 added; `application_id` remains `0x41555248` and `user_version` remains 1.
+
+## Isolated bounded maintenance boundary
+
+`HealthHistoryStore` exposes two narrow maintenance methods. Both require an
+already open verified store and bracket the operation with main-file and
+WAL/SHM identity validation. A non-trust failure is followed by the same
+post-operation validation before its fixed error is returned. Identity loss
+closes the store and replaces the earlier result with `trust_failed`. A
+trust-losing SQLite or malformed-state failure closes immediately without
+unsafe follow-up database work. There is no retry or queue.
+
+- `cleanup_retention(now_utc_us=..., retention_days=30)` accepts only bounded
+  integers, computes the strict cutoff before SQL, reads fixed indexed candidate
+  sets, plans no more than 500 explicit deletions, and commits once. Its frozen
+  result reports `no_work` or `completed` plus separate sample, event, and alert
+  counts whose sum cannot exceed 500.
+- `incremental_vacuum()` accepts no page argument. It verifies incremental
+  auto-vacuum, reads `freelist_count` once, returns `no_work` for zero, or issues
+  exactly one code-owned `PRAGMA incremental_vacuum(128)` and reads the freelist
+  once more. Its frozen result never claims more than 128 requested pages.
+
+Both operations use a one-second injected monotonic deadline and temporary
+progress handler, always clear the handler, and preserve the 250-millisecond
+busy timeout. Cleanup begins one immediate transaction and attempts rollback
+exactly once for a pre-commit failure. Rollback failure is trust loss. If the
+cleanup commit succeeds but the following filesystem identity check fails, the
+store closes and reports only `trust_failed`; it does not claim that committed
+deletions rolled back or that tables are unchanged.
+
+The archived-parent candidate path uses
+`idx_alerts_archived_recovered_id`. Health candidates use the existing observed
+time index, and event removal uses the existing alert/time index. New indexes on
+`alerts(first_sample_id)`, `alerts(latest_sample_id)`, and
+`alert_events(supporting_sample_id)` bound SQLite's child-reference work when a
+sample is deleted. The six-row evaluator table remains fixed-size and receives
+no speculative index.
+
+No runtime entry point imports this boundary. There is no startup/hourly/
+120-row invocation, cleanup-before-ingestion integration, WAL checkpoint,
+capacity or free-space enforcement, shutdown maintenance, route, configuration,
+acknowledgment, notification, migration, backup, restore, or production
+database deployment in this slice.
 
 ## Future dashboard and API boundaries
 
@@ -1460,12 +1541,13 @@ changes.
 | Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the five persisted-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
 
 The following work remains separately deferred and is not implemented by the
-isolated storage, ingestion, and read-query slices:
+isolated storage, ingestion, read-query, and maintenance slices:
 
 - runtime integration, scheduling, and production database deployment;
 - authenticated history/alert presentation routes;
 - operator acknowledgment and its authentication/CSRF route;
-- retention and maintenance execution;
+- startup/hourly/120-row maintenance cadence and runtime invocation;
+- WAL checkpointing, capacity enforcement, and free-space policy;
 - database migrations;
 - production database backup and restore commands;
 - portal grouping of overall and component alerts;

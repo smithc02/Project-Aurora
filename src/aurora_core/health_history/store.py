@@ -26,7 +26,17 @@ from aurora_core.health_history.ingestion import (
     IngestionResult,
     ingest_projection,
 )
+from aurora_core.health_history.maintenance import (
+    DEFAULT_RETENTION_DAYS,
+    IncrementalVacuumResult,
+    MaintenanceError,
+    MaintenanceRejection,
+    RetentionCleanupResult,
+    _cleanup_retention,
+    _incremental_vacuum,
+)
 from aurora_core.health_history.models import (
+    AUTO_VACUUM_INCREMENTAL,
     BUSY_TIMEOUT_MILLISECONDS,
     PAGE_SIZE_BYTES,
     AlertLifecycle,
@@ -285,6 +295,30 @@ class HealthHistoryStore:
             )
         )
 
+    def cleanup_retention(
+        self,
+        *,
+        now_utc_us: int,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+    ) -> RetentionCleanupResult:
+        """Run one bounded deterministic retention opportunity."""
+        return self._maintenance_operation(
+            lambda connection: _cleanup_retention(
+                connection,
+                now_utc_us=now_utc_us,
+                retention_days=retention_days,
+                monotonic=self._monotonic,
+            )
+        )
+
+    def incremental_vacuum(self) -> IncrementalVacuumResult:
+        """Run one fixed bounded incremental-vacuum opportunity."""
+        return self._maintenance_operation(
+            lambda connection: _incremental_vacuum(
+                connection, monotonic=self._monotonic
+            )
+        )
+
     def _read_query[T](self, reader: Callable[[sqlite3.Connection], T]) -> T:
         self._require_open()
         try:
@@ -317,6 +351,45 @@ class HealthHistoryStore:
         except (FilesystemBoundaryError, OSError):
             self.close()
             raise QueryError(QueryRejection.TRUST_FAILED, trust_lost=True) from None
+
+    def _maintenance_operation[T](
+        self, operation: Callable[[sqlite3.Connection], T]
+    ) -> T:
+        self._require_open()
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, self._sidecars)
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise MaintenanceError(
+                MaintenanceRejection.TRUST_FAILED, trust_lost=True
+            ) from None
+        maintenance_error: MaintenanceError | None = None
+        result: T | object = object()
+        try:
+            result = operation(self._connection)
+        except MaintenanceError as error:
+            if error.trust_lost:
+                self.close()
+                raise
+            maintenance_error = error
+        self._finish_maintenance_identity_validation(sidecars)
+        if maintenance_error is not None:
+            raise maintenance_error
+        return cast(T, result)
+
+    def _finish_maintenance_identity_validation(
+        self, sidecars: dict[str, PathIdentity]
+    ) -> None:
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+            self._sidecars = _advance_sidecar_snapshot(self._path, sidecars)
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise MaintenanceError(
+                MaintenanceRejection.TRUST_FAILED, trust_lost=True
+            ) from None
 
     def close(self) -> None:
         if self._closed:
@@ -364,6 +437,10 @@ def _configure_new_database(connection: sqlite3.Connection) -> None:
     connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MILLISECONDS}")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(f"PRAGMA page_size = {PAGE_SIZE_BYTES}")
+    connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+    auto_vacuum = connection.execute("PRAGMA auto_vacuum").fetchone()
+    if auto_vacuum != (AUTO_VACUUM_INCREMENTAL,):
+        raise SchemaVerificationError("auto_vacuum_mismatch")
     mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
     if mode is None or str(mode[0]).lower() != "wal":
         raise SchemaVerificationError("journal_mode_mismatch")
@@ -383,6 +460,7 @@ def _verify_connection_settings(connection: sqlite3.Connection) -> None:
         "busy_timeout": BUSY_TIMEOUT_MILLISECONDS,
         "foreign_keys": 1,
         "page_size": PAGE_SIZE_BYTES,
+        "auto_vacuum": AUTO_VACUUM_INCREMENTAL,
         "synchronous": 2,
         "wal_autocheckpoint": 0,
     }
