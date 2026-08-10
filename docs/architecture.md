@@ -438,15 +438,23 @@ store connection sets and verifies SQLite's connection-scoped
 `max_page_count=16384`; because that pragma is not persistent across connections,
 it is not represented as a schema field or repaired on disk. Independent
 preflight still requires 4-KiB pages, no more than 16,384 pages/64 MiB, and a
-fixed 128-MiB parent-filesystem reserve. WAL metadata is derived from the
-validated sidecar name and checked as a 32-byte header followed by complete
-24-byte-frame-header plus 4-KiB-page frames. A checkpoint becomes due at 256
-frames, remains eligible through 960 frames and 4 MiB including framing, and is
-refused above either bound. `passive_wal_checkpoint` executes at most one fixed
-PASSIVE pragma under one second and validates its single three-integer result;
-it never uses FULL, RESTART, or TRUNCATE. A pure decision helper returns
-`proceed`, `cleanup_required`, `capacity_blocked`, `wal_checkpoint_due`, or
-`wal_oversize_blocked` without performing I/O.
+fixed 128-MiB parent-filesystem reserve. Capacity inspection also validates the
+bounded freelist count without treating free pages as write authorization. WAL
+physical allocation is derived from the validated sidecar name and checked as
+a 32-byte header followed by complete 24-byte-frame-header plus 4-KiB-page
+slots. One fixed `wal_checkpoint(NOOP)` supplies the separate current logical
+and checkpointed-frame counts without moving frames. A checkpoint becomes due
+at 256 current logical frames and remains eligible through 960 logical frames,
+while a physical WAL above 4 MiB is refused independently. Recycled old frame
+slots therefore cannot trigger a false checkpoint, but an excessive physical
+footprint remains preserved for review. `passive_wal_checkpoint` executes at
+most one fixed PASSIVE pragma under one second and validates its single
+three-integer result; it never uses FULL, RESTART, or TRUNCATE. A pure decision
+helper returns `proceed`, `capacity_maintenance_required`, `capacity_blocked`,
+`wal_checkpoint_due`, or `wal_oversize_blocked` without performing I/O. The
+capacity-maintenance outcome describes exactly one retention cleanup, then at
+most one incremental-vacuum opportunity, then one reinspection; it invokes none
+of those operations itself.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. The next slices are scheduler/runtime integration,

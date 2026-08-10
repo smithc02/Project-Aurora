@@ -350,7 +350,7 @@ class HealthHistoryStore:
     def inspect_wal(self) -> WalInspectionResult:
         """Inspect only fixed WAL metadata derived from the database path."""
         return self._storage_envelope_operation(
-            lambda connection: _inspect_wal(self._path)
+            lambda connection: _inspect_wal(connection, self._path)
         )
 
     def passive_wal_checkpoint(self) -> PassiveCheckpointResult:

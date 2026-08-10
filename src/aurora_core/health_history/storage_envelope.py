@@ -12,6 +12,7 @@ from typing import Final
 
 from aurora_core.health_history.filesystem import (
     FilesystemBoundaryError,
+    PathIdentity,
     validate_database_file,
 )
 from aurora_core.health_history.models import (
@@ -37,7 +38,9 @@ MAX_FILESYSTEM_BYTES: Final = 2**63 - 1
 
 _PAGE_SIZE_SQL: Final = "PRAGMA page_size"
 _PAGE_COUNT_SQL: Final = "PRAGMA page_count"
+_FREELIST_COUNT_SQL: Final = "PRAGMA freelist_count"
 _MAX_PAGE_COUNT_SQL: Final = "PRAGMA max_page_count"
+_NOOP_CHECKPOINT_SQL: Final = "PRAGMA wal_checkpoint(NOOP)"
 _PASSIVE_CHECKPOINT_SQL: Final = "PRAGMA wal_checkpoint(PASSIVE)"
 
 
@@ -62,7 +65,7 @@ class StorageEnvelopeError(Exception):
 
 class StorageDecisionOutcome(StrEnum):
     PROCEED = "proceed"
-    CLEANUP_REQUIRED = "cleanup_required"
+    CAPACITY_MAINTENANCE_REQUIRED = "capacity_maintenance_required"
     CAPACITY_BLOCKED = "capacity_blocked"
     WAL_CHECKPOINT_DUE = "wal_checkpoint_due"
     WAL_OVERSIZE_BLOCKED = "wal_oversize_blocked"
@@ -88,6 +91,7 @@ class StorageEnvelopeStage(StrEnum):
 @dataclass(frozen=True, slots=True)
 class StorageCapacityResult:
     page_count: int
+    freelist_count: int
     maximum_page_count: int
     used_bytes: int
     maximum_bytes: int
@@ -96,11 +100,13 @@ class StorageCapacityResult:
     def __post_init__(self) -> None:
         if (
             type(self.page_count) is not int
+            or type(self.freelist_count) is not int
             or type(self.maximum_page_count) is not int
             or type(self.used_bytes) is not int
             or type(self.maximum_bytes) is not int
             or type(self.pages_remaining) is not int
             or not 0 <= self.page_count <= MAX_DATABASE_PAGES
+            or not 0 <= self.freelist_count <= self.page_count
             or self.maximum_page_count != MAX_DATABASE_PAGES
             or self.used_bytes != self.page_count * PAGE_SIZE_BYTES
             or self.maximum_bytes != MAX_DATABASE_BYTES
@@ -129,33 +135,50 @@ class FreeSpaceResult:
 @dataclass(frozen=True, slots=True)
 class WalInspectionResult:
     exists: bool
-    frame_count: int
+    logical_frame_count: int
+    physical_frame_slots: int
     total_bytes: int
+    checkpointed_frames: int
     checkpoint_due: bool
     oversize: bool
 
     def __post_init__(self) -> None:
         if (
             type(self.exists) is not bool
-            or type(self.frame_count) is not int
+            or type(self.logical_frame_count) is not int
+            or type(self.physical_frame_slots) is not int
             or type(self.total_bytes) is not int
+            or type(self.checkpointed_frames) is not int
             or type(self.checkpoint_due) is not bool
             or type(self.oversize) is not bool
-            or not 0 <= self.frame_count <= MAX_WAL_INSPECTION_FRAMES
+            or not 0 <= self.logical_frame_count <= MAX_WAL_INSPECTION_FRAMES
+            or not 0 <= self.physical_frame_slots <= MAX_WAL_INSPECTION_FRAMES
             or not 0 <= self.total_bytes <= WAL_INSPECTION_LIMIT_BYTES
-            or (not self.exists and (self.frame_count != 0 or self.total_bytes != 0))
+            or not 0 <= self.checkpointed_frames <= self.logical_frame_count
+            or self.logical_frame_count > self.physical_frame_slots
+            or (
+                not self.exists
+                and (
+                    self.logical_frame_count != 0
+                    or self.physical_frame_slots != 0
+                    or self.total_bytes != 0
+                    or self.checkpointed_frames != 0
+                )
+            )
             or (
                 self.exists
-                and not _wal_size_matches(self.total_bytes, self.frame_count)
+                and not _wal_size_matches(self.total_bytes, self.physical_frame_slots)
             )
             or self.oversize
             != (
-                self.frame_count > WAL_HARD_LIMIT_FRAMES
+                self.logical_frame_count > WAL_HARD_LIMIT_FRAMES
                 or self.total_bytes > WAL_HARD_LIMIT_BYTES
             )
             or self.checkpoint_due
             != (
-                self.frame_count >= WAL_CHECKPOINT_THRESHOLD_FRAMES
+                WAL_CHECKPOINT_THRESHOLD_FRAMES
+                <= self.logical_frame_count
+                <= WAL_HARD_LIMIT_FRAMES
                 and not self.oversize
             )
         ):
@@ -179,7 +202,8 @@ class StorageDecisionResult:
 @dataclass(frozen=True, slots=True)
 class PassiveCheckpointResult:
     outcome: PassiveCheckpointOutcome
-    wal_frames_before: int
+    wal_logical_frames_before: int
+    wal_physical_bytes_before: int
     busy: bool
     log_frames: int
     checkpointed_frames: int
@@ -187,14 +211,15 @@ class PassiveCheckpointResult:
     def __post_init__(self) -> None:
         if (
             not isinstance(self.outcome, PassiveCheckpointOutcome)
-            or type(self.wal_frames_before) is not int
+            or type(self.wal_logical_frames_before) is not int
+            or type(self.wal_physical_bytes_before) is not int
             or type(self.busy) is not bool
             or type(self.log_frames) is not int
             or type(self.checkpointed_frames) is not int
-            or not 0 <= self.wal_frames_before <= MAX_WAL_INSPECTION_FRAMES
+            or not 0 <= self.wal_logical_frames_before <= MAX_WAL_INSPECTION_FRAMES
+            or not 0 <= self.wal_physical_bytes_before <= WAL_INSPECTION_LIMIT_BYTES
             or not 0 <= self.log_frames <= MAX_WAL_INSPECTION_FRAMES
             or not 0 <= self.checkpointed_frames <= self.log_frames
-            or self.log_frames > self.wal_frames_before
             or (
                 self.outcome
                 in {
@@ -205,19 +230,24 @@ class PassiveCheckpointResult:
             )
             or (
                 self.outcome is PassiveCheckpointOutcome.NO_WORK
-                and self.wal_frames_before >= WAL_CHECKPOINT_THRESHOLD_FRAMES
+                and (
+                    self.wal_logical_frames_before >= WAL_CHECKPOINT_THRESHOLD_FRAMES
+                    or self.wal_physical_bytes_before > WAL_HARD_LIMIT_BYTES
+                )
             )
             or (
                 self.outcome is PassiveCheckpointOutcome.OVERSIZE_BLOCKED
-                and self.wal_frames_before <= WAL_HARD_LIMIT_FRAMES
+                and self.wal_logical_frames_before <= WAL_HARD_LIMIT_FRAMES
+                and self.wal_physical_bytes_before <= WAL_HARD_LIMIT_BYTES
             )
             or (
                 self.outcome
                 in {PassiveCheckpointOutcome.COMPLETED, PassiveCheckpointOutcome.BUSY}
                 and not (
                     WAL_CHECKPOINT_THRESHOLD_FRAMES
-                    <= self.wal_frames_before
+                    <= self.wal_logical_frames_before
                     <= WAL_HARD_LIMIT_FRAMES
+                    and self.wal_physical_bytes_before <= WAL_HARD_LIMIT_BYTES
                 )
             )
             or (self.outcome is PassiveCheckpointOutcome.COMPLETED and self.busy)
@@ -249,14 +279,14 @@ def decide_storage_action(
     free_space: FreeSpaceResult,
     wal: WalInspectionResult,
     *,
-    cleanup_attempted: bool = False,
+    capacity_maintenance_attempted: bool = False,
 ) -> StorageDecisionResult:
     """Return one pure fixed-priority decision for a future writer."""
     if (
         type(capacity) is not StorageCapacityResult
         or type(free_space) is not FreeSpaceResult
         or type(wal) is not WalInspectionResult
-        or type(cleanup_attempted) is not bool
+        or type(capacity_maintenance_attempted) is not bool
     ):
         raise ValueError("invalid_storage_observation")
     if wal.oversize:
@@ -264,8 +294,8 @@ def decide_storage_action(
     elif capacity.pages_remaining == 0 or not free_space.sufficient:
         outcome = (
             StorageDecisionOutcome.CAPACITY_BLOCKED
-            if cleanup_attempted
-            else StorageDecisionOutcome.CLEANUP_REQUIRED
+            if capacity_maintenance_attempted
+            else StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED
         )
     elif wal.checkpoint_due:
         outcome = StorageDecisionOutcome.WAL_CHECKPOINT_DUE
@@ -283,14 +313,19 @@ def _inspect_storage_capacity(
     try:
         page_size = _pragma_integer(connection, _PAGE_SIZE_SQL)
         page_count = _pragma_integer(connection, _PAGE_COUNT_SQL)
+        freelist_count = _pragma_integer(connection, _FREELIST_COUNT_SQL)
         maximum_page_count = _pragma_integer(connection, _MAX_PAGE_COUNT_SQL)
         _fault(StorageEnvelopeStage.CAPACITY)
         if page_size != PAGE_SIZE_BYTES or maximum_page_count != MAX_DATABASE_PAGES:
             raise _malformed()
-        if not 0 <= page_count <= MAX_DATABASE_PAGES:
+        if (
+            not 0 <= page_count <= MAX_DATABASE_PAGES
+            or not 0 <= freelist_count <= page_count
+        ):
             raise _malformed()
         return StorageCapacityResult(
             page_count=page_count,
+            freelist_count=freelist_count,
             maximum_page_count=maximum_page_count,
             used_bytes=page_count * PAGE_SIZE_BYTES,
             maximum_bytes=MAX_DATABASE_BYTES,
@@ -334,49 +369,142 @@ def _inspect_free_space(parent: Path) -> FreeSpaceResult:
         raise _malformed() from None
 
 
-def _inspect_wal(path: Path) -> WalInspectionResult:
-    wal_path = path.with_name(f"{path.name}-wal")
+@dataclass(frozen=True, slots=True)
+class _PhysicalWalState:
+    exists: bool
+    identity: PathIdentity | None
+    physical_frame_slots: int
+    total_bytes: int
+
+
+def _inspect_wal(
+    connection: sqlite3.Connection,
+    path: Path,
+    *,
+    deadline: _Deadline | None = None,
+) -> WalInspectionResult:
     try:
-        wal_path.lstat()
-    except FileNotFoundError:
-        return WalInspectionResult(False, 0, 0, False, False)
-    except OSError:
-        raise StorageEnvelopeError(
-            StorageEnvelopeRejection.PERSISTENCE_FAILED
-        ) from None
-    try:
-        before = validate_database_file(
-            wal_path, maximum_bytes=WAL_INSPECTION_LIMIT_BYTES
+        before = _inspect_physical_wal(path)
+        _check_deadline(deadline)
+        logical_frame_count, checkpointed_frames, no_wal = _read_noop_status(
+            connection, deadline
         )
-        frame_count = _wal_frame_count(before.size)
-        after = validate_database_file(
-            wal_path,
-            expected=before,
-            maximum_bytes=WAL_INSPECTION_LIMIT_BYTES,
+        _check_deadline(deadline)
+        after = _inspect_physical_wal(
+            path,
+            expected=before.identity,
+            require_existing=before.exists,
         )
-        if after != before:
+        _check_deadline(deadline)
+        if no_wal and after.total_bytes != 0:
+            raise _malformed()
+        if logical_frame_count > after.physical_frame_slots:
             raise _malformed()
         _fault(StorageEnvelopeStage.WAL)
         oversize = (
-            frame_count > WAL_HARD_LIMIT_FRAMES or before.size > WAL_HARD_LIMIT_BYTES
+            logical_frame_count > WAL_HARD_LIMIT_FRAMES
+            or after.total_bytes > WAL_HARD_LIMIT_BYTES
         )
         return WalInspectionResult(
-            exists=True,
-            frame_count=frame_count,
-            total_bytes=before.size,
+            exists=after.exists,
+            logical_frame_count=logical_frame_count,
+            physical_frame_slots=after.physical_frame_slots,
+            total_bytes=after.total_bytes,
+            checkpointed_frames=checkpointed_frames,
             checkpoint_due=(
-                frame_count >= WAL_CHECKPOINT_THRESHOLD_FRAMES and not oversize
+                WAL_CHECKPOINT_THRESHOLD_FRAMES
+                <= logical_frame_count
+                <= WAL_HARD_LIMIT_FRAMES
+                and not oversize
             ),
             oversize=oversize,
         )
     except StorageEnvelopeError:
         raise
+    except sqlite3.Error as error:
+        raise _classified_sqlite_error(error, deadline) from None
+    except (TypeError, ValueError):
+        raise _malformed() from None
+
+
+def _inspect_physical_wal(
+    path: Path,
+    *,
+    expected: PathIdentity | None = None,
+    require_existing: bool = False,
+) -> _PhysicalWalState:
+    wal_path = path.with_name(f"{path.name}-wal")
+    try:
+        wal_path.lstat()
+    except FileNotFoundError:
+        if require_existing:
+            raise StorageEnvelopeError(
+                StorageEnvelopeRejection.TRUST_FAILED, trust_lost=True
+            ) from None
+        return _PhysicalWalState(False, None, 0, 0)
+    except OSError:
+        if require_existing:
+            raise StorageEnvelopeError(
+                StorageEnvelopeRejection.TRUST_FAILED, trust_lost=True
+            ) from None
+        raise StorageEnvelopeError(
+            StorageEnvelopeRejection.PERSISTENCE_FAILED
+        ) from None
+    try:
+        identity = validate_database_file(
+            wal_path,
+            expected=expected,
+            maximum_bytes=WAL_INSPECTION_LIMIT_BYTES,
+        )
+        return _PhysicalWalState(
+            exists=True,
+            identity=identity,
+            physical_frame_slots=_wal_frame_count(identity.size),
+            total_bytes=identity.size,
+        )
     except (FilesystemBoundaryError, OSError):
         raise StorageEnvelopeError(
             StorageEnvelopeRejection.TRUST_FAILED, trust_lost=True
         ) from None
     except (TypeError, ValueError):
         raise _malformed() from None
+
+
+def _read_noop_status(
+    connection: sqlite3.Connection, deadline: _Deadline | None
+) -> tuple[int, int, bool]:
+    cursor = connection.execute(_NOOP_CHECKPOINT_SQL)
+    _check_deadline(deadline)
+    rows = cursor.fetchmany(2)
+    _check_deadline(deadline)
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise _malformed()
+    busy, logical_frame_count, checkpointed_frames = rows[0]
+    if (
+        type(busy) is not int
+        or type(logical_frame_count) is not int
+        or type(checkpointed_frames) is not int
+    ):
+        raise _malformed()
+    if busy == 1:
+        raise StorageEnvelopeError(StorageEnvelopeRejection.STORAGE_BUSY)
+    if busy != 0:
+        raise _malformed()
+    if logical_frame_count == -1 or checkpointed_frames == -1:
+        if (logical_frame_count, checkpointed_frames) != (-1, -1):
+            raise _malformed()
+        return 0, 0, True
+    if (
+        not 0 <= logical_frame_count <= MAX_WAL_INSPECTION_FRAMES
+        or not 0 <= checkpointed_frames <= logical_frame_count
+    ):
+        raise _malformed()
+    return logical_frame_count, checkpointed_frames, False
+
+
+def _check_deadline(deadline: _Deadline | None) -> None:
+    if deadline is not None:
+        deadline.check()
 
 
 def _passive_wal_checkpoint(
@@ -386,7 +514,7 @@ def _passive_wal_checkpoint(
     monotonic: Callable[[], float],
 ) -> PassiveCheckpointResult:
     deadline = _Deadline(monotonic)
-    wal = _inspect_wal(path)
+    wal = _inspect_wal(connection, path, deadline=deadline)
     deadline.check()
     if not wal.checkpoint_due:
         return PassiveCheckpointResult(
@@ -395,7 +523,8 @@ def _passive_wal_checkpoint(
                 if wal.oversize
                 else PassiveCheckpointOutcome.NO_WORK
             ),
-            wal_frames_before=wal.frame_count,
+            wal_logical_frames_before=wal.logical_frame_count,
+            wal_physical_bytes_before=wal.total_bytes,
             busy=False,
             log_frames=0,
             checkpointed_frames=0,
@@ -421,11 +550,7 @@ def _passive_wal_checkpoint(
                     raise _malformed()
                 values.append(value)
             busy_value, log_frames, checkpointed_frames = values
-            if (
-                busy_value not in {0, 1}
-                or checkpointed_frames > log_frames
-                or log_frames > wal.frame_count
-            ):
+            if busy_value not in {0, 1} or checkpointed_frames > log_frames:
                 raise _malformed()
             _fault(StorageEnvelopeStage.CHECKPOINT_AFTER)
             deadline.check()
@@ -435,7 +560,8 @@ def _passive_wal_checkpoint(
                     if busy_value == 1
                     else PassiveCheckpointOutcome.COMPLETED
                 ),
-                wal_frames_before=wal.frame_count,
+                wal_logical_frames_before=wal.logical_frame_count,
+                wal_physical_bytes_before=wal.total_bytes,
                 busy=busy_value == 1,
                 log_frames=log_frames,
                 checkpointed_frames=checkpointed_frames,

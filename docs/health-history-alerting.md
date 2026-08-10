@@ -110,14 +110,16 @@ The fifth slice remains direct-only and adds:
   create/open connection, plus independent page-count preflight;
 - a fixed 128-MiB free-space reserve inspection of only the already validated
   parent filesystem, without probe files or returned path/device information;
-- exact metadata-only WAL framing validation using one 32-byte header and
-  complete 24-byte-frame-header plus 4-KiB-page frames;
-- a 256-frame checkpoint threshold, with automatic refusal above 960 frames or
-  4 MiB including framing;
+- exact metadata-only physical WAL framing validation using one 32-byte header
+  and complete 24-byte-frame-header plus 4-KiB-page slots, independently from
+  one fixed NOOP status read of the current logical WAL generation;
+- a 256-logical-frame checkpoint threshold, with automatic refusal above 960
+  current logical frames or a 4-MiB physical footprint including framing;
 - one fixed `PRAGMA wal_checkpoint(PASSIVE)` opportunity under one second, with
   a single strictly validated three-integer row and no retry or drain loop; and
-- a pure typed decision helper for proceed, cleanup-first, capacity block,
-  checkpoint-due, and WAL-oversize block outcomes.
+- a pure typed decision helper for proceed, one fixed bounded capacity-
+  maintenance sequence, capacity block, checkpoint-due, and WAL-oversize block
+  outcomes.
 
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
@@ -1287,8 +1289,10 @@ creation; every open sets it before verification. Each setting must return
 exactly 16,384, so an already larger database or ineffective setting fails
 closed. This is a connection safety limit, not a migration or on-open disk
 repair. Independent capacity inspection reads fixed `page_size`, `page_count`,
-and `max_page_count` pragmas, rejects any impossible or over-limit result as
-trust loss, and reports only bounded counts and bytes.
+`freelist_count`, and `max_page_count` pragmas, rejects any impossible or
+over-limit result as trust loss, and reports only bounded counts and bytes. The
+freelist must be between zero and the page count. Its presence never by itself
+authorizes a write.
 
 Free-space inspection uses the standard-library filesystem API on the already
 validated database parent only. The reserve is fixed at 128 MiB. It creates no
@@ -1297,14 +1301,24 @@ sufficiency boolean. Inspection failure is sanitized; impossible metadata is
 trust loss.
 
 WAL inspection derives only `<database>-wal`, validates its protected regular
-file identity twice, and reads metadata rather than contents. A zero-length or
-header-only file contains zero frames. Every other accepted size is exactly
-`32 + frame_count * (24 + 4096)` bytes. A leftover byte, short nonzero file, or
-overflow is malformed state. No checkpoint is due below 256 frames. From 256
-through 960 frames, while total framing remains no larger than 4 MiB, one
-PASSIVE opportunity is due. Above either hard bound the result is
-`wal_oversize_blocked`: automatic checkpoint and future write authorization are
-refused so the WAL evidence remains available for operator review.
+file identity around the operation, and reads file metadata rather than WAL or
+SHM contents. A zero-length or header-only file has zero physical frame slots.
+Every other accepted size is exactly
+`32 + physical_frame_slots * (24 + 4096)` bytes. A leftover byte, short nonzero
+file, or overflow is malformed state. Exactly one code-owned
+`PRAGMA wal_checkpoint(NOOP)` supplies the separate current logical and already
+checkpointed frame counts; its single three-integer row is consumed and
+strictly validated, including SQLite's `-1, -1` no-WAL status. Checkpoint-lock
+busy/locked is a sanitized non-trust failure, never a guessed frame count.
+
+No checkpoint is due below 256 current logical frames. From 256 through 960
+logical frames, while the physical file remains no larger than 4 MiB, one
+PASSIVE opportunity is due. More than 960 logical frames or more than 4 MiB of
+physical allocation produces `wal_oversize_blocked`. A recycled WAL may retain
+many old physical slots while its current logical generation is small; those
+slots do not create a false logical threshold or 960-frame refusal. The 4-MiB
+physical-footprint policy remains independent, so a physically oversized
+recycled WAL stays blocked and is never truncated automatically.
 
 `passive_wal_checkpoint()` first performs that inspection, then executes exactly
 one code-owned `PRAGMA wal_checkpoint(PASSIVE)` only when eligible. It fetches
@@ -1314,18 +1328,28 @@ no greater than the log count. One means a fixed completed-busy outcome; there
 is no retry. The one-second deadline covers WAL inspection, pre/post pragma
 checks, and result consumption, with a temporary progress handler always
 cleared. It never issues FULL, RESTART, or TRUNCATE and does not claim PASSIVE
-empties or truncates the WAL. Post-operation identity failure is trust loss and
-does not claim that physical checkpoint work was undone.
+empties or truncates the WAL. A concurrent reader may leave checkpointed frames
+below the returned log count, and concurrent writes may make the PASSIVE log
+count larger than the preceding NOOP count; neither ordinary condition is
+corruption. Post-operation identity failure is trust loss and does not claim
+that physical checkpoint work was undone.
 
 `decide_storage_action(...)` is pure and accepts only the immutable capacity,
 free-space, and WAL observations plus one boolean recording whether the caller
-already used its single cleanup opportunity. Its fixed priority is WAL oversize
-block; cleanup required or capacity blocked for a full main database or low
-reserve; checkpoint due; then proceed. It performs no SQL or filesystem work.
-This slice does not call `cleanup_retention`, checkpoint, or the decision helper
-from ingestion. Startup/hourly/120-row scheduling, shutdown TRUNCATE,
-cleanup-before-write orchestration, production paths/configuration, and runtime
-enablement remain deferred.
+already completed its single capacity-maintenance opportunity. Its fixed
+priority is WAL oversize block; `capacity_maintenance_required` or
+`capacity_blocked` for a full main database or low reserve; checkpoint due;
+then proceed. Capacity maintenance is one documented sequence: at most one
+existing `cleanup_retention()`, at most one existing `incremental_vacuum()` to
+return any reclaimed freelist pages to the filesystem, then exactly one
+reinspection. If that reinspection is still insufficient, the result is
+`capacity_blocked`; there is no second cleanup, vacuum, retry, or queue. The
+helper performs no SQL or filesystem work and does not claim that retention
+deletion alone shrinks an incremental-auto-vacuum database. This slice does not
+call cleanup, vacuum, checkpoint, or the decision helper from ingestion.
+Startup/hourly/120-row scheduling, shutdown TRUNCATE, cleanup-before-write
+orchestration, production paths/configuration, and runtime enablement remain
+deferred.
 
 ## Future dashboard and API boundaries
 

@@ -118,15 +118,29 @@ def _write_wal(path: Path, size: int) -> Path:
     return wal
 
 
-def _wal_result(frame_count: int) -> WalInspectionResult:
-    total_bytes = _wal_size(frame_count) if frame_count else 0
-    oversize = frame_count > WAL_HARD_LIMIT_FRAMES or total_bytes > WAL_HARD_LIMIT_BYTES
+def _wal_result(
+    logical_frame_count: int,
+    *,
+    physical_frame_slots: int | None = None,
+    total_bytes: int | None = None,
+    checkpointed_frames: int = 0,
+) -> WalInspectionResult:
+    if physical_frame_slots is None:
+        physical_frame_slots = logical_frame_count
+    if total_bytes is None:
+        total_bytes = _wal_size(physical_frame_slots) if physical_frame_slots else 0
+    oversize = (
+        logical_frame_count > WAL_HARD_LIMIT_FRAMES
+        or total_bytes > WAL_HARD_LIMIT_BYTES
+    )
     return WalInspectionResult(
         exists=True,
-        frame_count=frame_count,
+        logical_frame_count=logical_frame_count,
+        physical_frame_slots=physical_frame_slots,
         total_bytes=total_bytes,
+        checkpointed_frames=checkpointed_frames,
         checkpoint_due=(
-            frame_count >= WAL_CHECKPOINT_THRESHOLD_FRAMES and not oversize
+            logical_frame_count >= WAL_CHECKPOINT_THRESHOLD_FRAMES and not oversize
         ),
         oversize=oversize,
     )
@@ -180,6 +194,12 @@ def _fake_connection(
     return cast(sqlite3.Connection, fake), fake
 
 
+def _sqlite_error(code: int, message: str) -> sqlite3.OperationalError:
+    error = sqlite3.OperationalError(message)
+    error.sqlite_errorcode = code  # type: ignore[attr-defined]
+    return error
+
+
 def test_new_database_capacity_and_fixed_connection_limit(
     store_path: tuple[Path, HealthHistoryStore],
 ) -> None:
@@ -189,6 +209,7 @@ def test_new_database_capacity_and_fixed_connection_limit(
     page_count = _rows(path, "PRAGMA page_count")[0][0]
     assert result == StorageCapacityResult(
         page_count=page_count,
+        freelist_count=0,
         maximum_page_count=MAX_DATABASE_PAGES,
         used_bytes=page_count * PAGE_SIZE_BYTES,
         maximum_bytes=MAX_DATABASE_BYTES,
@@ -245,6 +266,7 @@ def test_capacity_fixed_boundary_values(
     values = {
         envelope._PAGE_SIZE_SQL: PAGE_SIZE_BYTES,
         envelope._PAGE_COUNT_SQL: page_count,
+        envelope._FREELIST_COUNT_SQL: 0,
         envelope._MAX_PAGE_COUNT_SQL: MAX_DATABASE_PAGES,
     }
     monkeypatch.setattr(
@@ -264,6 +286,9 @@ def test_capacity_fixed_boundary_values(
         (envelope._PAGE_COUNT_SQL, True),
         (envelope._PAGE_COUNT_SQL, 1.5),
         (envelope._PAGE_COUNT_SQL, MAX_DATABASE_PAGES + 1),
+        (envelope._FREELIST_COUNT_SQL, -1),
+        (envelope._FREELIST_COUNT_SQL, True),
+        (envelope._FREELIST_COUNT_SQL, 2),
         (envelope._MAX_PAGE_COUNT_SQL, MAX_DATABASE_PAGES + 1),
     ],
 )
@@ -278,6 +303,7 @@ def test_capacity_malformed_values_are_trust_loss(
     values: dict[str, object] = {
         envelope._PAGE_SIZE_SQL: PAGE_SIZE_BYTES,
         envelope._PAGE_COUNT_SQL: 1,
+        envelope._FREELIST_COUNT_SQL: 0,
         envelope._MAX_PAGE_COUNT_SQL: MAX_DATABASE_PAGES,
     }
     values[sql] = value
@@ -375,9 +401,32 @@ def test_impossible_free_space_metadata_is_trust_loss(
 def test_wal_absence_and_zero_length_file(tmp_path: Path) -> None:
     tmp_path.chmod(0o700)
     path = tmp_path / "history.db"
-    assert envelope._inspect_wal(path) == WalInspectionResult(False, 0, 0, False, False)
+    connection, fake = _fake_connection([(0, -1, -1)])
+    assert envelope._inspect_wal(connection, path) == WalInspectionResult(
+        False, 0, 0, 0, 0, False, False
+    )
+    assert fake.execute_calls == ["PRAGMA wal_checkpoint(NOOP)"]
     _write_wal(path, 0)
-    assert envelope._inspect_wal(path) == WalInspectionResult(True, 0, 0, False, False)
+    connection, fake = _fake_connection([(0, 0, 0)])
+    assert envelope._inspect_wal(connection, path) == WalInspectionResult(
+        True, 0, 0, 0, 0, False, False
+    )
+    assert fake.cursor.fetch_sizes == [2]
+
+
+def test_real_noop_no_wal_result_is_normalized_to_zero(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    connection = sqlite3.connect(":memory:")
+    try:
+        assert connection.execute("PRAGMA wal_checkpoint(NOOP)").fetchone() == (
+            0,
+            -1,
+            -1,
+        )
+        result = envelope._inspect_wal(connection, tmp_path / "history.db")
+    finally:
+        connection.close()
+    assert result == WalInspectionResult(False, 0, 0, 0, 0, False, False)
 
 
 @pytest.mark.parametrize(
@@ -398,8 +447,17 @@ def test_wal_frame_boundaries_from_fixed_framing(
     path = tmp_path / f"history-{frames}.db"
     size = envelope.WAL_HEADER_BYTES if frames == 0 else _wal_size(frames)
     _write_wal(path, size)
-    result = envelope._inspect_wal(path)
-    assert result == WalInspectionResult(True, frames, size, checkpoint_due, oversize)
+    connection, _fake = _fake_connection([(0, frames, 0)])
+    result = envelope._inspect_wal(connection, path)
+    assert result == WalInspectionResult(
+        True,
+        frames,
+        frames,
+        size,
+        0,
+        checkpoint_due,
+        oversize,
+    )
 
 
 def test_wal_hard_byte_boundary_arithmetic() -> None:
@@ -447,9 +505,129 @@ def test_wal_identity_replacement_is_trust_loss(
         return result
 
     monkeypatch.setattr(envelope, "validate_database_file", replace)
+    connection, _fake = _fake_connection([(0, 1, 0)])
     with pytest.raises(StorageEnvelopeError) as caught:
-        envelope._inspect_wal(path)
+        envelope._inspect_wal(connection, path)
     assert caught.value.reason is StorageEnvelopeRejection.TRUST_FAILED
+    assert caught.value.trust_lost
+
+
+def test_noop_reports_current_logical_frames_not_physical_slots(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    path = tmp_path / "history.db"
+    physical_slots = 500
+    _write_wal(path, _wal_size(physical_slots))
+    connection, fake = _fake_connection([(0, 3, 2)])
+    result = envelope._inspect_wal(connection, path)
+    assert result == WalInspectionResult(
+        exists=True,
+        logical_frame_count=3,
+        physical_frame_slots=physical_slots,
+        total_bytes=_wal_size(physical_slots),
+        checkpointed_frames=2,
+        checkpoint_due=False,
+        oversize=False,
+    )
+    assert fake.execute_calls == ["PRAGMA wal_checkpoint(NOOP)"]
+    assert fake.cursor.fetch_sizes == [2]
+
+
+def test_physical_wal_above_four_mib_is_blocked_with_small_logical_generation(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    path = tmp_path / "history.db"
+    physical_slots = (
+        WAL_HARD_LIMIT_BYTES - envelope.WAL_HEADER_BYTES
+    ) // envelope.WAL_FRAME_BYTES + 1
+    physical_bytes = _wal_size(physical_slots)
+    _write_wal(path, physical_bytes)
+    connection, _fake = _fake_connection([(0, 1, 0)])
+    result = envelope._inspect_wal(connection, path)
+    assert result.logical_frame_count == 1
+    assert result.physical_frame_slots == physical_slots
+    assert result.total_bytes > WAL_HARD_LIMIT_BYTES
+    assert result.oversize
+    assert not result.checkpoint_due
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [(0, 1, 0), (0, 1, 0)],
+        [(0, 1)],
+        [(False, 1, 0)],
+        [(0, True, 0)],
+        [(0, 1, False)],
+        [(0, -1, 0)],
+        [(0, 0, -1)],
+        [(2, 0, 0)],
+        [(0, 1, 2)],
+        [(0, envelope.MAX_WAL_INSPECTION_FRAMES + 1, 0)],
+    ],
+)
+def test_noop_malformed_results_are_trust_loss(
+    tmp_path: Path, rows: list[tuple[object, ...]]
+) -> None:
+    tmp_path.chmod(0o700)
+    path = tmp_path / "history.db"
+    _write_wal(path, _wal_size(1))
+    connection, _fake = _fake_connection(rows)
+    with pytest.raises(StorageEnvelopeError) as caught:
+        envelope._inspect_wal(connection, path)
+    assert caught.value.reason is StorageEnvelopeRejection.MALFORMED_STATE
+    assert caught.value.trust_lost
+
+
+def test_noop_checkpoint_lock_busy_is_sanitized_non_trust(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    path = tmp_path / "history.db"
+    _write_wal(path, _wal_size(1))
+    for connection, fake in (
+        _fake_connection([(1, 1, 0)]),
+        _fake_connection(
+            [], error=_sqlite_error(sqlite3.SQLITE_BUSY, "private lock detail")
+        ),
+    ):
+        with pytest.raises(StorageEnvelopeError) as caught:
+            envelope._inspect_wal(connection, path)
+        assert caught.value.reason is StorageEnvelopeRejection.STORAGE_BUSY
+        assert not caught.value.trust_lost
+        assert len(fake.execute_calls) == 1
+
+
+def test_noop_logical_or_checkpointed_count_cannot_exceed_physical_state(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    path = tmp_path / "history.db"
+    _write_wal(path, _wal_size(1))
+    connection, _fake = _fake_connection([(0, 2, 0)])
+    with pytest.raises(StorageEnvelopeError) as logical:
+        envelope._inspect_wal(connection, path)
+    assert logical.value.reason is StorageEnvelopeRejection.MALFORMED_STATE
+
+    connection, _fake = _fake_connection([(0, 1, 2)])
+    with pytest.raises(StorageEnvelopeError) as checkpointed:
+        envelope._inspect_wal(connection, path)
+    assert checkpointed.value.reason is StorageEnvelopeRejection.MALFORMED_STATE
+
+
+def test_malformed_physical_size_is_trust_loss_with_valid_noop_fixture(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    path = tmp_path / "history.db"
+    _write_wal(path, _wal_size(1) + 1)
+    connection, _fake = _fake_connection([(0, 1, 0)])
+    with pytest.raises(StorageEnvelopeError) as caught:
+        envelope._inspect_wal(connection, path)
+    assert caught.value.reason is StorageEnvelopeRejection.MALFORMED_STATE
     assert caught.value.trust_lost
 
 
@@ -466,7 +644,11 @@ def test_checkpoint_no_work_and_oversize_issue_no_pragma(
     outcome: PassiveCheckpointOutcome,
 ) -> None:
     connection, fake = _fake_connection([])
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(frames))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(frames),
+    )
     result = envelope._passive_wal_checkpoint(
         connection, Path("unused.db"), monotonic=lambda: 0.0
     )
@@ -475,18 +657,63 @@ def test_checkpoint_no_work_and_oversize_issue_no_pragma(
     assert fake.progress_calls == []
 
 
+@pytest.mark.parametrize(
+    ("wal", "outcome"),
+    [
+        (
+            _wal_result(1, physical_frame_slots=500),
+            PassiveCheckpointOutcome.NO_WORK,
+        ),
+        (
+            _wal_result(
+                1,
+                physical_frame_slots=(
+                    (WAL_HARD_LIMIT_BYTES - envelope.WAL_HEADER_BYTES)
+                    // envelope.WAL_FRAME_BYTES
+                    + 1
+                ),
+            ),
+            PassiveCheckpointOutcome.OVERSIZE_BLOCKED,
+        ),
+    ],
+)
+def test_checkpoint_uses_logical_threshold_and_physical_byte_block(
+    monkeypatch: pytest.MonkeyPatch,
+    wal: WalInspectionResult,
+    outcome: PassiveCheckpointOutcome,
+) -> None:
+    connection, fake = _fake_connection([])
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: wal,
+    )
+    result = envelope._passive_wal_checkpoint(
+        connection, Path("unused.db"), monotonic=lambda: 0.0
+    )
+    assert result.outcome is outcome
+    assert result.wal_logical_frames_before == 1
+    assert result.wal_physical_bytes_before == wal.total_bytes
+    assert fake.execute_calls == []
+
+
 @pytest.mark.parametrize("frames", [256, 500, 960])
 def test_checkpoint_executes_exactly_one_fixed_passive_pragma(
     monkeypatch: pytest.MonkeyPatch, frames: int
 ) -> None:
     connection, fake = _fake_connection([(0, frames, frames - 1)])
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(frames))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(frames),
+    )
     result = envelope._passive_wal_checkpoint(
         connection, Path("unused.db"), monotonic=lambda: 0.0
     )
     assert result == PassiveCheckpointResult(
         PassiveCheckpointOutcome.COMPLETED,
         frames,
+        _wal_size(frames),
         False,
         frames,
         frames - 1,
@@ -501,14 +728,46 @@ def test_checkpoint_busy_result_is_sanitized_and_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection, fake = _fake_connection([(1, 300, 100)])
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
     result = envelope._passive_wal_checkpoint(
         connection, Path("unused.db"), monotonic=lambda: 0.0
     )
     assert result == PassiveCheckpointResult(
-        PassiveCheckpointOutcome.BUSY, 300, True, 300, 100
+        PassiveCheckpointOutcome.BUSY,
+        300,
+        _wal_size(300),
+        True,
+        300,
+        100,
     )
     assert len(fake.execute_calls) == 1
+
+
+def test_incomplete_passive_progress_is_a_valid_completed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection, fake = _fake_connection([(0, 320, 100)])
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
+    result = envelope._passive_wal_checkpoint(
+        connection, Path("unused.db"), monotonic=lambda: 0.0
+    )
+    assert result == PassiveCheckpointResult(
+        PassiveCheckpointOutcome.COMPLETED,
+        300,
+        _wal_size(300),
+        False,
+        320,
+        100,
+    )
+    assert fake.execute_calls == ["PRAGMA wal_checkpoint(PASSIVE)"]
 
 
 @pytest.mark.parametrize(
@@ -524,7 +783,6 @@ def test_checkpoint_busy_result_is_sanitized_and_not_retried(
         [(0, 1, -1)],
         [(2, 1, 1)],
         [(0, 1, 2)],
-        [(0, 301, 1)],
         [(0, envelope.MAX_WAL_INSPECTION_FRAMES + 1, 0)],
     ],
 )
@@ -532,7 +790,11 @@ def test_checkpoint_malformed_results_are_trust_loss(
     monkeypatch: pytest.MonkeyPatch, rows: list[tuple[object, ...]]
 ) -> None:
     connection, fake = _fake_connection(rows)
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
     with pytest.raises(StorageEnvelopeError) as caught:
         envelope._passive_wal_checkpoint(
             connection, Path("unused.db"), monotonic=lambda: 0.0
@@ -553,7 +815,11 @@ def test_checkpoint_timeout_before_pragma(
         calls += 1
         return 0.0 if calls == 1 else 2.0
 
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
     with pytest.raises(StorageEnvelopeError) as caught:
         envelope._passive_wal_checkpoint(
             connection, Path("unused.db"), monotonic=elapsed
@@ -567,7 +833,11 @@ def test_checkpoint_timeout_during_result_consumption(
 ) -> None:
     clock = [0.0]
     connection, fake = _fake_connection([(0, 300, 300)], clock=clock)
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
     with pytest.raises(StorageEnvelopeError) as caught:
         envelope._passive_wal_checkpoint(
             connection, Path("unused.db"), monotonic=lambda: clock[0]
@@ -582,7 +852,11 @@ def test_checkpoint_timeout_after_completed_pragma_is_not_retried(
 ) -> None:
     clock = [0.0]
     connection, fake = _fake_connection([(0, 300, 300)])
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
 
     def cross_deadline(stage: envelope.StorageEnvelopeStage) -> None:
         if stage is envelope.StorageEnvelopeStage.CHECKPOINT_AFTER:
@@ -617,7 +891,11 @@ def test_checkpoint_sqlite_error_classification(
     error = sqlite3.OperationalError("private sqlite detail")
     error.sqlite_errorcode = code  # type: ignore[attr-defined]
     connection, fake = _fake_connection([], error=error)
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
     with pytest.raises(StorageEnvelopeError) as caught:
         envelope._passive_wal_checkpoint(
             connection, Path("unused.db"), monotonic=lambda: 0.0
@@ -633,7 +911,11 @@ def test_progress_handler_clear_failure_is_trust_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection, _fake = _fake_connection([(0, 300, 300)])
-    monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(300))
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
 
     def fail_clear(candidate: sqlite3.Connection) -> None:
         del candidate
@@ -669,7 +951,7 @@ def _seed_real_wal(store: HealthHistoryStore, event_count: int = 30_000) -> int:
     connection.commit()
     wal = store.inspect_wal()
     assert wal.checkpoint_due and not wal.oversize
-    return wal.frame_count
+    return wal.logical_frame_count
 
 
 def test_real_passive_checkpoint_preserves_every_logical_table(
@@ -678,14 +960,54 @@ def test_real_passive_checkpoint_preserves_every_logical_table(
     path, store = store_path
     frames = _seed_real_wal(store)
     before = _snapshot(path)
-    result = store.passive_wal_checkpoint()
+    traced: list[str] = []
+    store._connection.set_trace_callback(traced.append)  # noqa: SLF001
+    try:
+        result = store.passive_wal_checkpoint()
+    finally:
+        store._connection.set_trace_callback(None)  # noqa: SLF001
     assert result.outcome in {
         PassiveCheckpointOutcome.COMPLETED,
         PassiveCheckpointOutcome.BUSY,
     }
-    assert result.wal_frames_before == frames
+    assert result.wal_logical_frames_before == frames
     assert 0 <= result.checkpointed_frames <= result.log_frames
+    assert traced.count("PRAGMA wal_checkpoint(NOOP)") == 1
+    assert traced.count("PRAGMA wal_checkpoint(PASSIVE)") == 1
     assert _snapshot(path) == before
+
+
+def test_real_recycled_wal_uses_current_logical_generation(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    path, store = store_path
+    original_logical_frames = _seed_real_wal(store)
+    wal_path = path.with_name(f"{path.name}-wal")
+    physical_bytes_before = wal_path.stat().st_size
+    physical_slots_before = envelope._wal_frame_count(physical_bytes_before)
+    assert original_logical_frames >= WAL_CHECKPOINT_THRESHOLD_FRAMES
+    assert physical_slots_before >= WAL_CHECKPOINT_THRESHOLD_FRAMES
+    assert physical_bytes_before <= WAL_HARD_LIMIT_BYTES
+
+    connection = store._connection  # noqa: SLF001
+    restart = connection.execute("PRAGMA wal_checkpoint(RESTART)").fetchall()
+    assert restart == [(0, original_logical_frames, original_logical_frames)]
+    connection.execute(
+        "UPDATE alerts SET occurrence_count = occurrence_count + 1 WHERE id = 1"
+    )
+    raw_status = connection.execute("PRAGMA wal_checkpoint(NOOP)").fetchone()
+    assert raw_status is not None
+    assert raw_status[0] == 0
+    assert 0 < raw_status[1] < WAL_CHECKPOINT_THRESHOLD_FRAMES
+    assert wal_path.stat().st_size == physical_bytes_before
+
+    inspected = store.inspect_wal()
+    assert inspected.total_bytes == physical_bytes_before
+    assert inspected.physical_frame_slots == physical_slots_before
+    assert inspected.logical_frame_count == raw_status[1]
+    assert inspected.checkpointed_frames == raw_status[2]
+    assert not inspected.checkpoint_due
+    assert not inspected.oversize
 
 
 @pytest.mark.parametrize("operation", ["capacity", "free", "wal", "checkpoint"])
@@ -708,7 +1030,11 @@ def test_public_envelope_operations_preserve_logical_tables(
     elif operation == "wal":
         store.inspect_wal()
     else:
-        monkeypatch.setattr(envelope, "_inspect_wal", lambda path: _wal_result(0))
+        monkeypatch.setattr(
+            envelope,
+            "_inspect_wal",
+            lambda connection, path, **kwargs: _wal_result(0),
+        )
         store.passive_wal_checkpoint()
     assert _snapshot(path) == before
 
@@ -731,7 +1057,12 @@ def test_public_checkpoint_failures_preserve_logical_tables(
         del connection, candidate, monotonic
         if mode == "busy":
             return PassiveCheckpointResult(
-                PassiveCheckpointOutcome.BUSY, 300, True, 300, 100
+                PassiveCheckpointOutcome.BUSY,
+                300,
+                _wal_size(300),
+                True,
+                300,
+                100,
             )
         if mode == "timed_out":
             raise StorageEnvelopeError(StorageEnvelopeRejection.TIMED_OUT)
@@ -827,10 +1158,11 @@ def test_post_checkpoint_identity_loss_closes_without_rollback_claim(
     assert _snapshot(path) == before
 
 
-def _capacity(*, remaining: int) -> StorageCapacityResult:
+def _capacity(*, remaining: int, freelist_count: int = 0) -> StorageCapacityResult:
     page_count = MAX_DATABASE_PAGES - remaining
     return StorageCapacityResult(
         page_count,
+        freelist_count,
         MAX_DATABASE_PAGES,
         page_count * PAGE_SIZE_BYTES,
         MAX_DATABASE_BYTES,
@@ -839,13 +1171,25 @@ def _capacity(*, remaining: int) -> StorageCapacityResult:
 
 
 @pytest.mark.parametrize(
-    ("remaining", "sufficient", "frames", "cleanup_attempted", "outcome"),
+    ("remaining", "sufficient", "frames", "maintenance_attempted", "outcome"),
     [
         (1, True, 0, False, StorageDecisionOutcome.PROCEED),
         (1, True, 256, False, StorageDecisionOutcome.WAL_CHECKPOINT_DUE),
-        (0, True, 0, False, StorageDecisionOutcome.CLEANUP_REQUIRED),
+        (
+            0,
+            True,
+            0,
+            False,
+            StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED,
+        ),
         (0, True, 0, True, StorageDecisionOutcome.CAPACITY_BLOCKED),
-        (1, False, 0, False, StorageDecisionOutcome.CLEANUP_REQUIRED),
+        (
+            1,
+            False,
+            0,
+            False,
+            StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED,
+        ),
         (1, False, 0, True, StorageDecisionOutcome.CAPACITY_BLOCKED),
         (0, False, 961, False, StorageDecisionOutcome.WAL_OVERSIZE_BLOCKED),
     ],
@@ -854,7 +1198,7 @@ def test_storage_decision_fixed_priority(
     remaining: int,
     sufficient: bool,
     frames: int,
-    cleanup_attempted: bool,
+    maintenance_attempted: bool,
     outcome: StorageDecisionOutcome,
 ) -> None:
     free = FREE_SPACE_RESERVE_BYTES if sufficient else FREE_SPACE_RESERVE_BYTES - 1
@@ -862,10 +1206,117 @@ def test_storage_decision_fixed_priority(
         _capacity(remaining=remaining),
         FreeSpaceResult(sufficient, free, FREE_SPACE_RESERVE_BYTES),
         _wal_result(frames),
-        cleanup_attempted=cleanup_attempted,
+        capacity_maintenance_attempted=maintenance_attempted,
     )
     assert result == StorageDecisionResult(
         outcome, outcome is StorageDecisionOutcome.PROCEED
+    )
+
+
+def test_capacity_maintenance_decision_is_conservative_with_freelist_pages() -> None:
+    capacity = _capacity(remaining=0, freelist_count=8)
+    free_space = FreeSpaceResult(
+        True, FREE_SPACE_RESERVE_BYTES, FREE_SPACE_RESERVE_BYTES
+    )
+    wal = _wal_result(0)
+    assert decide_storage_action(capacity, free_space, wal).outcome is (
+        StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED
+    )
+    assert (
+        decide_storage_action(
+            capacity,
+            free_space,
+            wal,
+            capacity_maintenance_attempted=True,
+        ).outcome
+        is StorageDecisionOutcome.CAPACITY_BLOCKED
+    )
+
+
+def test_storage_decision_performs_no_sql_or_filesystem_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def prohibited(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("pure decision performed external work")
+
+    monkeypatch.setattr(envelope, "_pragma_integer", prohibited)
+    monkeypatch.setattr(envelope.shutil, "disk_usage", prohibited)
+    result = decide_storage_action(
+        _capacity(remaining=1),
+        FreeSpaceResult(True, FREE_SPACE_RESERVE_BYTES, FREE_SPACE_RESERVE_BYTES),
+        _wal_result(0),
+    )
+    assert result.outcome is StorageDecisionOutcome.PROCEED
+
+
+def test_retention_then_one_incremental_vacuum_is_the_bounded_capacity_sequence(
+    store_path: tuple[Path, HealthHistoryStore],
+) -> None:
+    _path, store = store_path
+    connection = store._connection  # noqa: SLF001
+    cursor = connection.execute(
+        "INSERT INTO alerts(scope, kind, lifecycle, severity, opened_at_utc_us, "
+        "recovered_at_utc_us, archived_at_utc_us, episode_count, occurrence_count, "
+        "cooldown_until_utc_us) VALUES "
+        "('overall', 'degraded', 'archived', 'degraded', 1, 2, 3, 1, 1, 2)"
+    )
+    assert cursor.lastrowid is not None
+    connection.execute("BEGIN")
+    connection.executemany(
+        "INSERT INTO alert_events(alert_id, event_type, event_at_utc_us, "
+        "resulting_lifecycle) VALUES (?, 'occurrence_updated', ?, 'recovered')",
+        ((cursor.lastrowid, index + 1) for index in range(800)),
+    )
+    connection.commit()
+    capacity_before = store.inspect_storage_capacity()
+
+    cleanup = store.cleanup_retention(
+        now_utc_us=31 * 24 * 60 * 60 * 1_000_000,
+    )
+    capacity_after_cleanup = store.inspect_storage_capacity()
+    assert cleanup.logical_rows_deleted == RETENTION_ROW_BUDGET
+    assert capacity_after_cleanup.page_count == capacity_before.page_count
+    assert capacity_after_cleanup.used_bytes == capacity_before.used_bytes
+    assert capacity_after_cleanup.freelist_count > capacity_before.freelist_count
+    shortage = FreeSpaceResult(
+        False,
+        FREE_SPACE_RESERVE_BYTES - 1,
+        FREE_SPACE_RESERVE_BYTES,
+    )
+    assert (
+        decide_storage_action(capacity_after_cleanup, shortage, _wal_result(0)).outcome
+        is StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED
+    )
+
+    vacuum = store.incremental_vacuum()
+    capacity_after_vacuum = store.inspect_storage_capacity()
+    assert vacuum.pages_requested == INCREMENTAL_VACUUM_PAGES
+    assert capacity_after_vacuum.page_count <= capacity_after_cleanup.page_count
+    assert capacity_after_vacuum.freelist_count <= (
+        capacity_after_cleanup.freelist_count
+    )
+    assert (
+        decide_storage_action(
+            capacity_after_vacuum,
+            FreeSpaceResult(
+                True,
+                FREE_SPACE_RESERVE_BYTES,
+                FREE_SPACE_RESERVE_BYTES,
+            ),
+            _wal_result(0),
+            capacity_maintenance_attempted=True,
+        ).outcome
+        is StorageDecisionOutcome.PROCEED
+    )
+    assert (
+        decide_storage_action(
+            _capacity(remaining=0, freelist_count=1),
+            shortage,
+            _wal_result(0),
+            capacity_maintenance_attempted=True,
+        ).outcome
+        is StorageDecisionOutcome.CAPACITY_BLOCKED
     )
 
 
@@ -874,13 +1325,20 @@ def test_storage_result_models_are_immutable_and_sanitized() -> None:
     with pytest.raises(FrozenInstanceError):
         capacity.page_count = 1  # type: ignore[misc]
     with pytest.raises(ValueError):
-        StorageCapacityResult(1, 2, PAGE_SIZE_BYTES, MAX_DATABASE_BYTES, 1)
+        StorageCapacityResult(1, 0, 2, PAGE_SIZE_BYTES, MAX_DATABASE_BYTES, 1)
     with pytest.raises(ValueError):
         FreeSpaceResult(True, FREE_SPACE_RESERVE_BYTES - 1, FREE_SPACE_RESERVE_BYTES)
     with pytest.raises(ValueError):
-        WalInspectionResult(True, 1, 32, False, False)
+        WalInspectionResult(True, 2, 1, _wal_size(1), 0, False, False)
     with pytest.raises(ValueError):
-        PassiveCheckpointResult(PassiveCheckpointOutcome.COMPLETED, 256, False, 1, 2)
+        PassiveCheckpointResult(
+            PassiveCheckpointOutcome.COMPLETED,
+            256,
+            _wal_size(256),
+            False,
+            1,
+            2,
+        )
     assert "path" not in repr(capacity).lower()
     assert "device" not in repr(capacity).lower()
 
@@ -912,6 +1370,7 @@ def test_public_surface_and_regression_boundaries_are_fixed() -> None:
         inspect.signature(HealthHistoryStore.passive_wal_checkpoint).parameters
     ) == ("self",)
     source = inspect.getsource(envelope).lower()
+    assert source.count("pragma wal_checkpoint(noop)") == 1
     assert source.count("pragma wal_checkpoint(passive)") == 1
     assert "wal_checkpoint(full)" not in source
     assert "wal_checkpoint(restart)" not in source
@@ -927,6 +1386,7 @@ def test_public_surface_and_regression_boundaries_are_fixed() -> None:
         / "ingestion.py"
     ).read_text(encoding="utf-8")
     assert "cleanup_retention" not in ingestion_source
+    assert "incremental_vacuum" not in ingestion_source
     assert "wal_checkpoint" not in ingestion_source
     root = Path(__file__).parents[1] / "src" / "aurora_core"
     runtime_files = (
