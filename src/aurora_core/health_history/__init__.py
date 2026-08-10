@@ -59,6 +59,22 @@ from aurora_core.health_history.queries import (
     QueryError,
     QueryRejection,
 )
+from aurora_core.health_history.storage_envelope import (
+    FREE_SPACE_RESERVE_BYTES,
+    WAL_CHECKPOINT_THRESHOLD_FRAMES,
+    WAL_HARD_LIMIT_BYTES,
+    WAL_HARD_LIMIT_FRAMES,
+    FreeSpaceResult,
+    PassiveCheckpointOutcome,
+    PassiveCheckpointResult,
+    StorageCapacityResult,
+    StorageDecisionOutcome,
+    StorageDecisionResult,
+    StorageEnvelopeError,
+    StorageEnvelopeRejection,
+    WalInspectionResult,
+    decide_storage_action,
+)
 from aurora_core.health_history.store import HealthHistoryStore
 
 __all__ = [
@@ -77,6 +93,8 @@ __all__ = [
     "DEFAULT_ALERT_PAGE_SIZE",
     "DEFAULT_HEALTH_SAMPLE_PAGE_SIZE",
     "DEFAULT_RETENTION_DAYS",
+    "FREE_SPACE_RESERVE_BYTES",
+    "FreeSpaceResult",
     "HealthComponentRecord",
     "HealthHistoryStatus",
     "HealthHistoryStore",
@@ -99,6 +117,8 @@ __all__ = [
     "MaintenanceError",
     "MaintenanceOutcome",
     "MaintenanceRejection",
+    "PassiveCheckpointOutcome",
+    "PassiveCheckpointResult",
     "ProjectionError",
     "ProjectionRejection",
     "QueryError",
@@ -107,6 +127,16 @@ __all__ = [
     "RetentionCleanupResult",
     "SampleKind",
     "SamplingGapPhase",
+    "StorageCapacityResult",
+    "StorageDecisionOutcome",
+    "StorageDecisionResult",
+    "StorageEnvelopeError",
+    "StorageEnvelopeRejection",
+    "WAL_CHECKPOINT_THRESHOLD_FRAMES",
+    "WAL_HARD_LIMIT_BYTES",
+    "WAL_HARD_LIMIT_FRAMES",
+    "WalInspectionResult",
+    "decide_storage_action",
     "project_health_report",
     "validate_health_projection",
 ]

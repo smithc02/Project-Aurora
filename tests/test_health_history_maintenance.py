@@ -410,6 +410,7 @@ def test_schema_creation_rejects_auto_vacuum_none_before_creating_tables(
         == []
     )
     connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+    connection.execute("PRAGMA max_page_count = 16384")
     schema.create_schema_v1(connection, applied_at_utc_us=1)
     assert connection.execute("PRAGMA auto_vacuum").fetchone() == (
         AUTO_VACUUM_INCREMENTAL,

@@ -431,9 +431,25 @@ claims rollback. There is no retry, full vacuum, WAL checkpoint, or drain loop.
 
 No current runtime entry point imports this package. There is no configuration,
 deployment database creation, scheduler or maintenance cadence, route,
-acknowledgment, WAL checkpoint, capacity integration, or device/service/network
-behavior. Existing portal routes and public `GET /api/health` schema version 1
-remain independent and unchanged. The next slices are scheduler/storage-envelope
-integration, separately authenticated acknowledgment, and separately reviewed
-presentation/runtime integration. See the detailed [health-history and alerting
+acknowledgment, automatic capacity action, or device/service/network behavior.
+
+The fifth isolated slice adds direct-only storage-envelope primitives. Every
+store connection sets and verifies SQLite's connection-scoped
+`max_page_count=16384`; because that pragma is not persistent across connections,
+it is not represented as a schema field or repaired on disk. Independent
+preflight still requires 4-KiB pages, no more than 16,384 pages/64 MiB, and a
+fixed 128-MiB parent-filesystem reserve. WAL metadata is derived from the
+validated sidecar name and checked as a 32-byte header followed by complete
+24-byte-frame-header plus 4-KiB-page frames. A checkpoint becomes due at 256
+frames, remains eligible through 960 frames and 4 MiB including framing, and is
+refused above either bound. `passive_wal_checkpoint` executes at most one fixed
+PASSIVE pragma under one second and validates its single three-integer result;
+it never uses FULL, RESTART, or TRUNCATE. A pure decision helper returns
+`proceed`, `cleanup_required`, `capacity_blocked`, `wal_checkpoint_due`, or
+`wal_oversize_blocked` without performing I/O.
+
+Existing portal routes and public `GET /api/health` schema version 1 remain
+independent and unchanged. The next slices are scheduler/runtime integration,
+separately authenticated acknowledgment, and separately reviewed presentation
+integration. See the detailed [health-history and alerting
 design](health-history-alerting.md).
