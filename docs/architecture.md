@@ -443,18 +443,24 @@ bounded freelist count without treating free pages as write authorization. WAL
 physical allocation is derived from the validated sidecar name and checked as
 a 32-byte header followed by complete 24-byte-frame-header plus 4-KiB-page
 slots. One fixed `wal_checkpoint(NOOP)` supplies the separate current logical
-and checkpointed-frame counts without moving frames. A checkpoint becomes due
-at 256 current logical frames and remains eligible through 960 logical frames,
-while a physical WAL above 4 MiB is refused independently. Recycled old frame
-slots therefore cannot trigger a false checkpoint, but an excessive physical
-footprint remains preserved for review. `passive_wal_checkpoint` executes at
-most one fixed PASSIVE pragma under one second and validates its single
-three-integer result; it never uses FULL, RESTART, or TRUNCATE. A pure decision
-helper returns `proceed`, `capacity_maintenance_required`, `capacity_blocked`,
-`wal_checkpoint_due`, or `wal_oversize_blocked` without performing I/O. The
-capacity-maintenance outcome describes exactly one retention cleanup, then at
-most one incremental-vacuum opportunity, then one reinspection; it invokes none
-of those operations itself.
+and checkpointed-frame counts without moving frames. Before that SQL executes,
+an exact defensive `sqlite_version_info` capability guard requires SQLite
+3.51.3 or newer; unsupported or malformed runtime metadata returns only
+`unsupported_runtime` and does not mark the database corrupt. The reviewed
+production Raspberry Pi provides Python 3.12.13 with SQLite 3.53.1. A
+checkpoint becomes due at 256 current logical frames and remains eligible
+through 960 logical frames, while a physical WAL above 4 MiB is refused
+independently. Recycled old frame slots therefore cannot trigger a false
+checkpoint, but an excessive physical footprint remains preserved for review.
+`passive_wal_checkpoint` executes at most one fixed PASSIVE pragma under one
+second and validates its single three-integer result. Checkpoint-lock
+contention `(1, -1, -1)` is normalized to a fixed non-trust-losing BUSY result
+with unavailable counts represented as zeros; there is no retry. It never uses
+FULL, RESTART, or TRUNCATE. A pure decision helper returns `proceed`,
+`capacity_maintenance_required`, `capacity_blocked`, `wal_checkpoint_due`, or
+`wal_oversize_blocked` without performing I/O. The capacity-maintenance outcome
+describes exactly one retention cleanup, then at most one incremental-vacuum
+opportunity, then one reinspection; it invokes none of those operations itself.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. The next slices are scheduler/runtime integration,

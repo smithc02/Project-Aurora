@@ -1308,8 +1308,15 @@ Every other accepted size is exactly
 file, or overflow is malformed state. Exactly one code-owned
 `PRAGMA wal_checkpoint(NOOP)` supplies the separate current logical and already
 checkpointed frame counts; its single three-integer row is consumed and
-strictly validated, including SQLite's `-1, -1` no-WAL status. Checkpoint-lock
-busy/locked is a sanitized non-trust failure, never a guessed frame count.
+strictly validated, including SQLite's `-1, -1` no-WAL status. A fixed
+capability guard validates the exact integer fields of
+`sqlite3.sqlite_version_info` and requires SQLite 3.51.3 or newer before the
+NOOP statement is executed. Unsupported or malformed runtime metadata returns
+only `unsupported_runtime`, executes no checkpoint SQL, leaves an otherwise
+trusted store open, and never falls back to PASSIVE or WAL/SHM parsing. The
+reviewed production Raspberry Pi reports Python 3.12.13 and SQLite 3.53.1.
+Checkpoint-lock busy/locked is a sanitized non-trust failure, never a guessed
+frame count.
 
 No checkpoint is due below 256 current logical frames. From 256 through 960
 logical frames, while the physical file remains no larger than 4 MiB, one
@@ -1322,12 +1329,18 @@ recycled WAL stays blocked and is never truncated automatically.
 
 `passive_wal_checkpoint()` first performs that inspection, then executes exactly
 one code-owned `PRAGMA wal_checkpoint(PASSIVE)` only when eligible. It fetches
-at most two rows and requires exactly one row of exactly three nonnegative
-integers: busy flag zero or one, log-frame count, and checkpointed-frame count
-no greater than the log count. One means a fixed completed-busy outcome; there
-is no retry. The one-second deadline covers WAL inspection, pre/post pragma
-checks, and result consumption, with a temporary progress handler always
-cleared. It never issues FULL, RESTART, or TRUNCATE and does not claim PASSIVE
+at most two rows and requires exactly one row of exactly three integers. The
+busy flag is zero or one. A non-busy row requires bounded nonnegative log and
+checkpointed-frame counts with the latter no greater than the former. One means
+a fixed completed-busy outcome; there is no retry. The real checkpoint-lock
+contention form `(1, -1, -1)` is accepted as BUSY before nonnegative count
+validation and normalized to zero public counts because those values are
+unavailable, not completion metrics.
+Mixed sentinel states remain malformed and trust-losing; a BUSY row with
+available nonnegative counts must satisfy the ordinary bounds and ordering. The
+one-second deadline covers WAL inspection, pre/post pragma checks, and result
+consumption, with a temporary progress handler always cleared. It never issues
+FULL, RESTART, or TRUNCATE and does not claim PASSIVE
 empties or truncates the WAL. A concurrent reader may leave checkpointed frames
 below the returned log count, and concurrent writes may make the PASSIVE log
 count larger than the preceding NOOP count; neither ordinary condition is

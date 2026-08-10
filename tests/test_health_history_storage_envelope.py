@@ -7,6 +7,8 @@ import os
 import socket
 import sqlite3
 import subprocess
+import threading
+import time
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
@@ -198,6 +200,66 @@ def _sqlite_error(code: int, message: str) -> sqlite3.OperationalError:
     error = sqlite3.OperationalError(message)
     error.sqlite_errorcode = code  # type: ignore[attr-defined]
     return error
+
+
+@pytest.mark.parametrize("version", [(3, 51, 3), (3, 51, 4), (3, 53, 1)])
+def test_noop_minimum_sqlite_versions_are_accepted(
+    monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]
+) -> None:
+    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    connection, fake = _fake_connection([(0, 1, 0)])
+    assert envelope._read_noop_status(connection, None) == (1, 0, False)
+    assert fake.execute_calls == ["PRAGMA wal_checkpoint(NOOP)"]
+
+
+@pytest.mark.parametrize("version", [(3, 51, 2), (3, 50, 99), (2, 99, 99)])
+def test_unsupported_sqlite_version_executes_no_checkpoint_sql(
+    monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]
+) -> None:
+    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    connection, fake = _fake_connection([(0, 300, 0)])
+    with pytest.raises(StorageEnvelopeError) as caught:
+        envelope._passive_wal_checkpoint(
+            connection, Path("unused.db"), monotonic=lambda: 0.0
+        )
+    assert caught.value.reason is StorageEnvelopeRejection.UNSUPPORTED_RUNTIME
+    assert not caught.value.trust_lost
+    assert str(caught.value) == "unsupported_runtime"
+    assert fake.execute_calls == []
+    assert fake.progress_calls == []
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        [3, 51, 3],
+        (3, 51),
+        (3, 51, 3, 0),
+        (True, 51, 3),
+        (3, "51", 3),
+        (3, 51, 3.0),
+        (-1, 51, 3),
+        (3, envelope._MAX_SQLITE_VERSION_COMPONENT + 1, 3),
+    ],
+)
+def test_malformed_sqlite_version_fails_safely_before_noop(
+    monkeypatch: pytest.MonkeyPatch, version: object
+) -> None:
+    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    connection, fake = _fake_connection([(0, 1, 0)])
+    with pytest.raises(StorageEnvelopeError) as caught:
+        envelope._read_noop_status(connection, None)
+    assert caught.value.reason is StorageEnvelopeRejection.UNSUPPORTED_RUNTIME
+    assert not caught.value.trust_lost
+    assert fake.execute_calls == []
+
+
+def test_reviewed_pi_sqlite_3531_satisfies_noop_capability_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", (3, 53, 1))
+    envelope._require_noop_sqlite_version()
 
 
 def test_new_database_capacity_and_fixed_connection_limit(
@@ -747,6 +809,31 @@ def test_checkpoint_busy_result_is_sanitized_and_not_retried(
     assert len(fake.execute_calls) == 1
 
 
+def test_checkpoint_unavailable_count_busy_result_is_normalized_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection, fake = _fake_connection([(1, -1, -1)])
+    monkeypatch.setattr(
+        envelope,
+        "_inspect_wal",
+        lambda connection, path, **kwargs: _wal_result(300),
+    )
+    result = envelope._passive_wal_checkpoint(
+        connection, Path("unused.db"), monotonic=lambda: 0.0
+    )
+    assert result == PassiveCheckpointResult(
+        PassiveCheckpointOutcome.BUSY,
+        300,
+        _wal_size(300),
+        True,
+        0,
+        0,
+    )
+    assert fake.execute_calls == ["PRAGMA wal_checkpoint(PASSIVE)"]
+    assert fake.cursor.fetch_sizes == [2]
+    assert fake.progress_calls[-1] == (None, 0)
+
+
 def test_incomplete_passive_progress_is_a_valid_completed_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -781,6 +868,10 @@ def test_incomplete_passive_progress_is_a_valid_completed_result(
         [(0, 1, False)],
         [(0, -1, 0)],
         [(0, 1, -1)],
+        [(1, -1, 0)],
+        [(1, 0, -1)],
+        [(1, 1, 2)],
+        [(1, envelope.MAX_WAL_INSPECTION_FRAMES + 1, 0)],
         [(2, 1, 1)],
         [(0, 1, 2)],
         [(0, envelope.MAX_WAL_INSPECTION_FRAMES + 1, 0)],
@@ -977,6 +1068,90 @@ def test_real_passive_checkpoint_preserves_every_logical_table(
     assert _snapshot(path) == before
 
 
+def test_real_checkpoint_lock_contention_is_busy_without_trust_loss(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    _seed_real_wal(store)
+    wal_before = store.inspect_wal()
+    before = _snapshot(path)
+    uri = f"{path.absolute().as_uri()}?mode=rw"
+    writer = sqlite3.connect(uri, uri=True, isolation_level=None)
+    probe = sqlite3.connect(uri, uri=True, isolation_level=None)
+    holder_started = threading.Event()
+    holder_done = threading.Event()
+    holder_result: list[tuple[object, ...]] = []
+
+    def hold_checkpoint_lock() -> None:
+        holder = sqlite3.connect(uri, uri=True, isolation_level=None)
+        holder.execute("PRAGMA busy_timeout = 3000")
+        holder_started.set()
+        try:
+            row = holder.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+            holder_result.append(cast(tuple[object, ...], row))
+        finally:
+            holder.close()
+            holder_done.set()
+
+    writer.execute("PRAGMA busy_timeout = 0")
+    probe.execute("PRAGMA busy_timeout = 0")
+    writer.execute("BEGIN IMMEDIATE")
+    thread = threading.Thread(target=hold_checkpoint_lock, daemon=True)
+    thread.start()
+    traced: list[str] = []
+    clear_calls = 0
+    original_clear = envelope._clear_progress_handler
+
+    def tracked_clear(connection: sqlite3.Connection) -> None:
+        nonlocal clear_calls
+        original_clear(connection)
+        clear_calls += 1
+
+    try:
+        assert holder_started.wait(timeout=1.0)
+        raw_busy: tuple[int, int, int] | None = None
+        lock_deadline = time.monotonic() + 2.0
+        while time.monotonic() < lock_deadline:
+            candidate = probe.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            assert candidate is not None
+            if candidate[0] == 1:
+                raw_busy = cast(tuple[int, int, int], candidate)
+                break
+            time.sleep(0.005)
+        assert raw_busy is not None
+        assert raw_busy[0] == 1
+        if raw_busy[1:] != (-1, -1):
+            assert 0 <= raw_busy[2] <= raw_busy[1]
+
+        monkeypatch.setattr(
+            envelope,
+            "_inspect_wal",
+            lambda connection, candidate, **kwargs: wal_before,
+        )
+        monkeypatch.setattr(envelope, "_clear_progress_handler", tracked_clear)
+        store._connection.set_trace_callback(traced.append)  # noqa: SLF001
+        try:
+            result = store.passive_wal_checkpoint()
+        finally:
+            store._connection.set_trace_callback(None)  # noqa: SLF001
+    finally:
+        writer.rollback()
+        thread.join(timeout=4.0)
+        probe.close()
+        writer.close()
+
+    assert holder_done.is_set()
+    assert holder_result and holder_result[0][0] == 0
+    assert result.outcome is PassiveCheckpointOutcome.BUSY
+    assert result.busy
+    assert 0 <= result.checkpointed_frames <= result.log_frames
+    assert traced.count("PRAGMA wal_checkpoint(PASSIVE)") == 1
+    assert clear_calls == 1
+    assert not store.closed
+    assert _snapshot(path) == before
+
+
 def test_real_recycled_wal_uses_current_logical_generation(
     store_path: tuple[Path, HealthHistoryStore],
 ) -> None:
@@ -1036,6 +1211,32 @@ def test_public_envelope_operations_preserve_logical_tables(
             lambda connection, path, **kwargs: _wal_result(0),
         )
         store.passive_wal_checkpoint()
+    assert _snapshot(path) == before
+
+
+@pytest.mark.parametrize("operation", ["inspect", "checkpoint"])
+def test_public_unsupported_runtime_is_non_trust_and_executes_no_checkpoint(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    path, store = store_path
+    before = _snapshot(path)
+    traced: list[str] = []
+    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", (3, 51, 2))
+    store._connection.set_trace_callback(traced.append)  # noqa: SLF001
+    try:
+        with pytest.raises(StorageEnvelopeError) as caught:
+            if operation == "inspect":
+                store.inspect_wal()
+            else:
+                store.passive_wal_checkpoint()
+    finally:
+        store._connection.set_trace_callback(None)  # noqa: SLF001
+    assert caught.value.reason is StorageEnvelopeRejection.UNSUPPORTED_RUNTIME
+    assert not caught.value.trust_lost
+    assert not store.closed
+    assert not any("wal_checkpoint" in statement.lower() for statement in traced)
     assert _snapshot(path) == before
 
 

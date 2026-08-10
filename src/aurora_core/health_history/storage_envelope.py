@@ -32,6 +32,8 @@ WAL_INSPECTION_LIMIT_BYTES: Final = MAX_DATABASE_BYTES
 MAX_WAL_INSPECTION_FRAMES: Final = (
     WAL_INSPECTION_LIMIT_BYTES - WAL_HEADER_BYTES
 ) // WAL_FRAME_BYTES
+_MINIMUM_NOOP_SQLITE_VERSION: Final = (3, 51, 3)
+_MAX_SQLITE_VERSION_COMPONENT: Final = 2**31 - 1
 CHECKPOINT_SECONDS: Final = 1.0
 PROGRESS_HANDLER_STEPS: Final = 1_000
 MAX_FILESYSTEM_BYTES: Final = 2**63 - 1
@@ -45,6 +47,7 @@ _PASSIVE_CHECKPOINT_SQL: Final = "PRAGMA wal_checkpoint(PASSIVE)"
 
 
 class StorageEnvelopeRejection(StrEnum):
+    UNSUPPORTED_RUNTIME = "unsupported_runtime"
     STORAGE_BUSY = "storage_busy"
     TIMED_OUT = "timed_out"
     PERSISTENCE_FAILED = "persistence_failed"
@@ -473,6 +476,7 @@ def _inspect_physical_wal(
 def _read_noop_status(
     connection: sqlite3.Connection, deadline: _Deadline | None
 ) -> tuple[int, int, bool]:
+    _require_noop_sqlite_version()
     cursor = connection.execute(_NOOP_CHECKPOINT_SQL)
     _check_deadline(deadline)
     rows = cursor.fetchmany(2)
@@ -500,6 +504,20 @@ def _read_noop_status(
     ):
         raise _malformed()
     return logical_frame_count, checkpointed_frames, False
+
+
+def _require_noop_sqlite_version() -> None:
+    version: object = sqlite3.sqlite_version_info
+    if type(version) is not tuple or len(version) != 3:
+        raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
+    if any(
+        type(component) is not int
+        or not 0 <= component <= _MAX_SQLITE_VERSION_COMPONENT
+        for component in version
+    ):
+        raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
+    if version < _MINIMUM_NOOP_SQLITE_VERSION:
+        raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
 
 
 def _check_deadline(deadline: _Deadline | None) -> None:
@@ -543,14 +561,19 @@ def _passive_wal_checkpoint(
             values: list[int] = []
             for value in rows[0]:
                 deadline.check()
-                if (
-                    type(value) is not int
-                    or not 0 <= value <= MAX_WAL_INSPECTION_FRAMES
-                ):
+                if type(value) is not int:
                     raise _malformed()
                 values.append(value)
             busy_value, log_frames, checkpointed_frames = values
-            if busy_value not in {0, 1} or checkpointed_frames > log_frames:
+            if busy_value not in {0, 1}:
+                raise _malformed()
+            if busy_value == 1 and (log_frames, checkpointed_frames) == (-1, -1):
+                log_frames = 0
+                checkpointed_frames = 0
+            elif (
+                not 0 <= log_frames <= MAX_WAL_INSPECTION_FRAMES
+                or not 0 <= checkpointed_frames <= log_frames
+            ):
                 raise _malformed()
             _fault(StorageEnvelopeStage.CHECKPOINT_AFTER)
             deadline.check()
