@@ -38,6 +38,7 @@ from aurora_core.health_history.maintenance import (
 from aurora_core.health_history.models import (
     AUTO_VACUUM_INCREMENTAL,
     BUSY_TIMEOUT_MILLISECONDS,
+    MAX_DATABASE_PAGES,
     PAGE_SIZE_BYTES,
     AlertLifecycle,
     HealthHistoryStatus,
@@ -65,6 +66,19 @@ from aurora_core.health_history.schema import (
     SchemaVerificationError,
     create_schema_v1,
     verify_schema_v1,
+)
+from aurora_core.health_history.storage_envelope import (
+    WAL_INSPECTION_LIMIT_BYTES,
+    FreeSpaceResult,
+    PassiveCheckpointResult,
+    StorageCapacityResult,
+    StorageEnvelopeError,
+    StorageEnvelopeRejection,
+    WalInspectionResult,
+    _inspect_free_space,
+    _inspect_storage_capacity,
+    _inspect_wal,
+    _passive_wal_checkpoint,
 )
 
 
@@ -115,6 +129,8 @@ class HealthHistoryStore:
             _configure_new_database(connection)
             created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             create_schema_v1(connection, applied_at_utc_us=created_at_utc_us)
+            created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
+            _set_fixed_max_page_count(connection)
             created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
             _verify_connection_settings(connection)
             created_sidecars = _advance_sidecar_snapshot(path, created_sidecars)
@@ -319,6 +335,34 @@ class HealthHistoryStore:
             )
         )
 
+    def inspect_storage_capacity(self) -> StorageCapacityResult:
+        """Return the fixed main-database page and byte envelope."""
+        return self._storage_envelope_operation(
+            lambda connection: _inspect_storage_capacity(connection)
+        )
+
+    def inspect_free_space(self) -> FreeSpaceResult:
+        """Return the fixed reserve result for the validated parent filesystem."""
+        return self._storage_envelope_operation(
+            lambda connection: _inspect_free_space(self._path.parent)
+        )
+
+    def inspect_wal(self) -> WalInspectionResult:
+        """Inspect only fixed WAL metadata derived from the database path."""
+        return self._storage_envelope_operation(
+            lambda connection: _inspect_wal(connection, self._path)
+        )
+
+    def passive_wal_checkpoint(self) -> PassiveCheckpointResult:
+        """Run at most one bounded code-owned PASSIVE checkpoint opportunity."""
+        return self._storage_envelope_operation(
+            lambda connection: _passive_wal_checkpoint(
+                connection,
+                self._path,
+                monotonic=self._monotonic,
+            )
+        )
+
     def _read_query[T](self, reader: Callable[[sqlite3.Connection], T]) -> T:
         self._require_open()
         try:
@@ -391,6 +435,45 @@ class HealthHistoryStore:
                 MaintenanceRejection.TRUST_FAILED, trust_lost=True
             ) from None
 
+    def _storage_envelope_operation[T](
+        self, operation: Callable[[sqlite3.Connection], T]
+    ) -> T:
+        self._require_open()
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_storage_sidecar_snapshot(self._path, self._sidecars)
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise StorageEnvelopeError(
+                StorageEnvelopeRejection.TRUST_FAILED, trust_lost=True
+            ) from None
+        storage_error: StorageEnvelopeError | None = None
+        result: T | object = object()
+        try:
+            result = operation(self._connection)
+        except StorageEnvelopeError as error:
+            if error.trust_lost:
+                self.close()
+                raise
+            storage_error = error
+        self._finish_storage_envelope_identity_validation(sidecars)
+        if storage_error is not None:
+            raise storage_error
+        return cast(T, result)
+
+    def _finish_storage_envelope_identity_validation(
+        self, sidecars: dict[str, PathIdentity]
+    ) -> None:
+        try:
+            validate_database_file(self._path, expected=self._identity)
+            sidecars = _advance_storage_sidecar_snapshot(self._path, sidecars)
+            self._sidecars = _advance_storage_sidecar_snapshot(self._path, sidecars)
+        except (FilesystemBoundaryError, OSError):
+            self.close()
+            raise StorageEnvelopeError(
+                StorageEnvelopeRejection.TRUST_FAILED, trust_lost=True
+            ) from None
+
     def close(self) -> None:
         if self._closed:
             return
@@ -433,10 +516,23 @@ def _advance_sidecar_snapshot(
     return after
 
 
+def _advance_storage_sidecar_snapshot(
+    path: Path, before: dict[str, PathIdentity]
+) -> dict[str, PathIdentity]:
+    after = validate_sidecars(path, maximum_wal_bytes=WAL_INSPECTION_LIMIT_BYTES)
+    require_stable_sidecars(before, after)
+    return after
+
+
 def _configure_new_database(connection: sqlite3.Connection) -> None:
     connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MILLISECONDS}")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(f"PRAGMA page_size = {PAGE_SIZE_BYTES}")
+    maximum = connection.execute(
+        f"PRAGMA max_page_count = {MAX_DATABASE_PAGES}"
+    ).fetchone()
+    if maximum != (MAX_DATABASE_PAGES,):
+        raise SchemaVerificationError("max_page_count_mismatch")
     connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
     auto_vacuum = connection.execute("PRAGMA auto_vacuum").fetchone()
     if auto_vacuum != (AUTO_VACUUM_INCREMENTAL,):
@@ -451,8 +547,17 @@ def _configure_new_database(connection: sqlite3.Connection) -> None:
 def _configure_existing_database(connection: sqlite3.Connection) -> None:
     connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MILLISECONDS}")
     connection.execute("PRAGMA foreign_keys = ON")
+    _set_fixed_max_page_count(connection)
     connection.execute("PRAGMA synchronous = FULL")
     connection.execute("PRAGMA wal_autocheckpoint = 0")
+
+
+def _set_fixed_max_page_count(connection: sqlite3.Connection) -> None:
+    maximum = connection.execute(
+        f"PRAGMA max_page_count = {MAX_DATABASE_PAGES}"
+    ).fetchone()
+    if maximum != (MAX_DATABASE_PAGES,):
+        raise SchemaVerificationError("max_page_count_mismatch")
 
 
 def _verify_connection_settings(connection: sqlite3.Connection) -> None:
@@ -460,6 +565,7 @@ def _verify_connection_settings(connection: sqlite3.Connection) -> None:
         "busy_timeout": BUSY_TIMEOUT_MILLISECONDS,
         "foreign_keys": 1,
         "page_size": PAGE_SIZE_BYTES,
+        "max_page_count": MAX_DATABASE_PAGES,
         "auto_vacuum": AUTO_VACUUM_INCREMENTAL,
         "synchronous": 2,
         "wal_autocheckpoint": 0,

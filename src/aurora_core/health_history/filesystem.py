@@ -146,7 +146,9 @@ def create_database_file(path: Path) -> PathIdentity:
     return identity
 
 
-def validate_sidecars(path: Path) -> dict[str, PathIdentity]:
+def validate_sidecars(
+    path: Path, *, maximum_wal_bytes: int = MAX_WAL_BYTES
+) -> dict[str, PathIdentity]:
     """Validate SQLite's two code-derived sidecars when they exist."""
     identities: dict[str, PathIdentity] = {}
     for suffix in ("-wal", "-shm"):
@@ -155,7 +157,7 @@ def validate_sidecars(path: Path) -> dict[str, PathIdentity]:
             sidecar.lstat()
         except FileNotFoundError:
             continue
-        maximum = MAX_WAL_BYTES if suffix == "-wal" else MAX_SHARED_MEMORY_BYTES
+        maximum = maximum_wal_bytes if suffix == "-wal" else MAX_SHARED_MEMORY_BYTES
         identities[suffix] = validate_database_file(sidecar, maximum_bytes=maximum)
     return identities
 

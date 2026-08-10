@@ -76,7 +76,7 @@
 ## Planned progression
 
 18. **Milestone 18 (implementation in progress; isolated storage, ingestion,
-    read-query, and retention-maintenance slices):
+    read-query, retention-maintenance, and storage-envelope slices):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -90,10 +90,17 @@
     mutation. The fourth slice makes schema version 1 incremental-vacuum ready,
     adds the minimum retention and foreign-key indexes, and exposes one
     deterministic 500-logical-row cleanup transaction plus one fixed 128-page
-    incremental-vacuum call. It is not imported by a runtime entry point,
+    incremental-vacuum call. The fifth slice adds fixed 64-MiB main-database and
+    128-MiB free-space preflights, exact physical WAL framing plus one NOOP
+    current-generation status read (available since SQLite 3.51.0) guarded by
+    Aurora's SQLite 3.51.3 safe-WAL floor because that release fixes the
+    WAL-reset corruption bug affecting versions through 3.51.2 (the reviewed
+    production Pi provides SQLite 3.53.1), a pure bounded retention-cleanup/
+    incremental-vacuum/checkpoint/block decision, and one bounded PASSIVE-
+    checkpoint opportunity. It is not imported by a runtime entry point,
     creates no deployment database, and leaves production history disabled and
     unavailable. Presentation routes, acknowledgment, maintenance scheduling,
-    WAL checkpointing, storage-capacity integration, notifications, and
+    automatic cleanup/checkpoint integration, notifications, and
     automation remain unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the

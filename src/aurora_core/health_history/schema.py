@@ -13,6 +13,7 @@ from aurora_core.health_history.models import (
     AUTO_VACUUM_INCREMENTAL,
     MAX_BOUNDED_COUNTER,
     MAX_COMPONENT_LATENCY_MS,
+    MAX_DATABASE_PAGES,
     MAX_OBSERVATION_SEQUENCE,
     MAX_SCHEMA_OBJECTS,
     MAX_SCHEMA_VERSION,
@@ -366,6 +367,8 @@ def create_schema_v1(connection: sqlite3.Connection, *, applied_at_utc_us: int) 
     try:
         if _pragma_integer(connection, "auto_vacuum") != AUTO_VACUUM_INCREMENTAL:
             raise SchemaVerificationError("auto_vacuum_mismatch")
+        if _pragma_integer(connection, "max_page_count") != MAX_DATABASE_PAGES:
+            raise SchemaVerificationError("max_page_count_mismatch")
         connection.execute("BEGIN IMMEDIATE")
         for statement in TABLE_DDL.values():
             connection.execute(statement)

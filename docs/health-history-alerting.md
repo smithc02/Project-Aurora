@@ -11,13 +11,15 @@ translation, and ingestion-driven alert lifecycle described below. The third
 isolated slice added bounded read-only sample, alert, and event queries with
 immutable result models, deterministic keyset cursors, and strict persisted-row
 validation. The fourth isolated slice adds bounded deterministic retention and
-one fixed incremental-vacuum primitive, still without runtime invocation.
+one fixed incremental-vacuum primitive. The fifth adds fixed storage-envelope
+inspection, decision models, and one bounded PASSIVE-checkpoint primitive. All
+remain without runtime invocation.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
 This slice adds no configuration field, scheduler, worker, route, runtime
-invocation, acknowledgment action, migration, backup, restore, WAL checkpoint,
-notification, or automation action. The query and maintenance APIs are
+invocation, acknowledgment action, migration, backup, restore, scheduled
+checkpoint, notification, or automation action. The query and maintenance APIs are
 reachable only through direct use of the isolated package. Milestones 12
 through 17 remain the current behavior, including public `GET /api/health`
 schema version 1.
@@ -100,6 +102,24 @@ The fourth slice also remains disconnected from runtime and adds:
 - `incremental_vacuum`, which reads the freelist and issues at most one fixed
   `incremental_vacuum(128)` call under one second, without full `VACUUM`, retry,
   looping, or WAL checkpointing.
+
+The fifth slice remains direct-only and adds:
+
+- a fixed main-database envelope of 4-KiB pages, 16,384 pages, and 64 MiB;
+- connection-scoped `max_page_count=16384` setting and verification on every
+  create/open connection, plus independent page-count preflight;
+- a fixed 128-MiB free-space reserve inspection of only the already validated
+  parent filesystem, without probe files or returned path/device information;
+- exact metadata-only physical WAL framing validation using one 32-byte header
+  and complete 24-byte-frame-header plus 4-KiB-page slots, independently from
+  one fixed NOOP status read of the current logical WAL generation;
+- a 256-logical-frame checkpoint threshold, with automatic refusal above 960
+  current logical frames or a 4-MiB physical footprint including framing;
+- one fixed `PRAGMA wal_checkpoint(PASSIVE)` opportunity under one second, with
+  a single strictly validated three-integer row and no retry or drain loop; and
+- a pure typed decision helper for proceed, one fixed bounded capacity-
+  maintenance sequence, capacity block, checkpoint-due, and WAL-oversize block
+  outcomes.
 
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
@@ -1245,10 +1265,106 @@ sample is deleted. The six-row evaluator table remains fixed-size and receives
 no speculative index.
 
 No runtime entry point imports this boundary. There is no startup/hourly/
-120-row invocation, cleanup-before-ingestion integration, WAL checkpoint,
-capacity or free-space enforcement, shutdown maintenance, route, configuration,
-acknowledgment, notification, migration, backup, restore, or production
-database deployment in this slice.
+120-row invocation, cleanup-before-ingestion integration, shutdown maintenance,
+route, configuration, acknowledgment, notification, migration, backup, restore,
+or production database deployment in this slice.
+
+## Isolated storage-envelope boundary
+
+`HealthHistoryStore` also exposes four direct-only typed operations:
+`inspect_storage_capacity()`, `inspect_free_space()`, `inspect_wal()`, and
+`passive_wal_checkpoint()`. They reuse the protected main-file and sidecar
+identity bracket, return no path, mount, device, or raw pragma data, and never
+change a logical schema-version-1 row. Storage-specific sidecar inspection may
+stat a WAL larger than the 4-MiB automatic-checkpoint bound, up to the fixed
+64-MiB inspection ceiling, solely so it can preserve and report structurally
+valid oversize evidence. Existing ingestion/query/retention sidecar limits are
+unchanged.
+
+The main file must retain 4-KiB pages and may contain at most 16,384 pages, or
+64 MiB. SQLite's `max_page_count` is connection-scoped on the deployed
+standard-library contract rather than persistent database schema. Creation sets
+the fixed 16,384-page value before schema work and again after initial schema
+creation; every open sets it before verification. Each setting must return
+exactly 16,384, so an already larger database or ineffective setting fails
+closed. This is a connection safety limit, not a migration or on-open disk
+repair. Independent capacity inspection reads fixed `page_size`, `page_count`,
+`freelist_count`, and `max_page_count` pragmas, rejects any impossible or
+over-limit result as trust loss, and reports only bounded counts and bytes. The
+freelist must be between zero and the page count. Its presence never by itself
+authorizes a write.
+
+Free-space inspection uses the standard-library filesystem API on the already
+validated database parent only. The reserve is fixed at 128 MiB. It creates no
+probe file and returns only a bounded free-byte value, the fixed reserve, and a
+sufficiency boolean. Inspection failure is sanitized; impossible metadata is
+trust loss.
+
+WAL inspection derives only `<database>-wal`, validates its protected regular
+file identity around the operation, and reads file metadata rather than WAL or
+SHM contents. A zero-length or header-only file has zero physical frame slots.
+Every other accepted size is exactly
+`32 + physical_frame_slots * (24 + 4096)` bytes. A leftover byte, short nonzero
+file, or overflow is malformed state. Exactly one code-owned
+`PRAGMA wal_checkpoint(NOOP)` supplies the separate current logical and already
+checkpointed frame counts; its single three-integer row is consumed and
+strictly validated, including SQLite's `-1, -1` no-WAL status. NOOP exists
+beginning with SQLite 3.51.0, but Aurora's fixed safety guard validates the
+exact integer fields of `sqlite3.sqlite_version_info` and requires SQLite
+3.51.3 or newer before the NOOP statement is executed because 3.51.3 fixes the
+WAL-reset corruption bug affecting versions through 3.51.2. Unsupported or
+malformed runtime metadata returns only `unsupported_runtime`, executes no
+checkpoint SQL, leaves an otherwise trusted store open, and never falls back
+to PASSIVE or WAL/SHM parsing. The reviewed production Raspberry Pi reports
+Python 3.12.13 and SQLite 3.53.1.
+Checkpoint-lock busy/locked is a sanitized non-trust failure, never a guessed
+frame count.
+
+No checkpoint is due below 256 current logical frames. From 256 through 960
+logical frames, while the physical file remains no larger than 4 MiB, one
+PASSIVE opportunity is due. More than 960 logical frames or more than 4 MiB of
+physical allocation produces `wal_oversize_blocked`. A recycled WAL may retain
+many old physical slots while its current logical generation is small; those
+slots do not create a false logical threshold or 960-frame refusal. The 4-MiB
+physical-footprint policy remains independent, so a physically oversized
+recycled WAL stays blocked and is never truncated automatically.
+
+`passive_wal_checkpoint()` first performs that inspection, then executes exactly
+one code-owned `PRAGMA wal_checkpoint(PASSIVE)` only when eligible. It fetches
+at most two rows and requires exactly one row of exactly three integers. The
+busy flag is zero or one. A non-busy row requires bounded nonnegative log and
+checkpointed-frame counts with the latter no greater than the former. One means
+a fixed completed-busy outcome; there is no retry. The real checkpoint-lock
+contention form `(1, -1, -1)` is accepted as BUSY before nonnegative count
+validation and normalized to zero public counts because those values are
+unavailable, not completion metrics.
+Mixed sentinel states remain malformed and trust-losing; a BUSY row with
+available nonnegative counts must satisfy the ordinary bounds and ordering. The
+one-second deadline covers WAL inspection, pre/post pragma checks, and result
+consumption, with a temporary progress handler always cleared. It never issues
+FULL, RESTART, or TRUNCATE and does not claim PASSIVE
+empties or truncates the WAL. A concurrent reader may leave checkpointed frames
+below the returned log count, and concurrent writes may make the PASSIVE log
+count larger than the preceding NOOP count; neither ordinary condition is
+corruption. Post-operation identity failure is trust loss and does not claim
+that physical checkpoint work was undone.
+
+`decide_storage_action(...)` is pure and accepts only the immutable capacity,
+free-space, and WAL observations plus one boolean recording whether the caller
+already completed its single capacity-maintenance opportunity. Its fixed
+priority is WAL oversize block; `capacity_maintenance_required` or
+`capacity_blocked` for a full main database or low reserve; checkpoint due;
+then proceed. Capacity maintenance is one documented sequence: at most one
+existing `cleanup_retention()`, at most one existing `incremental_vacuum()` to
+return any reclaimed freelist pages to the filesystem, then exactly one
+reinspection. If that reinspection is still insufficient, the result is
+`capacity_blocked`; there is no second cleanup, vacuum, retry, or queue. The
+helper performs no SQL or filesystem work and does not claim that retention
+deletion alone shrinks an incremental-auto-vacuum database. This slice does not
+call cleanup, vacuum, checkpoint, or the decision helper from ingestion.
+Startup/hourly/120-row scheduling, shutdown TRUNCATE, cleanup-before-write
+orchestration, production paths/configuration, and runtime enablement remain
+deferred.
 
 ## Future dashboard and API boundaries
 
