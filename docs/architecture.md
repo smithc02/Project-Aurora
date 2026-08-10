@@ -443,11 +443,13 @@ bounded freelist count without treating free pages as write authorization. WAL
 physical allocation is derived from the validated sidecar name and checked as
 a 32-byte header followed by complete 24-byte-frame-header plus 4-KiB-page
 slots. One fixed `wal_checkpoint(NOOP)` supplies the separate current logical
-and checkpointed-frame counts without moving frames. Before that SQL executes,
-an exact defensive `sqlite_version_info` capability guard requires SQLite
-3.51.3 or newer; unsupported or malformed runtime metadata returns only
-`unsupported_runtime` and does not mark the database corrupt. The reviewed
-production Raspberry Pi provides Python 3.12.13 with SQLite 3.53.1. A
+and checkpointed-frame counts without moving frames. NOOP exists beginning with
+SQLite 3.51.0, but Aurora's exact defensive `sqlite_version_info` safety guard
+requires SQLite 3.51.3 or newer before that SQL executes because 3.51.3 fixes
+the WAL-reset corruption bug affecting versions through 3.51.2. Unsupported or
+malformed runtime metadata returns only `unsupported_runtime` and does not mark
+the database corrupt. The reviewed production Raspberry Pi provides Python
+3.12.13 with SQLite 3.53.1. A
 checkpoint becomes due at 256 current logical frames and remains eligible
 through 960 logical frames, while a physical WAL above 4 MiB is refused
 independently. Recycled old frame slots therefore cannot trigger a false

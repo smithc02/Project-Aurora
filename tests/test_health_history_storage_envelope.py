@@ -203,7 +203,7 @@ def _sqlite_error(code: int, message: str) -> sqlite3.OperationalError:
 
 
 @pytest.mark.parametrize("version", [(3, 51, 3), (3, 51, 4), (3, 53, 1)])
-def test_noop_minimum_sqlite_versions_are_accepted(
+def test_safe_wal_sqlite_versions_are_accepted(
     monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]
 ) -> None:
     monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
@@ -212,8 +212,11 @@ def test_noop_minimum_sqlite_versions_are_accepted(
     assert fake.execute_calls == ["PRAGMA wal_checkpoint(NOOP)"]
 
 
-@pytest.mark.parametrize("version", [(3, 51, 2), (3, 50, 99), (2, 99, 99)])
-def test_unsupported_sqlite_version_executes_no_checkpoint_sql(
+@pytest.mark.parametrize(
+    "version",
+    [(3, 51, 2), (3, 51, 1), (3, 51, 0), (3, 50, 99), (2, 99, 99)],
+)
+def test_unsafe_wal_sqlite_version_executes_no_checkpoint_sql(
     monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]
 ) -> None:
     monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
@@ -243,7 +246,7 @@ def test_unsupported_sqlite_version_executes_no_checkpoint_sql(
         (3, envelope._MAX_SQLITE_VERSION_COMPONENT + 1, 3),
     ],
 )
-def test_malformed_sqlite_version_fails_safely_before_noop(
+def test_malformed_sqlite_version_fails_safe_wal_guard_before_noop(
     monkeypatch: pytest.MonkeyPatch, version: object
 ) -> None:
     monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
@@ -255,11 +258,11 @@ def test_malformed_sqlite_version_fails_safely_before_noop(
     assert fake.execute_calls == []
 
 
-def test_reviewed_pi_sqlite_3531_satisfies_noop_capability_guard(
+def test_reviewed_pi_sqlite_3531_satisfies_safe_wal_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", (3, 53, 1))
-    envelope._require_noop_sqlite_version()
+    envelope._require_safe_wal_sqlite_version()
 
 
 def test_new_database_capacity_and_fixed_connection_limit(
@@ -1214,16 +1217,18 @@ def test_public_envelope_operations_preserve_logical_tables(
     assert _snapshot(path) == before
 
 
+@pytest.mark.parametrize("version", [(3, 51, 2), (3, 51, 1), (3, 51, 0)])
 @pytest.mark.parametrize("operation", ["inspect", "checkpoint"])
 def test_public_unsupported_runtime_is_non_trust_and_executes_no_checkpoint(
     store_path: tuple[Path, HealthHistoryStore],
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
+    version: tuple[int, int, int],
 ) -> None:
     path, store = store_path
     before = _snapshot(path)
     traced: list[str] = []
-    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", (3, 51, 2))
+    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
     store._connection.set_trace_callback(traced.append)  # noqa: SLF001
     try:
         with pytest.raises(StorageEnvelopeError) as caught:

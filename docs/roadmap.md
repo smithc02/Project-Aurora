@@ -92,10 +92,12 @@
     deterministic 500-logical-row cleanup transaction plus one fixed 128-page
     incremental-vacuum call. The fifth slice adds fixed 64-MiB main-database and
     128-MiB free-space preflights, exact physical WAL framing plus one NOOP
-    current-generation status read guarded by SQLite 3.51.3 or newer (the
-    reviewed production Pi provides SQLite 3.53.1), a pure bounded retention-
-    cleanup/incremental-vacuum/checkpoint/block decision, and one bounded
-    PASSIVE-checkpoint opportunity. It is not imported by a runtime entry point,
+    current-generation status read (available since SQLite 3.51.0) guarded by
+    Aurora's SQLite 3.51.3 safe-WAL floor because that release fixes the
+    WAL-reset corruption bug affecting versions through 3.51.2 (the reviewed
+    production Pi provides SQLite 3.53.1), a pure bounded retention-cleanup/
+    incremental-vacuum/checkpoint/block decision, and one bounded PASSIVE-
+    checkpoint opportunity. It is not imported by a runtime entry point,
     creates no deployment database, and leaves production history disabled and
     unavailable. Presentation routes, acknowledgment, maintenance scheduling,
     automatic cleanup/checkpoint integration, notifications, and

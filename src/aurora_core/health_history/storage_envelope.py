@@ -32,7 +32,7 @@ WAL_INSPECTION_LIMIT_BYTES: Final = MAX_DATABASE_BYTES
 MAX_WAL_INSPECTION_FRAMES: Final = (
     WAL_INSPECTION_LIMIT_BYTES - WAL_HEADER_BYTES
 ) // WAL_FRAME_BYTES
-_MINIMUM_NOOP_SQLITE_VERSION: Final = (3, 51, 3)
+_MINIMUM_SAFE_WAL_SQLITE_VERSION: Final = (3, 51, 3)
 _MAX_SQLITE_VERSION_COMPONENT: Final = 2**31 - 1
 CHECKPOINT_SECONDS: Final = 1.0
 PROGRESS_HANDLER_STEPS: Final = 1_000
@@ -476,7 +476,7 @@ def _inspect_physical_wal(
 def _read_noop_status(
     connection: sqlite3.Connection, deadline: _Deadline | None
 ) -> tuple[int, int, bool]:
-    _require_noop_sqlite_version()
+    _require_safe_wal_sqlite_version()
     cursor = connection.execute(_NOOP_CHECKPOINT_SQL)
     _check_deadline(deadline)
     rows = cursor.fetchmany(2)
@@ -506,7 +506,7 @@ def _read_noop_status(
     return logical_frame_count, checkpointed_frames, False
 
 
-def _require_noop_sqlite_version() -> None:
+def _require_safe_wal_sqlite_version() -> None:
     version: object = sqlite3.sqlite_version_info
     if type(version) is not tuple or len(version) != 3:
         raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
@@ -516,7 +516,7 @@ def _require_noop_sqlite_version() -> None:
         for component in version
     ):
         raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
-    if version < _MINIMUM_NOOP_SQLITE_VERSION:
+    if version < _MINIMUM_SAFE_WAL_SQLITE_VERSION:
         raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
 
 

@@ -1308,13 +1308,15 @@ Every other accepted size is exactly
 file, or overflow is malformed state. Exactly one code-owned
 `PRAGMA wal_checkpoint(NOOP)` supplies the separate current logical and already
 checkpointed frame counts; its single three-integer row is consumed and
-strictly validated, including SQLite's `-1, -1` no-WAL status. A fixed
-capability guard validates the exact integer fields of
-`sqlite3.sqlite_version_info` and requires SQLite 3.51.3 or newer before the
-NOOP statement is executed. Unsupported or malformed runtime metadata returns
-only `unsupported_runtime`, executes no checkpoint SQL, leaves an otherwise
-trusted store open, and never falls back to PASSIVE or WAL/SHM parsing. The
-reviewed production Raspberry Pi reports Python 3.12.13 and SQLite 3.53.1.
+strictly validated, including SQLite's `-1, -1` no-WAL status. NOOP exists
+beginning with SQLite 3.51.0, but Aurora's fixed safety guard validates the
+exact integer fields of `sqlite3.sqlite_version_info` and requires SQLite
+3.51.3 or newer before the NOOP statement is executed because 3.51.3 fixes the
+WAL-reset corruption bug affecting versions through 3.51.2. Unsupported or
+malformed runtime metadata returns only `unsupported_runtime`, executes no
+checkpoint SQL, leaves an otherwise trusted store open, and never falls back
+to PASSIVE or WAL/SHM parsing. The reviewed production Raspberry Pi reports
+Python 3.12.13 and SQLite 3.53.1.
 Checkpoint-lock busy/locked is a sanitized non-trust failure, never a guessed
 frame count.
 
