@@ -1360,11 +1360,40 @@ return any reclaimed freelist pages to the filesystem, then exactly one
 reinspection. If that reinspection is still insufficient, the result is
 `capacity_blocked`; there is no second cleanup, vacuum, retry, or queue. The
 helper performs no SQL or filesystem work and does not claim that retention
-deletion alone shrinks an incremental-auto-vacuum database. This slice does not
-call cleanup, vacuum, checkpoint, or the decision helper from ingestion.
-Startup/hourly/120-row scheduling, shutdown TRUNCATE, cleanup-before-write
-orchestration, production paths/configuration, and runtime enablement remain
-deferred.
+deletion alone shrinks an incremental-auto-vacuum database. Ingestion itself
+still does not call cleanup, vacuum, checkpoint, or the decision helper.
+
+The sixth isolated slice adds `HealthHistoryOrchestrator`, a direct-only
+composition over one already-open injected store. An observation cycle inspects
+capacity, free space, then WAL and applies the pure storage decision before it
+may call the unchanged ingestion method exactly once. Capacity pressure permits
+only one cleanup, one 128-page incremental-vacuum opportunity, and one
+capacity/free-space/WAL reinspection. WAL pressure permits only one PASSIVE
+checkpoint attempt; a completed or concurrent no-work result receives one fresh
+storage decision before ingestion. BUSY, timeout, operational failure, trust
+loss, remaining checkpoint pressure, either capacity block, or logical/physical
+WAL oversize skips persistence without retry or a queue. WAL oversize also
+preserves the sidecar evidence and never triggers automatic truncation.
+
+A separate direct maintenance opportunity runs cleanup once, incremental vacuum
+once, WAL inspection once, and PASSIVE once only when due. It stops after the
+first operational or trust failure and never drains work in a loop. Immutable
+trigger state models—but does not schedule—one startup opportunity, a monotonic
+hourly opportunity at 3,600 seconds, and an opportunity after 120 newly stored
+history rows. State-only acceptance, replay, and failed persistence do not
+advance the stored-row count; the count saturates at the existing fixed bound.
+Only a successfully completed bounded maintenance opportunity resets the row
+count and advances the monotonic marker. Operational failure leaves the trigger
+due for a future caller but causes no internal retry. A nonblocking guard permits
+one observation or maintenance cycle at a time and restores after every result
+or exception.
+
+This core resolves no path, opens or creates no database, schedules nothing,
+and remains unimported by every current runtime entry point. Actual
+startup/hourly/120-row invocation, the 30-second sampling cadence, shutdown
+TRUNCATE, production paths/configuration/database creation, dashboard service
+integration, acknowledgment and presentation routes, backup/restore,
+notifications, and runtime enablement remain deferred.
 
 ## Future dashboard and API boundaries
 

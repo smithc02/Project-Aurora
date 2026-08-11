@@ -464,8 +464,30 @@ FULL, RESTART, or TRUNCATE. A pure decision helper returns `proceed`,
 describes exactly one retention cleanup, then at most one incremental-vacuum
 opportunity, then one reinspection; it invokes none of those operations itself.
 
+The sixth isolated slice adds a direct-only orchestration core over an injected,
+already-open store. Its observation cycle composes capacity, free-space, and WAL
+inspection with the pure storage decision; at capacity pressure it performs at
+most one cleanup, one incremental vacuum, and one reinspection, while checkpoint
+pressure permits at most one PASSIVE attempt and one fresh decision. Only an
+explicit proceed result reaches the existing ingestion method, exactly once.
+Capacity still blocked after maintenance, WAL oversize, checkpoint BUSY,
+timeout, unsupported runtime, persistence failure, incomplete checkpoint
+progress, and trust loss all skip the write without retry. A separate direct
+maintenance opportunity composes cleanup once, vacuum once, WAL inspection
+once, and checkpoint once when due, stopping on its first failure.
+
+Immutable trigger state describes one startup opportunity, a monotonic hourly
+boundary, and a 120-newly-stored-history-row boundary without creating a timer,
+thread, task, or service hook. Replays, state-only observations, and failed
+persistence do not increment the saturating counter, and only successful
+maintenance resets it. One nonblocking guard rejects reentrant/concurrent
+cycles and is restored on every path. The module resolves no production path,
+creates or opens no database, and is not imported by the application, dashboard,
+or runtime packages.
+
 Existing portal routes and public `GET /api/health` schema version 1 remain
-independent and unchanged. The next slices are scheduler/runtime integration,
-separately authenticated acknowledgment, and separately reviewed presentation
-integration. See the detailed [health-history and alerting
+independent and unchanged. Scheduler/runtime integration, production database
+configuration and creation, startup/shutdown hooks, separately authenticated
+acknowledgment, and separately reviewed presentation integration remain
+deferred. See the detailed [health-history and alerting
 design](health-history-alerting.md).
