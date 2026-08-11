@@ -1395,6 +1395,48 @@ TRUNCATE, production paths/configuration/database creation, dashboard service
 integration, acknowledgment and presentation routes, backup/restore,
 notifications, and runtime enablement remain deferred.
 
+The seventh isolated slice adds a direct-only `HealthHistoryScheduler` over an
+already-open store, the existing orchestrator, injected clocks, and one injected
+immutable-health-report supplier representing the future shared
+`HealthService.get_health()` boundary. `get_scheduler_resume_state()` returns
+only the checkpoint's last committed sequence, last accepted observed UTC,
+accepted sample kind, and accepted count through the existing bracketed,
+read-only query boundary. An empty checkpoint starts with sequence 1; otherwise
+the next sequence is exactly the committed sequence plus one. Exhaustion at the
+fixed signed-64-bit maximum fails before collection and never wraps.
+
+The immutable cadence state accepts a fixed 5–300-second interval (30 seconds by
+default) that must be at least the injected dashboard refresh interval. Its
+first planned deadline is the validated construction-time monotonic value. For
+planned deadline `D`, current monotonic time `T`, and interval `I`, one due call
+reports `floor((T - D) / I)` missed intervals, capped at the existing bounded
+counter, then advances the next deadline to
+`D + (floor((T - D) / I) + 1) * I`. Thus a caller performs at most one current
+collection and moves directly to the first future cadence boundary; it never
+polls once per missed slot. Collection, projection, or unaccepted persistence
+consumes the time opportunity but not the sequence and contributes one bounded
+volatile miss for the next accepted ordinary observation. The persisted
+checkpoint remains restart authority.
+
+The first accepted observation after construction is one `startup_gap` marker,
+unless current UTC is earlier than the last accepted observed UTC, in which case
+it is one `clock_discontinuity` marker with zero reported misses. In accordance
+with the existing sampling-gap contract, elapsed wall-clock time across a
+restart never fabricates missed scheduler intervals. UTC only selects the
+marker; monotonic deadlines supply missed evidence. A clock-discontinuity marker
+does not open or recover the gap evaluator.
+
+Each due call reads the authoritative resume state, reads UTC once, calls the
+injected health supplier once, calls `project_health_report()` once, and calls
+`HealthHistoryOrchestrator.process_observation()` once. It then evaluates the
+orchestrator's existing startup/hourly/120-stored-row trigger and invokes at
+most one direct maintenance opportunity. Collection and projection failures are
+sanitized and never retried; only accepted `stored`, `state_only`, or `replayed`
+results advance the in-memory sequence. A nonblocking guard rejects concurrent
+or reentrant use and restores on every path. This scheduler starts no thread,
+timer, task, sleep loop, service hook, database, or runtime integration; actual
+dashboard-process scheduling and production enablement remain deferred.
+
 ## Future dashboard and API boundaries
 
 No route is added by this design change. A future implementation should add

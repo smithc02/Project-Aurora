@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, cast
 
+from aurora_core.health_history.ingestion import (
+    IngestionError,
+    _read_checkpoint,
+    _validate_replay_anchor,
+)
 from aurora_core.health_history.lifecycle import AutomaticAlertState
 from aurora_core.health_history.models import (
     COMPONENT_ORDER,
@@ -135,6 +140,37 @@ class QueryError(Exception):
         super().__init__(reason.value)
         self.reason = reason
         self.trust_lost = trust_lost
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerResumeState:
+    """Bounded scheduler fields from the authoritative ingestion checkpoint."""
+
+    last_committed_sequence: int | None
+    last_accepted_observed_at_utc_us: int | None
+    last_accepted_sample_kind: SampleKind | None
+    accepted_observation_count: int
+
+    def __post_init__(self) -> None:
+        count = self.accepted_observation_count
+        if type(count) is not int or not 0 <= count <= MAX_BOUNDED_COUNTER:
+            raise ValueError("invalid_scheduler_resume_state")
+        empty = (
+            self.last_committed_sequence is None
+            and self.last_accepted_observed_at_utc_us is None
+            and self.last_accepted_sample_kind is None
+            and count == 0
+        )
+        populated = (
+            type(self.last_committed_sequence) is int
+            and 0 <= self.last_committed_sequence <= MAX_OBSERVATION_SEQUENCE
+            and type(self.last_accepted_observed_at_utc_us) is int
+            and 0 <= self.last_accepted_observed_at_utc_us <= MAX_TIMESTAMP_US
+            and isinstance(self.last_accepted_sample_kind, SampleKind)
+            and count >= 1
+        )
+        if not (empty or populated):
+            raise ValueError("invalid_scheduler_resume_state")
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,6 +794,26 @@ def _read_transaction[T](connection: sqlite3.Connection, reader: Callable[[], T]
     return result
 
 
+def _get_scheduler_resume_state(
+    connection: sqlite3.Connection,
+) -> SchedulerResumeState:
+    def reader() -> SchedulerResumeState:
+        try:
+            checkpoint = _read_checkpoint(connection)
+            _validate_replay_anchor(connection, checkpoint)
+        except IngestionError:
+            raise _malformed() from None
+        _fault(QueryStage.SCHEDULER_RESUME)
+        return SchedulerResumeState(
+            last_committed_sequence=checkpoint.sequence,
+            last_accepted_observed_at_utc_us=checkpoint.observed_at,
+            last_accepted_sample_kind=checkpoint.sample_kind,
+            accepted_observation_count=checkpoint.accepted_count,
+        )
+
+    return _read_transaction(connection, reader)
+
+
 def _rollback_read(connection: sqlite3.Connection) -> None:
     try:
         connection.rollback()
@@ -831,6 +887,7 @@ class QueryStage(StrEnum):
     ALERTS = "alerts"
     ALERT = "alert"
     ALERT_EVENTS = "alert_events"
+    SCHEDULER_RESUME = "scheduler_resume"
 
 
 def _fault(stage: QueryStage) -> None:
