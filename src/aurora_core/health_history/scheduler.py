@@ -402,6 +402,8 @@ class HealthHistoryScheduler:
         )
         if observation.outcome in _ACCEPTED_OBSERVATION_OUTCOMES:
             self._record_accepted_observation(projection)
+            if observation.storage_maintenance_attempted:
+                return result
             return self._finish_with_maintenance(result)
         self._record_failed_sampling()
         return result

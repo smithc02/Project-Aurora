@@ -314,6 +314,7 @@ def test_normal_observation_proceeds_to_exactly_one_ingestion() -> None:
     orchestrator = _orchestrator(fake)
     result = orchestrator.process_observation(_projection())
     assert result == ObservationCycleResult(OrchestrationOutcome.STORED)
+    assert not result.storage_maintenance_attempted
     assert fake.calls == ["capacity", "free", "wal", "ingest"]
     assert orchestrator.trigger_state.stored_rows_since_maintenance == 1
 
@@ -335,9 +336,9 @@ def test_ingestion_outcomes_map_without_retry(
     fake = _FakeStore()
     fake.responses["ingest"] = [IngestionResult(ingestion_outcome)]
     orchestrator = _orchestrator(fake)
-    assert (
-        orchestrator.process_observation(_projection()).outcome is orchestration_outcome
-    )
+    result = orchestrator.process_observation(_projection())
+    assert result.outcome is orchestration_outcome
+    assert not result.storage_maintenance_attempted
     assert fake.calls.count("ingest") == 1
     assert orchestrator.trigger_state.stored_rows_since_maintenance == (
         1 if orchestration_outcome is OrchestrationOutcome.STORED else 0
@@ -351,6 +352,7 @@ def test_checkpoint_due_runs_once_then_fresh_decision_and_ingests() -> None:
     fake.responses["wal"] = [_wal(256), _wal()]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.STORED
+    assert result.storage_maintenance_attempted
     assert fake.calls == [
         "capacity",
         "free",
@@ -361,6 +363,40 @@ def test_checkpoint_due_runs_once_then_fresh_decision_and_ingests() -> None:
         "wal",
         "ingest",
     ]
+
+
+@pytest.mark.parametrize(
+    ("ingestion_outcome", "expected"),
+    [
+        (IngestionOutcome.TRANSITION_STORED, OrchestrationOutcome.STORED),
+        (IngestionOutcome.STATE_ONLY, OrchestrationOutcome.STATE_ONLY),
+        (IngestionOutcome.REPLAYED, OrchestrationOutcome.REPLAYED),
+    ],
+)
+@pytest.mark.parametrize("maintenance_path", ["capacity", "checkpoint"])
+def test_each_accepted_outcome_preserves_observation_maintenance_evidence(
+    ingestion_outcome: IngestionOutcome,
+    expected: OrchestrationOutcome,
+    maintenance_path: str,
+) -> None:
+    fake = _FakeStore()
+    fake.responses["capacity"] = [
+        _capacity(full=maintenance_path == "capacity"),
+        _capacity(),
+    ]
+    fake.responses["free"] = [_free_space(), _free_space()]
+    fake.responses["wal"] = [
+        _wal(256 if maintenance_path == "checkpoint" else 0),
+        _wal(),
+    ]
+    fake.responses["ingest"] = [IngestionResult(ingestion_outcome)]
+    result = _orchestrator(fake).process_observation(_projection())
+    assert result.outcome is expected
+    assert result.storage_maintenance_attempted
+    assert fake.calls.count("cleanup") == (maintenance_path == "capacity")
+    assert fake.calls.count("vacuum") == (maintenance_path == "capacity")
+    assert fake.calls.count("checkpoint") == (maintenance_path == "checkpoint")
+    assert fake.calls.count("ingest") == 1
 
 
 @pytest.mark.parametrize(
@@ -388,6 +424,7 @@ def test_checkpoint_failure_skips_ingestion_without_retry(
     fake.responses["checkpoint"] = [checkpoint_value]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is expected
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("checkpoint") == 1
     assert "ingest" not in fake.calls
 
@@ -400,6 +437,7 @@ def test_checkpoint_no_work_concurrent_transition_uses_fresh_decision() -> None:
     fake.responses["checkpoint"] = [_checkpoint(PassiveCheckpointOutcome.NO_WORK)]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.STORED
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("checkpoint") == 1
     assert fake.calls.count("ingest") == 1
 
@@ -412,6 +450,7 @@ def test_checkpoint_concurrent_oversize_blocks_observation() -> None:
     ]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.WAL_OVERSIZE_BLOCKED
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("checkpoint") == 1
     assert "ingest" not in fake.calls
 
@@ -423,6 +462,7 @@ def test_incomplete_checkpoint_does_not_repeat_or_ingest() -> None:
     fake.responses["wal"] = [_wal(256), _wal(256)]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.CHECKPOINT_INCOMPLETE
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("checkpoint") == 1
     assert "ingest" not in fake.calls
 
@@ -432,6 +472,7 @@ def test_wal_oversize_blocks_every_mutating_action() -> None:
     fake.responses["wal"] = [_wal(WAL_HARD_LIMIT_FRAMES + 1)]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.WAL_OVERSIZE_BLOCKED
+    assert not result.storage_maintenance_attempted
     assert fake.calls == ["capacity", "free", "wal"]
 
 
@@ -453,6 +494,7 @@ def test_capacity_maintenance_runs_cleanup_vacuum_and_one_reinspection() -> None
     fake.responses["wal"] = [_wal(), _wal()]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.STORED
+    assert result.storage_maintenance_attempted
     assert fake.calls == [
         "capacity",
         "free",
@@ -481,6 +523,7 @@ def test_one_capacity_maintenance_attempt_then_capacity_blocked(shortage: str) -
     fake.responses["wal"] = [_wal(), _wal()]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.CAPACITY_BLOCKED
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("cleanup") == 1
     assert fake.calls.count("vacuum") == 1
     assert fake.calls.count("capacity") == 2
@@ -495,6 +538,7 @@ def test_capacity_reinspection_can_become_wal_oversize_blocked() -> None:
     fake.responses["wal"] = [_wal(), _wal(WAL_HARD_LIMIT_FRAMES + 1)]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.WAL_OVERSIZE_BLOCKED
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("cleanup") == 1
     assert fake.calls.count("vacuum") == 1
     assert "checkpoint" not in fake.calls
@@ -509,6 +553,7 @@ def test_capacity_reinspection_trust_failure_stops_before_ingestion() -> None:
     ]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.TRUST_FAILED
+    assert result.storage_maintenance_attempted
     assert fake.calls[-3:] == ["cleanup", "vacuum", "capacity"]
     assert "ingest" not in fake.calls
 
@@ -535,6 +580,7 @@ def test_post_checkpoint_fresh_decision_can_block_write(
     fake.responses["wal"] = [_wal(256), post_wal]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is expected
+    assert result.storage_maintenance_attempted
     assert fake.calls.count("checkpoint") == 1
     assert "ingest" not in fake.calls
 
@@ -548,6 +594,7 @@ def test_post_checkpoint_reinspection_failure_stops_before_ingestion() -> None:
     fake.responses["wal"] = [_wal(256)]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.PERSISTENCE_FAILED
+    assert result.storage_maintenance_attempted
     assert fake.calls[-2:] == ["checkpoint", "capacity"]
     assert "ingest" not in fake.calls
 
@@ -560,6 +607,7 @@ def test_cleanup_failure_stops_vacuum_and_ingestion() -> None:
     ]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.PERSISTENCE_FAILED
+    assert result.storage_maintenance_attempted
     assert fake.calls[-1] == "cleanup"
     assert "vacuum" not in fake.calls
     assert "ingest" not in fake.calls
@@ -571,6 +619,7 @@ def test_vacuum_failure_stops_reinspection_and_ingestion() -> None:
     fake.responses["vacuum"] = [MaintenanceError(MaintenanceRejection.TIMED_OUT)]
     result = _orchestrator(fake).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.TIMED_OUT
+    assert result.storage_maintenance_attempted
     assert fake.calls[-2:] == ["cleanup", "vacuum"]
     assert fake.calls.count("capacity") == 1
     assert "ingest" not in fake.calls
@@ -1364,15 +1413,23 @@ def test_public_result_models_are_frozen() -> None:
     with pytest.raises(AttributeError):
         observation.outcome = OrchestrationOutcome.REPLAYED  # type: ignore[misc]
     with pytest.raises(AttributeError):
+        observation.storage_maintenance_attempted = True  # type: ignore[misc]
+    with pytest.raises(AttributeError):
         maintenance.outcome = OrchestrationOutcome.STORAGE_BUSY  # type: ignore[misc]
     assert replace(observation, outcome=OrchestrationOutcome.REPLAYED).outcome is (
         OrchestrationOutcome.REPLAYED
     )
+    assert not observation.storage_maintenance_attempted
 
 
 def test_public_models_and_constructor_reject_impossible_combinations() -> None:
     with pytest.raises(ValueError, match="invalid_observation_cycle_result"):
         ObservationCycleResult(OrchestrationOutcome.MAINTENANCE_COMPLETED)
+    with pytest.raises(ValueError, match="invalid_observation_cycle_result"):
+        ObservationCycleResult(
+            OrchestrationOutcome.STORED,
+            storage_maintenance_attempted=1,  # type: ignore[arg-type]
+        )
     with pytest.raises(ValueError, match="invalid_maintenance_opportunity_result"):
         MaintenanceOpportunityResult(OrchestrationOutcome.STORED)
     with pytest.raises(ValueError, match="invalid_maintenance_trigger_decision"):

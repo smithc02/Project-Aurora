@@ -1435,6 +1435,12 @@ most one direct maintenance opportunity only when the observation result is
 that scheduler call before maintenance-trigger evaluation, so capacity cleanup,
 incremental vacuum, or PASSIVE checkpoint work performed by the observation path
 cannot be retried immediately through scheduled maintenance. Collection and
+Accepted results carry only a Boolean indicating whether that observation path
+attempted cleanup, incremental vacuum, or PASSIVE checkpoint work. When set, the
+scheduler advances accepted state but does not evaluate the maintenance trigger;
+the trigger remains due for a future caller. Direct accepted observations with
+the Boolean clear retain the one-opportunity scheduled-maintenance path. Thus one
+scheduler invocation contains at most one storage-maintenance phase. Collection and
 projection failures occur before orchestration and retain the separately
 reviewed one-maintenance-opportunity behavior. They are sanitized and never
 retried; only accepted observation results advance the in-memory sequence. A

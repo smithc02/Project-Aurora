@@ -117,9 +117,13 @@ _MAINTENANCE_OUTCOMES: Final = frozenset(
 @dataclass(frozen=True, slots=True)
 class ObservationCycleResult:
     outcome: OrchestrationOutcome
+    storage_maintenance_attempted: bool = False
 
     def __post_init__(self) -> None:
-        if self.outcome not in _OBSERVATION_OUTCOMES:
+        if (
+            self.outcome not in _OBSERVATION_OUTCOMES
+            or type(self.storage_maintenance_attempted) is not bool
+        ):
             raise ValueError("invalid_observation_cycle_result")
 
 
@@ -322,13 +326,22 @@ class HealthHistoryOrchestrator:
                 self._store.cleanup_retention(now_utc_us=now_utc_us)
                 self._store.incremental_vacuum()
             except MaintenanceError as error:
-                return ObservationCycleResult(_maintenance_error_outcome(error))
+                return ObservationCycleResult(
+                    _maintenance_error_outcome(error),
+                    storage_maintenance_attempted=True,
+                )
             except StoreError:
-                return ObservationCycleResult(OrchestrationOutcome.TRUST_FAILED)
+                return ObservationCycleResult(
+                    OrchestrationOutcome.TRUST_FAILED,
+                    storage_maintenance_attempted=True,
+                )
             attempted_capacity_maintenance = True
             decision = self._inspect_storage(attempted=True)
             if isinstance(decision, ObservationCycleResult):
-                return decision
+                return ObservationCycleResult(
+                    decision.outcome,
+                    storage_maintenance_attempted=True,
+                )
         return self._finish_observation_decision(
             projection,
             decision,
@@ -346,30 +359,51 @@ class HealthHistoryOrchestrator:
             StorageDecisionOutcome.CAPACITY_BLOCKED,
             StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED,
         }:
-            return ObservationCycleResult(OrchestrationOutcome.CAPACITY_BLOCKED)
+            return ObservationCycleResult(
+                OrchestrationOutcome.CAPACITY_BLOCKED,
+                storage_maintenance_attempted=capacity_maintenance_attempted,
+            )
         if decision is StorageDecisionOutcome.WAL_OVERSIZE_BLOCKED:
-            return ObservationCycleResult(OrchestrationOutcome.WAL_OVERSIZE_BLOCKED)
+            return ObservationCycleResult(
+                OrchestrationOutcome.WAL_OVERSIZE_BLOCKED,
+                storage_maintenance_attempted=capacity_maintenance_attempted,
+            )
+        storage_maintenance_attempted = capacity_maintenance_attempted
         if decision is StorageDecisionOutcome.WAL_CHECKPOINT_DUE:
             checkpoint = self._checkpoint_before_ingestion()
             if isinstance(checkpoint, ObservationCycleResult):
                 return checkpoint
+            storage_maintenance_attempted = True
             post_checkpoint_decision = self._inspect_storage(
                 attempted=capacity_maintenance_attempted
             )
             if isinstance(post_checkpoint_decision, ObservationCycleResult):
-                return post_checkpoint_decision
+                return ObservationCycleResult(
+                    post_checkpoint_decision.outcome,
+                    storage_maintenance_attempted=True,
+                )
             if post_checkpoint_decision is StorageDecisionOutcome.WAL_CHECKPOINT_DUE:
                 return ObservationCycleResult(
-                    OrchestrationOutcome.CHECKPOINT_INCOMPLETE
+                    OrchestrationOutcome.CHECKPOINT_INCOMPLETE,
+                    storage_maintenance_attempted=True,
                 )
             if post_checkpoint_decision in {
                 StorageDecisionOutcome.CAPACITY_BLOCKED,
                 StorageDecisionOutcome.CAPACITY_MAINTENANCE_REQUIRED,
             }:
-                return ObservationCycleResult(OrchestrationOutcome.CAPACITY_BLOCKED)
+                return ObservationCycleResult(
+                    OrchestrationOutcome.CAPACITY_BLOCKED,
+                    storage_maintenance_attempted=True,
+                )
             if post_checkpoint_decision is StorageDecisionOutcome.WAL_OVERSIZE_BLOCKED:
-                return ObservationCycleResult(OrchestrationOutcome.WAL_OVERSIZE_BLOCKED)
-        return self._ingest_once(projection)
+                return ObservationCycleResult(
+                    OrchestrationOutcome.WAL_OVERSIZE_BLOCKED,
+                    storage_maintenance_attempted=True,
+                )
+        return self._ingest_once(
+            projection,
+            storage_maintenance_attempted=storage_maintenance_attempted,
+        )
 
     def _inspect_storage(
         self, *, attempted: bool
@@ -398,23 +432,44 @@ class HealthHistoryOrchestrator:
             checkpoint = self._store.passive_wal_checkpoint()
         except StorageEnvelopeError as error:
             return ObservationCycleResult(
-                _storage_error_outcome(error, checkpoint=True)
+                _storage_error_outcome(error, checkpoint=True),
+                storage_maintenance_attempted=True,
             )
         except StoreError:
-            return ObservationCycleResult(OrchestrationOutcome.TRUST_FAILED)
+            return ObservationCycleResult(
+                OrchestrationOutcome.TRUST_FAILED,
+                storage_maintenance_attempted=True,
+            )
         if checkpoint.outcome is PassiveCheckpointOutcome.BUSY:
-            return ObservationCycleResult(OrchestrationOutcome.CHECKPOINT_BUSY)
+            return ObservationCycleResult(
+                OrchestrationOutcome.CHECKPOINT_BUSY,
+                storage_maintenance_attempted=True,
+            )
         if checkpoint.outcome is PassiveCheckpointOutcome.OVERSIZE_BLOCKED:
-            return ObservationCycleResult(OrchestrationOutcome.WAL_OVERSIZE_BLOCKED)
+            return ObservationCycleResult(
+                OrchestrationOutcome.WAL_OVERSIZE_BLOCKED,
+                storage_maintenance_attempted=True,
+            )
         return None
 
-    def _ingest_once(self, projection: HealthProjection) -> ObservationCycleResult:
+    def _ingest_once(
+        self,
+        projection: HealthProjection,
+        *,
+        storage_maintenance_attempted: bool,
+    ) -> ObservationCycleResult:
         try:
             result = self._store.ingest(projection)
         except IngestionError as error:
-            return ObservationCycleResult(_ingestion_error_outcome(error))
+            return ObservationCycleResult(
+                _ingestion_error_outcome(error),
+                storage_maintenance_attempted=storage_maintenance_attempted,
+            )
         except StoreError:
-            return ObservationCycleResult(OrchestrationOutcome.TRUST_FAILED)
+            return ObservationCycleResult(
+                OrchestrationOutcome.TRUST_FAILED,
+                storage_maintenance_attempted=storage_maintenance_attempted,
+            )
         outcome = {
             IngestionOutcome.REPLAYED: OrchestrationOutcome.REPLAYED,
             IngestionOutcome.STATE_ONLY: OrchestrationOutcome.STATE_ONLY,
@@ -423,7 +478,10 @@ class HealthHistoryOrchestrator:
             IngestionOutcome.STARTUP_MARKER_STORED: OrchestrationOutcome.STORED,
             IngestionOutcome.CLOCK_MARKER_STORED: OrchestrationOutcome.STORED,
         }[result.outcome]
-        return ObservationCycleResult(outcome)
+        return ObservationCycleResult(
+            outcome,
+            storage_maintenance_attempted=storage_maintenance_attempted,
+        )
 
     def _run_maintenance_opportunity(self) -> MaintenanceOpportunityResult:
         try:

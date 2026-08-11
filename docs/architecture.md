@@ -501,6 +501,12 @@ uses the orchestrator's existing maintenance trigger and runs at most one
 maintenance opportunity only after `stored`, `state_only`, or `replayed`.
 Every unaccepted orchestration result ends the scheduler call before trigger
 evaluation, preventing an immediate second capacity or checkpoint attempt.
+An accepted result records one bounded Boolean when its observation path already
+attempted retention cleanup, incremental vacuum, or a PASSIVE checkpoint. That
+result advances accepted scheduler state but skips trigger evaluation, leaving
+the trigger due for a future invocation. Direct accepted observations without
+such work may still run one scheduled opportunity, so one scheduler call has at
+most one storage-maintenance phase.
 Collection and projection failures retain their pre-orchestration trigger
 behavior. A separate nonblocking guard rejects reentrancy. The module creates no
 thread, task, timer, sleep loop, path, database, configuration, or runtime

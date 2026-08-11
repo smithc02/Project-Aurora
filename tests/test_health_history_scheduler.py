@@ -11,17 +11,28 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
 import aurora_core.health_history.queries as queries
 import aurora_core.health_history.scheduler as scheduler_module
+import aurora_core.health_history.storage_envelope as storage_envelope
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
+from aurora_core.health_history.ingestion import IngestionOutcome, IngestionResult
+from aurora_core.health_history.maintenance import (
+    IncrementalVacuumResult,
+    MaintenanceOutcome,
+    RetentionCleanupResult,
+)
 from aurora_core.health_history.models import (
     COMPONENT_ORDER,
     MAX_BOUNDED_COUNTER,
+    MAX_DATABASE_BYTES,
+    MAX_DATABASE_PAGES,
     MAX_OBSERVATION_SEQUENCE,
     MAX_TIMESTAMP_US,
+    PAGE_SIZE_BYTES,
     ComponentName,
     SampleKind,
 )
@@ -292,10 +303,14 @@ class _RetryHazardOrchestrator(_FakeOrchestrator):
         *,
         observation_outcome: OrchestrationOutcome,
         hazard: str,
+        storage_maintenance_attempted: bool = False,
     ) -> None:
         super().__init__(
             store,
-            observation=ObservationCycleResult(observation_outcome),
+            observation=ObservationCycleResult(
+                observation_outcome,
+                storage_maintenance_attempted=storage_maintenance_attempted,
+            ),
             trigger=MaintenanceTriggerDecision(
                 True,
                 MaintenanceTriggerReason.STARTUP,
@@ -392,6 +407,96 @@ def _seed(store: HealthHistoryStore, sequence: int = 1) -> None:
             recorded_at=_NOW + timedelta(seconds=1),
         )
     )
+
+
+def _capacity(*, full: bool = False) -> storage_envelope.StorageCapacityResult:
+    page_count = MAX_DATABASE_PAGES if full else 20
+    return storage_envelope.StorageCapacityResult(
+        page_count=page_count,
+        freelist_count=0,
+        maximum_page_count=MAX_DATABASE_PAGES,
+        used_bytes=page_count * PAGE_SIZE_BYTES,
+        maximum_bytes=MAX_DATABASE_BYTES,
+        pages_remaining=MAX_DATABASE_PAGES - page_count,
+    )
+
+
+def _free_space() -> storage_envelope.FreeSpaceResult:
+    return storage_envelope.FreeSpaceResult(
+        sufficient=True,
+        free_bytes=storage_envelope.FREE_SPACE_RESERVE_BYTES,
+        required_reserve_bytes=storage_envelope.FREE_SPACE_RESERVE_BYTES,
+    )
+
+
+def _wal(frames: int = 0) -> storage_envelope.WalInspectionResult:
+    exists = frames > 0
+    total_bytes = (
+        storage_envelope.WAL_HEADER_BYTES + frames * storage_envelope.WAL_FRAME_BYTES
+        if exists
+        else 0
+    )
+    return storage_envelope.WalInspectionResult(
+        exists=exists,
+        logical_frame_count=frames,
+        physical_frame_slots=frames,
+        total_bytes=total_bytes,
+        checkpointed_frames=0,
+        checkpoint_due=frames >= storage_envelope.WAL_CHECKPOINT_THRESHOLD_FRAMES,
+        oversize=False,
+    )
+
+
+def _composed_store() -> Mock:
+    store = Mock()
+    store.get_scheduler_resume_state.return_value = _empty_resume()
+    store.inspect_storage_capacity.return_value = _capacity()
+    store.inspect_free_space.return_value = _free_space()
+    store.inspect_wal.return_value = _wal()
+    store.cleanup_retention.return_value = RetentionCleanupResult(
+        MaintenanceOutcome.NO_WORK,
+        0,
+        0,
+        0,
+    )
+    store.incremental_vacuum.return_value = IncrementalVacuumResult(
+        MaintenanceOutcome.NO_WORK,
+        0,
+        0,
+        0,
+    )
+    store.passive_wal_checkpoint.return_value = (
+        storage_envelope.PassiveCheckpointResult(
+            storage_envelope.PassiveCheckpointOutcome.COMPLETED,
+            storage_envelope.WAL_CHECKPOINT_THRESHOLD_FRAMES,
+            storage_envelope.WAL_HEADER_BYTES
+            + storage_envelope.WAL_CHECKPOINT_THRESHOLD_FRAMES
+            * storage_envelope.WAL_FRAME_BYTES,
+            False,
+            storage_envelope.WAL_CHECKPOINT_THRESHOLD_FRAMES,
+            storage_envelope.WAL_CHECKPOINT_THRESHOLD_FRAMES,
+        )
+    )
+    store.ingest.return_value = IngestionResult(IngestionOutcome.TRANSITION_STORED)
+    return store
+
+
+def _composed_scheduler(
+    store: Mock,
+) -> tuple[HealthHistoryScheduler, HealthHistoryOrchestrator]:
+    orchestrator = HealthHistoryOrchestrator(
+        cast(HealthHistoryStore, store),
+        monotonic=lambda: 0.0,
+        utc_now_us=lambda: _NOW_US,
+    )
+    scheduler = HealthHistoryScheduler(
+        cast(HealthHistoryStore, store),
+        orchestrator,
+        health_report_supplier=_report,
+        monotonic=lambda: 0.0,
+        utc_now=lambda: _NOW,
+    )
+    return scheduler, orchestrator
 
 
 def test_empty_resume_state_read_is_immutable(
@@ -1151,6 +1256,94 @@ def test_each_accepted_observation_may_run_one_due_maintenance(
     assert orchestrator.observation_calls == 1
     assert orchestrator.trigger_calls == 1
     assert orchestrator.maintenance_calls == 1
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        OrchestrationOutcome.STORED,
+        OrchestrationOutcome.STATE_ONLY,
+        OrchestrationOutcome.REPLAYED,
+    ],
+)
+@pytest.mark.parametrize("hazard", ["capacity", "checkpoint"])
+def test_accepted_observation_with_storage_maintenance_skips_scheduled_maintenance(
+    outcome: OrchestrationOutcome,
+    hazard: str,
+) -> None:
+    store = _FakeStore(_empty_resume())
+    orchestrator = _RetryHazardOrchestrator(
+        store,
+        observation_outcome=outcome,
+        hazard=hazard,
+        storage_maintenance_attempted=True,
+    )
+    instance = HealthHistoryScheduler(
+        cast(HealthHistoryStore, store),
+        cast(HealthHistoryOrchestrator, orchestrator),
+        health_report_supplier=_report,
+        monotonic=cast(Callable[[], float], _Clock(0.0, 0.0)),
+        utc_now=lambda: _NOW,
+    )
+    result = instance.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome(outcome.value)
+    assert orchestrator.observation_calls == 1
+    assert orchestrator.trigger_calls == 0
+    assert orchestrator.maintenance_calls == 0
+    if hazard == "checkpoint":
+        assert orchestrator.passive_calls == 1
+        assert orchestrator.cleanup_calls == 0
+        assert orchestrator.vacuum_calls == 0
+    else:
+        assert orchestrator.passive_calls == 0
+        assert orchestrator.cleanup_calls == 1
+        assert orchestrator.vacuum_calls == 1
+
+
+def test_real_capacity_recovery_cannot_start_a_second_maintenance_phase() -> None:
+    store = _composed_store()
+    store.inspect_storage_capacity.side_effect = [_capacity(full=True), _capacity()]
+    scheduler, orchestrator = _composed_scheduler(store)
+    result = scheduler.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome.STORED
+    assert result.maintenance_outcome is None
+    assert store.cleanup_retention.call_count == 1
+    assert store.incremental_vacuum.call_count == 1
+    assert store.passive_wal_checkpoint.call_count == 0
+    assert store.inspect_storage_capacity.call_count == 2
+    assert orchestrator.trigger_state.startup_maintenance_completed is False
+    assert orchestrator.trigger_state.stored_rows_since_maintenance == 1
+
+
+def test_real_checkpoint_recovery_cannot_start_a_second_maintenance_phase() -> None:
+    store = _composed_store()
+    store.inspect_wal.side_effect = [
+        _wal(storage_envelope.WAL_CHECKPOINT_THRESHOLD_FRAMES),
+        _wal(),
+    ]
+    scheduler, orchestrator = _composed_scheduler(store)
+    result = scheduler.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome.STORED
+    assert result.maintenance_outcome is None
+    assert store.passive_wal_checkpoint.call_count == 1
+    assert store.cleanup_retention.call_count == 0
+    assert store.incremental_vacuum.call_count == 0
+    assert orchestrator.trigger_state.startup_maintenance_completed is False
+    assert orchestrator.trigger_state.stored_rows_since_maintenance == 1
+
+
+def test_real_direct_acceptance_remains_eligible_for_scheduled_maintenance() -> None:
+    store = _composed_store()
+    scheduler, orchestrator = _composed_scheduler(store)
+    result = scheduler.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome.STORED
+    assert result.maintenance_outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
+    assert store.cleanup_retention.call_count == 1
+    assert store.incremental_vacuum.call_count == 1
+    assert store.passive_wal_checkpoint.call_count == 0
+    assert store.inspect_storage_capacity.call_count == 1
+    assert orchestrator.trigger_state.startup_maintenance_completed is True
+    assert orchestrator.trigger_state.stored_rows_since_maintenance == 0
 
 
 @pytest.mark.parametrize(
