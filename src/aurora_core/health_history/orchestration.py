@@ -202,22 +202,25 @@ class MaintenanceTriggerState:
     def after_maintenance(
         self,
         result: MaintenanceOpportunityResult,
-        now_monotonic: object,
+        *,
+        started_monotonic: object,
+        completed_monotonic: object,
     ) -> MaintenanceTriggerState:
         """Reset triggers only after a successful bounded opportunity."""
         if type(result) is not MaintenanceOpportunityResult:
             raise OrchestrationError(OrchestrationRejection.INVALID_TRIGGER_STATE)
         if result.outcome is not OrchestrationOutcome.MAINTENANCE_COMPLETED:
             return self
-        now = _validated_monotonic(now_monotonic)
-        if (
+        started = _validated_monotonic(started_monotonic)
+        completed = _validated_monotonic(completed_monotonic)
+        if completed < started or (
             self.last_completed_monotonic is not None
-            and now < self.last_completed_monotonic
+            and completed < self.last_completed_monotonic
         ):
             raise OrchestrationError(OrchestrationRejection.INVALID_MONOTONIC)
         return MaintenanceTriggerState(
             startup_maintenance_completed=True,
-            last_completed_monotonic=now,
+            last_completed_monotonic=completed,
             stored_rows_since_maintenance=0,
         )
 
@@ -277,11 +280,18 @@ class HealthHistoryOrchestrator:
         if not self._cycle_guard.acquire(blocking=False):
             return MaintenanceOpportunityResult(OrchestrationOutcome.REENTRANT)
         try:
+            try:
+                started_monotonic = self._read_monotonic()
+            except OrchestrationError:
+                return MaintenanceOpportunityResult(OrchestrationOutcome.INVALID_CLOCK)
             result = self._run_maintenance_opportunity()
             if result.outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED:
                 try:
+                    completed_monotonic = self._read_monotonic()
                     self._trigger_state = self._trigger_state.after_maintenance(
-                        result, self._read_monotonic()
+                        result,
+                        started_monotonic=started_monotonic,
+                        completed_monotonic=completed_monotonic,
                     )
                 except OrchestrationError:
                     return MaintenanceOpportunityResult(
@@ -414,7 +424,6 @@ class HealthHistoryOrchestrator:
 
     def _run_maintenance_opportunity(self) -> MaintenanceOpportunityResult:
         try:
-            self._read_monotonic()
             now_utc_us = self._read_utc_now_us()
         except OrchestrationError:
             return MaintenanceOpportunityResult(OrchestrationOutcome.INVALID_CLOCK)

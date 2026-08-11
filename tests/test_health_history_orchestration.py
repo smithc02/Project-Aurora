@@ -792,9 +792,20 @@ def test_startup_trigger_is_due_until_successful_maintenance() -> None:
     state = MaintenanceTriggerState()
     assert state.decision(0.0).reason is MaintenanceTriggerReason.STARTUP
     failed = MaintenanceOpportunityResult(OrchestrationOutcome.STORAGE_BUSY)
-    assert state.after_maintenance(failed, 1.0) is state
+    assert (
+        state.after_maintenance(
+            failed,
+            started_monotonic=1.0,
+            completed_monotonic=1.0,
+        )
+        is state
+    )
     completed = MaintenanceOpportunityResult(OrchestrationOutcome.MAINTENANCE_COMPLETED)
-    updated = state.after_maintenance(completed, 1.0)
+    updated = state.after_maintenance(
+        completed,
+        started_monotonic=1.0,
+        completed_monotonic=1.0,
+    )
     assert updated.decision(1.0).reason is MaintenanceTriggerReason.NONE
 
 
@@ -854,7 +865,8 @@ def test_stored_row_counter_saturates_and_success_resets() -> None:
     assert state.stored_rows_since_maintenance == MAX_BOUNDED_COUNTER
     state = state.after_maintenance(
         MaintenanceOpportunityResult(OrchestrationOutcome.MAINTENANCE_COMPLETED),
-        20.0,
+        started_monotonic=19.0,
+        completed_monotonic=20.0,
     )
     assert state == MaintenanceTriggerState(True, 20.0, 0)
 
@@ -878,7 +890,8 @@ def test_regressed_completion_marker_is_rejected() -> None:
     with pytest.raises(OrchestrationError) as caught:
         state.after_maintenance(
             MaintenanceOpportunityResult(OrchestrationOutcome.MAINTENANCE_COMPLETED),
-            9.0,
+            started_monotonic=9.0,
+            completed_monotonic=9.0,
         )
     assert caught.value.reason is OrchestrationRejection.INVALID_MONOTONIC
 
@@ -888,7 +901,11 @@ def test_trigger_model_rejects_wrong_fixed_result_types() -> None:
     with pytest.raises(OrchestrationError) as observation:
         state.after_observation(cast(ObservationCycleResult, object()))
     with pytest.raises(OrchestrationError) as maintenance:
-        state.after_maintenance(cast(MaintenanceOpportunityResult, object()), 1.0)
+        state.after_maintenance(
+            cast(MaintenanceOpportunityResult, object()),
+            started_monotonic=1.0,
+            completed_monotonic=1.0,
+        )
     assert observation.value.reason is OrchestrationRejection.INVALID_TRIGGER_STATE
     assert maintenance.value.reason is OrchestrationRejection.INVALID_TRIGGER_STATE
 
@@ -978,6 +995,117 @@ def test_reentrant_maintenance_and_trigger_are_rejected() -> None:
     assert orchestrator.maintenance_trigger().due
 
 
+def test_fresh_start_intra_op_clock_regression_preserves_startup_state() -> None:
+    fake = _FakeStore()
+    values = iter([100.0, 50.0])
+    initial = MaintenanceTriggerState()
+    orchestrator = _orchestrator(
+        fake,
+        monotonic=lambda: next(values),
+        trigger_state=initial,
+    )
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.INVALID_CLOCK
+    assert fake.calls == ["cleanup", "vacuum", "wal"]
+    assert orchestrator.trigger_state is initial
+    assert orchestrator.trigger_state.decision(100.0).reason is (
+        MaintenanceTriggerReason.STARTUP
+    )
+
+
+def test_existing_marker_does_not_mask_intra_op_clock_regression() -> None:
+    fake = _FakeStore()
+    values = iter([100.0, 90.0])
+    initial = MaintenanceTriggerState(True, 80.0, 120)
+    orchestrator = _orchestrator(
+        fake,
+        monotonic=lambda: next(values),
+        trigger_state=initial,
+    )
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.INVALID_CLOCK
+    assert fake.calls == ["cleanup", "vacuum", "wal"]
+    assert orchestrator.trigger_state is initial
+
+
+def test_valid_maintenance_clock_progression_records_completion() -> None:
+    fake = _FakeStore()
+    values = iter([100.0, 101.0])
+    initial = MaintenanceTriggerState(True, 80.0, 120)
+    orchestrator = _orchestrator(
+        fake,
+        monotonic=lambda: next(values),
+        trigger_state=initial,
+    )
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
+    assert fake.calls == ["cleanup", "vacuum", "wal"]
+    assert orchestrator.trigger_state == MaintenanceTriggerState(True, 101.0, 0)
+
+
+def test_equal_maintenance_start_and_completion_is_valid() -> None:
+    fake = _FakeStore()
+    values = iter([100.0, 100.0])
+    orchestrator = _orchestrator(fake, monotonic=lambda: next(values))
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
+    assert orchestrator.trigger_state == MaintenanceTriggerState(True, 100.0, 0)
+
+
+@pytest.mark.parametrize("completion", [math.nan, math.inf, -math.inf])
+def test_invalid_completion_clock_preserves_trigger_without_retry(
+    completion: float,
+) -> None:
+    fake = _FakeStore()
+    values = iter([100.0, completion])
+    initial = MaintenanceTriggerState(True, 80.0, 120)
+    orchestrator = _orchestrator(
+        fake,
+        monotonic=lambda: next(values),
+        trigger_state=initial,
+    )
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.INVALID_CLOCK
+    assert fake.calls == ["cleanup", "vacuum", "wal"]
+    assert orchestrator.trigger_state is initial
+
+
+def test_completion_clock_failure_never_repeats_eligible_checkpoint() -> None:
+    fake = _FakeStore()
+    fake.responses["wal"] = [_wal(256)]
+    values = iter([100.0, 50.0])
+    orchestrator = _orchestrator(fake, monotonic=lambda: next(values))
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.INVALID_CLOCK
+    assert fake.calls == ["cleanup", "vacuum", "wal", "checkpoint"]
+    assert fake.calls.count("cleanup") == 1
+    assert fake.calls.count("vacuum") == 1
+    assert fake.calls.count("wal") == 1
+    assert fake.calls.count("checkpoint") == 1
+    assert orchestrator.trigger_state == MaintenanceTriggerState()
+
+
+def test_guard_restores_after_completion_clock_failure() -> None:
+    fake = _FakeStore()
+    values = iter([100.0, 50.0, 200.0, 201.0])
+    orchestrator = _orchestrator(fake, monotonic=lambda: next(values))
+    assert orchestrator.run_maintenance_opportunity().outcome is (
+        OrchestrationOutcome.INVALID_CLOCK
+    )
+    assert orchestrator.run_maintenance_opportunity().outcome is (
+        OrchestrationOutcome.MAINTENANCE_COMPLETED
+    )
+    assert fake.calls == [
+        "cleanup",
+        "vacuum",
+        "wal",
+        "cleanup",
+        "vacuum",
+        "wal",
+    ]
+    assert orchestrator.trigger_state == MaintenanceTriggerState(True, 201.0, 0)
+
+
 def test_invalid_maintenance_clocks_stop_or_leave_trigger_due() -> None:
     fake = _FakeStore()
     invalid_start = _orchestrator(fake, monotonic=lambda: math.nan)
@@ -987,13 +1115,11 @@ def test_invalid_maintenance_clocks_stop_or_leave_trigger_due() -> None:
     assert fake.calls == []
 
     fake = _FakeStore()
-    values = iter([10.0, math.nan])
-    invalid_completion = _orchestrator(fake, monotonic=lambda: next(values))
-    assert invalid_completion.run_maintenance_opportunity().outcome is (
+    invalid_utc = _orchestrator(fake, utc_now_us=lambda: -1)
+    assert invalid_utc.run_maintenance_opportunity().outcome is (
         OrchestrationOutcome.INVALID_CLOCK
     )
-    assert fake.calls == ["cleanup", "vacuum", "wal"]
-    assert invalid_completion.trigger_state == MaintenanceTriggerState()
+    assert fake.calls == []
 
 
 def test_clock_callback_exceptions_are_sanitized() -> None:
