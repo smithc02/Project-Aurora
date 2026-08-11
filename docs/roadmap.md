@@ -97,11 +97,17 @@
     WAL-reset corruption bug affecting versions through 3.51.2 (the reviewed
     production Pi provides SQLite 3.53.1), a pure bounded retention-cleanup/
     incremental-vacuum/checkpoint/block decision, and one bounded PASSIVE-
-    checkpoint opportunity. It is not imported by a runtime entry point,
-    creates no deployment database, and leaves production history disabled and
-    unavailable. Presentation routes, acknowledgment, maintenance scheduling,
-    automatic cleanup/checkpoint integration, notifications, and
-    automation remain unimplemented. It
+    checkpoint opportunity. The sixth slice adds a direct-only orchestration
+    core that admits one write only after the fixed storage decision, performs
+    at most one cleanup plus one 128-page vacuum plus one reinspection for
+    capacity pressure, and permits at most one PASSIVE attempt for checkpoint
+    pressure. Its immutable trigger state models startup, monotonic hourly, and
+    120-newly-stored-row opportunities without scheduling them. It is not
+    imported by a runtime entry point, creates no deployment database, and
+    leaves production history disabled and unavailable. Presentation routes,
+    acknowledgment, actual maintenance/sampling scheduling, production
+    configuration/database creation, notifications, and automation remain
+    unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).
