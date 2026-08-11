@@ -285,6 +285,46 @@ class _FakeOrchestrator:
         return cast(MaintenanceOpportunityResult, self.maintenance)
 
 
+class _RetryHazardOrchestrator(_FakeOrchestrator):
+    def __init__(
+        self,
+        store: _FakeStore,
+        *,
+        observation_outcome: OrchestrationOutcome,
+        hazard: str,
+    ) -> None:
+        super().__init__(
+            store,
+            observation=ObservationCycleResult(observation_outcome),
+            trigger=MaintenanceTriggerDecision(
+                True,
+                MaintenanceTriggerReason.STARTUP,
+            ),
+        )
+        self.hazard = hazard
+        self.passive_calls = 0
+        self.cleanup_calls = 0
+        self.vacuum_calls = 0
+
+    def process_observation(
+        self, projection: HealthProjection
+    ) -> ObservationCycleResult:
+        if self.hazard == "checkpoint":
+            self.passive_calls += 1
+        else:
+            self.cleanup_calls += 1
+            self.vacuum_calls += 1
+        return super().process_observation(projection)
+
+    def run_maintenance_opportunity(self) -> MaintenanceOpportunityResult:
+        if self.hazard == "checkpoint":
+            self.passive_calls += 1
+        else:
+            self.cleanup_calls += 1
+            self.vacuum_calls += 1
+        return super().run_maintenance_opportunity()
+
+
 def _scheduler(
     *,
     resume: SchedulerResumeState | BaseException | object | None = None,
@@ -997,27 +1037,80 @@ def test_projection_failure_is_sanitized_and_not_orchestrated() -> None:
 
 
 @pytest.mark.parametrize(
-    ("outcome", "expected"),
+    ("failure", "expected"),
     [
-        (OrchestrationOutcome.CAPACITY_BLOCKED, SchedulerOutcome.CAPACITY_BLOCKED),
-        (
-            OrchestrationOutcome.WAL_OVERSIZE_BLOCKED,
-            SchedulerOutcome.WAL_OVERSIZE_BLOCKED,
-        ),
-        (OrchestrationOutcome.CHECKPOINT_BUSY, SchedulerOutcome.CHECKPOINT_BUSY),
-        (OrchestrationOutcome.TRUST_FAILED, SchedulerOutcome.TRUST_FAILED),
+        ("collection", SchedulerOutcome.COLLECTION_FAILED),
+        ("projection", SchedulerOutcome.PROJECTION_FAILED),
     ],
 )
-def test_orchestration_failures_propagate_without_retry(
-    outcome: OrchestrationOutcome,
+def test_pre_orchestration_failures_may_still_run_one_due_maintenance(
+    failure: str,
     expected: SchedulerOutcome,
 ) -> None:
+    if failure == "collection":
+
+        def supplier() -> HealthReport:
+            raise RuntimeError("private")
+
+    else:
+        invalid = HealthReport(
+            status=HealthStatus.HEALTHY,
+            checked_at=_NOW.isoformat(),
+            service_uptime_seconds=1.0,
+            components=(),
+        )
+
+        def supplier() -> HealthReport:
+            return invalid
+
     instance, _store, orchestrator = _scheduler(
-        observation=ObservationCycleResult(outcome)
+        supplier=supplier,
+        trigger=MaintenanceTriggerDecision(
+            True,
+            MaintenanceTriggerReason.STARTUP,
+        ),
     )
     result = instance.run_due_opportunity()
     assert result.outcome is expected
+    assert result.maintenance_outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
+    assert orchestrator.observation_calls == 0
+    assert orchestrator.trigger_calls == 1
+    assert orchestrator.maintenance_calls == 1
+    assert instance.next_observation_sequence == 1
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        OrchestrationOutcome.CAPACITY_BLOCKED,
+        OrchestrationOutcome.CHECKPOINT_BUSY,
+        OrchestrationOutcome.CHECKPOINT_INCOMPLETE,
+        OrchestrationOutcome.STORAGE_BUSY,
+        OrchestrationOutcome.TIMED_OUT,
+        OrchestrationOutcome.PERSISTENCE_FAILED,
+        OrchestrationOutcome.INVALID_OBSERVATION,
+        OrchestrationOutcome.STALE_SEQUENCE,
+        OrchestrationOutcome.SEQUENCE_CONFLICT,
+        OrchestrationOutcome.GENERATION_EXHAUSTED,
+        OrchestrationOutcome.WAL_OVERSIZE_BLOCKED,
+        OrchestrationOutcome.UNSUPPORTED_RUNTIME,
+        OrchestrationOutcome.INVALID_CLOCK,
+        OrchestrationOutcome.REENTRANT,
+        OrchestrationOutcome.TRUST_FAILED,
+    ],
+)
+def test_every_unaccepted_orchestration_result_stops_before_maintenance(
+    outcome: OrchestrationOutcome,
+) -> None:
+    due = MaintenanceTriggerDecision(True, MaintenanceTriggerReason.STARTUP)
+    instance, _store, orchestrator = _scheduler(
+        observation=ObservationCycleResult(outcome),
+        trigger=due,
+    )
+    result = instance.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome(outcome.value)
     assert orchestrator.observation_calls == 1
+    assert orchestrator.trigger_calls == 0
     assert orchestrator.maintenance_calls == 0
 
 
@@ -1032,29 +1125,85 @@ def test_invalid_or_raising_orchestrator_fails_closed(
     assert orchestrator.trigger_calls == 0
 
 
-def test_startup_maintenance_runs_once_after_observation() -> None:
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        (OrchestrationOutcome.STORED, MaintenanceTriggerReason.STARTUP),
+        (OrchestrationOutcome.STATE_ONLY, MaintenanceTriggerReason.HOURLY),
+        (OrchestrationOutcome.REPLAYED, MaintenanceTriggerReason.STORED_ROWS),
+    ],
+)
+def test_each_accepted_observation_may_run_one_due_maintenance(
+    outcome: OrchestrationOutcome,
+    reason: MaintenanceTriggerReason,
+) -> None:
     events: list[str] = []
-    due = MaintenanceTriggerDecision(True, MaintenanceTriggerReason.STARTUP)
-    instance, _store, orchestrator = _scheduler(trigger=due, events=events)
+    due = MaintenanceTriggerDecision(True, reason)
+    instance, _store, orchestrator = _scheduler(
+        observation=ObservationCycleResult(outcome),
+        trigger=due,
+        events=events,
+    )
     result = instance.run_due_opportunity()
-    assert result.outcome is SchedulerOutcome.STORED
+    assert result.outcome is SchedulerOutcome(outcome.value)
     assert result.maintenance_outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
     assert events == ["orchestration", "trigger", "maintenance"]
+    assert orchestrator.observation_calls == 1
+    assert orchestrator.trigger_calls == 1
     assert orchestrator.maintenance_calls == 1
 
 
 @pytest.mark.parametrize(
-    "reason",
-    [MaintenanceTriggerReason.HOURLY, MaintenanceTriggerReason.STORED_ROWS],
+    "outcome",
+    [
+        OrchestrationOutcome.CHECKPOINT_BUSY,
+        OrchestrationOutcome.CHECKPOINT_INCOMPLETE,
+        OrchestrationOutcome.TIMED_OUT,
+    ],
 )
-def test_hourly_and_row_triggers_each_run_one_maintenance(
-    reason: MaintenanceTriggerReason,
+def test_checkpoint_failure_cannot_make_a_second_passive_attempt(
+    outcome: OrchestrationOutcome,
 ) -> None:
-    due = MaintenanceTriggerDecision(True, reason)
-    instance, _store, orchestrator = _scheduler(trigger=due)
-    instance.run_due_opportunity()
-    assert orchestrator.trigger_calls == 1
-    assert orchestrator.maintenance_calls == 1
+    store = _FakeStore(_empty_resume())
+    orchestrator = _RetryHazardOrchestrator(
+        store,
+        observation_outcome=outcome,
+        hazard="checkpoint",
+    )
+    instance = HealthHistoryScheduler(
+        cast(HealthHistoryStore, store),
+        cast(HealthHistoryOrchestrator, orchestrator),
+        health_report_supplier=_report,
+        monotonic=cast(Callable[[], float], _Clock(0.0, 0.0)),
+        utc_now=lambda: _NOW,
+    )
+    result = instance.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome(outcome.value)
+    assert orchestrator.passive_calls == 1
+    assert orchestrator.trigger_calls == 0
+    assert orchestrator.maintenance_calls == 0
+
+
+def test_capacity_block_cannot_make_a_second_cleanup_or_vacuum_attempt() -> None:
+    store = _FakeStore(_empty_resume())
+    orchestrator = _RetryHazardOrchestrator(
+        store,
+        observation_outcome=OrchestrationOutcome.CAPACITY_BLOCKED,
+        hazard="capacity",
+    )
+    instance = HealthHistoryScheduler(
+        cast(HealthHistoryStore, store),
+        cast(HealthHistoryOrchestrator, orchestrator),
+        health_report_supplier=_report,
+        monotonic=cast(Callable[[], float], _Clock(0.0, 0.0)),
+        utc_now=lambda: _NOW,
+    )
+    result = instance.run_due_opportunity()
+    assert result.outcome is SchedulerOutcome.CAPACITY_BLOCKED
+    assert orchestrator.cleanup_calls == 1
+    assert orchestrator.vacuum_calls == 1
+    assert orchestrator.trigger_calls == 0
+    assert orchestrator.maintenance_calls == 0
 
 
 def test_maintenance_not_due_calls_no_maintenance() -> None:

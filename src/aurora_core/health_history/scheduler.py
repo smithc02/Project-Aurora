@@ -402,11 +402,9 @@ class HealthHistoryScheduler:
         )
         if observation.outcome in _ACCEPTED_OBSERVATION_OUTCOMES:
             self._record_accepted_observation(projection)
-        else:
-            self._record_failed_sampling()
-        if outcome in _STOP_BEFORE_MAINTENANCE:
-            return result
-        return self._finish_with_maintenance(result)
+            return self._finish_with_maintenance(result)
+        self._record_failed_sampling()
+        return result
 
     def _process_observation(
         self, projection: HealthProjection
@@ -570,15 +568,6 @@ _ACCEPTED_OBSERVATION_OUTCOMES: Final = frozenset(
         OrchestrationOutcome.STORED,
         OrchestrationOutcome.STATE_ONLY,
         OrchestrationOutcome.REPLAYED,
-    }
-)
-_STOP_BEFORE_MAINTENANCE: Final = frozenset(
-    {
-        SchedulerOutcome.TRUST_FAILED,
-        SchedulerOutcome.REENTRANT,
-        SchedulerOutcome.INVALID_CLOCK,
-        SchedulerOutcome.UNSUPPORTED_RUNTIME,
-        SchedulerOutcome.WAL_OVERSIZE_BLOCKED,
     }
 )
 

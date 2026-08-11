@@ -1430,12 +1430,18 @@ Each due call reads the authoritative resume state, reads UTC once, calls the
 injected health supplier once, calls `project_health_report()` once, and calls
 `HealthHistoryOrchestrator.process_observation()` once. It then evaluates the
 orchestrator's existing startup/hourly/120-stored-row trigger and invokes at
-most one direct maintenance opportunity. Collection and projection failures are
-sanitized and never retried; only accepted `stored`, `state_only`, or `replayed`
-results advance the in-memory sequence. A nonblocking guard rejects concurrent
-or reentrant use and restores on every path. This scheduler starts no thread,
-timer, task, sleep loop, service hook, database, or runtime integration; actual
-dashboard-process scheduling and production enablement remain deferred.
+most one direct maintenance opportunity only when the observation result is
+`stored`, `state_only`, or `replayed`. Every unaccepted orchestration result ends
+that scheduler call before maintenance-trigger evaluation, so capacity cleanup,
+incremental vacuum, or PASSIVE checkpoint work performed by the observation path
+cannot be retried immediately through scheduled maintenance. Collection and
+projection failures occur before orchestration and retain the separately
+reviewed one-maintenance-opportunity behavior. They are sanitized and never
+retried; only accepted observation results advance the in-memory sequence. A
+nonblocking guard rejects concurrent or reentrant use and restores on every
+path. This scheduler starts no thread, timer, task, sleep loop, service hook,
+database, or runtime integration; actual dashboard-process scheduling and
+production enablement remain deferred.
 
 ## Future dashboard and API boundaries
 

@@ -498,9 +498,13 @@ startup marker, or a clock-discontinuity marker when current UTC precedes the
 checkpoint UTC. One due call invokes the injected future shared-HealthService
 supplier, production projection, and existing orchestrator at most once, then
 uses the orchestrator's existing maintenance trigger and runs at most one
-maintenance opportunity. A separate nonblocking guard rejects reentrancy. The
-module creates no thread, task, timer, sleep loop, path, database, configuration,
-or runtime import.
+maintenance opportunity only after `stored`, `state_only`, or `replayed`.
+Every unaccepted orchestration result ends the scheduler call before trigger
+evaluation, preventing an immediate second capacity or checkpoint attempt.
+Collection and projection failures retain their pre-orchestration trigger
+behavior. A separate nonblocking guard rejects reentrancy. The module creates no
+thread, task, timer, sleep loop, path, database, configuration, or runtime
+import.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, production database
