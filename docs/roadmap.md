@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; isolated storage, ingestion,
-    read-query, retention-maintenance, and storage-envelope slices):
+18. **Milestone 18 (implementation in progress; seven isolated foundation
+    slices through direct scheduler/resume composition):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -104,8 +104,16 @@
     pressure. Its immutable trigger state models startup, monotonic hourly, and
     120-newly-stored-row opportunities without scheduling them. It is not
     imported by a runtime entry point, creates no deployment database, and
-    leaves production history disabled and unavailable. Presentation routes,
-    acknowledgment, actual maintenance/sampling scheduling, production
+    leaves production history disabled and unavailable. The seventh slice adds
+    a read-only checkpoint resume model plus direct monotonic cadence state. It
+    resumes at committed sequence plus one, performs arithmetic bounded missed-
+    interval calculation without catch-up polling, selects one startup or
+    backward-clock marker without deriving misses from restart UTC duration,
+    calls an injected future shared-HealthService boundary and the existing
+    projection/orchestrator at most once, then composes at most one existing
+    maintenance opportunity. It starts no thread, timer, sleep loop, service
+    hook, or runtime import. Presentation routes, acknowledgment, actual
+    maintenance/sampling scheduling, production
     configuration/database creation, notifications, and automation remain
     unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network

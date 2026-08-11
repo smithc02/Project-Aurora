@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first four Milestone 18 production slices supply an isolated
+The first seven Milestone 18 production slices supply an isolated
 `aurora_core.health_history` package. Its stricter code-owned projection accepts
 only complete `HealthReport` schema version 1 snapshots and retains status,
 timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
@@ -484,6 +484,33 @@ maintenance resets it. One nonblocking guard rejects reentrant/concurrent
 cycles and is restored on every path. The module resolves no production path,
 creates or opens no database, and is not imported by the application, dashboard,
 or runtime packages.
+
+The seventh slice adds a direct-only scheduler/resume core without starting a
+scheduler. A narrow bracketed store read exposes only the validated committed
+sequence, accepted observation UTC and sample kind, and accepted count. Empty
+state begins at sequence 1; populated state resumes at exactly committed
+sequence plus one, while maximum sequence fails before collection. Immutable
+cadence state accepts 5–300 seconds (30 by default), uses only monotonic time,
+computes bounded missed intervals arithmetically, and advances directly to the
+first future boundary without a catch-up loop. Restart UTC distance does not
+fabricate misses under the existing gap contract: the first accepted cycle is a
+startup marker, or a clock-discontinuity marker when current UTC precedes the
+checkpoint UTC. One due call invokes the injected future shared-HealthService
+supplier, production projection, and existing orchestrator at most once, then
+uses the orchestrator's existing maintenance trigger and runs at most one
+maintenance opportunity only after `stored`, `state_only`, or `replayed`.
+Every unaccepted orchestration result ends the scheduler call before trigger
+evaluation, preventing an immediate second capacity or checkpoint attempt.
+An accepted result records one bounded Boolean when its observation path already
+attempted retention cleanup, incremental vacuum, or a PASSIVE checkpoint. That
+result advances accepted scheduler state but skips trigger evaluation, leaving
+the trigger due for a future invocation. Direct accepted observations without
+such work may still run one scheduled opportunity, so one scheduler call has at
+most one storage-maintenance phase.
+Collection and projection failures retain their pre-orchestration trigger
+behavior. A separate nonblocking guard rejects reentrancy. The module creates no
+thread, task, timer, sleep loop, path, database, configuration, or runtime
+import.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, production database

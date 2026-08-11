@@ -57,7 +57,9 @@ from aurora_core.health_history.queries import (
     HealthSamplePage,
     QueryError,
     QueryRejection,
+    SchedulerResumeState,
     _get_alert,
+    _get_scheduler_resume_state,
     _list_alert_events,
     _list_alerts,
     _list_health_samples,
@@ -272,6 +274,10 @@ class HealthHistoryStore:
                 overall_status=overall_status,
             )
         )
+
+    def get_scheduler_resume_state(self) -> SchedulerResumeState:
+        """Return only the validated fields needed to resume scheduling."""
+        return self._read_query(_get_scheduler_resume_state)
 
     def list_alerts(
         self,
