@@ -24,6 +24,11 @@ NonNegativeInteger = Annotated[int, Field(ge=0, strict=True)]
 StrictBoolean = Annotated[bool, Field(strict=True)]
 ValidationTimeout = Annotated[float, Field(ge=0.1, le=10.0, strict=True)]
 RefreshInterval = Annotated[int, Field(ge=1, le=3600, strict=True)]
+HealthHistoryDatabasePath = Annotated[
+    str, Field(min_length=1, max_length=4096, strict=True)
+]
+HealthHistorySampleInterval = Annotated[int, Field(ge=5, le=300, strict=True)]
+HealthHistoryRetentionDays = Annotated[int, Field(ge=1, le=365, strict=True)]
 WarningPercentage = Annotated[float, Field(ge=0.0, le=100.0, strict=True)]
 TemperatureWarning = Annotated[float, Field(ge=0.0, le=120.0, strict=True)]
 AuthenticationUsername = Annotated[str, Field(min_length=1, max_length=64, strict=True)]
@@ -65,6 +70,13 @@ class HyperHDROperation(StrEnum):
     VIDEO_GRABBER_DISABLE = "hyperhdr.video_grabber_disable"
     LED_OUTPUT_ENABLE = "hyperhdr.led_output_enable"
     LED_OUTPUT_DISABLE = "hyperhdr.led_output_disable"
+
+
+class HealthHistoryDatabaseMode(StrEnum):
+    """Future protected history-database startup policy."""
+
+    OPEN_EXISTING = "open_existing"
+    CREATE_IF_MISSING = "create_if_missing"
 
 
 class AuroraModel(BaseModel):
@@ -315,6 +327,47 @@ class DashboardServerSettings(AuroraModel):
         return value
 
 
+class HealthHistorySettings(AuroraModel):
+    """Disabled-by-default, lexical-only persistent-history configuration."""
+
+    enabled: StrictBoolean = False
+    database_path: HealthHistoryDatabasePath | None = None
+    database_mode: HealthHistoryDatabaseMode = HealthHistoryDatabaseMode.OPEN_EXISTING
+    sample_interval_seconds: HealthHistorySampleInterval = 30
+    retention_days: HealthHistoryRetentionDays = 30
+
+    @field_validator("database_path")
+    @classmethod
+    def database_path_is_safe_absolute_lexical_path(
+        cls, value: str | None
+    ) -> str | None:
+        """Validate fixed POSIX path grammar without inspecting the filesystem."""
+        if value is None:
+            return None
+        invalid_control = any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        )
+        components = value.split("/")
+        if (
+            not value.startswith("/")
+            or value.startswith("~")
+            or value == "/"
+            or value.endswith("/")
+            or invalid_control
+            or any(component in {"", ".", ".."} for component in components[1:])
+        ):
+            raise ValueError(
+                "database_path must be a safe absolute lexical POSIX file path"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def enabled_history_has_database_path(self) -> HealthHistorySettings:
+        if self.enabled and self.database_path is None:
+            raise ValueError("database_path is required when health history is enabled")
+        return self
+
+
 class MQTTSettings(EndpointSettings):
     username: NonEmptyString | None = None
     password: SecretStr | None = None
@@ -332,4 +385,18 @@ class AuroraSettings(AuroraModel):
     lighting_zones: tuple[LightingZoneSettings, ...] = ()
     led_layout: LEDLayoutSettings = Field(default_factory=LEDLayoutSettings)
     dashboard: DashboardServerSettings = Field(default_factory=DashboardServerSettings)
+    health_history: HealthHistorySettings = Field(default_factory=HealthHistorySettings)
     mqtt: MQTTSettings = Field(default_factory=MQTTSettings)
+
+    @model_validator(mode="after")
+    def enabled_history_respects_dashboard_refresh(self) -> AuroraSettings:
+        if (
+            self.health_history.enabled
+            and self.health_history.sample_interval_seconds
+            < self.dashboard.refresh_seconds
+        ):
+            raise ValueError(
+                "enabled health-history sampling interval must be at least the "
+                "dashboard refresh interval"
+            )
+        return self

@@ -13,13 +13,17 @@ immutable result models, deterministic keyset cursors, and strict persisted-row
 validation. The fourth isolated slice adds bounded deterministic retention and
 one fixed incremental-vacuum primitive. The fifth adds fixed storage-envelope
 inspection, decision models, and one bounded PASSIVE-checkpoint primitive. All
-remain without runtime invocation.
+remain without runtime invocation. The sixth added direct-only orchestration;
+the seventh added direct-only scheduler/resume composition without starting a
+scheduler. The eighth adds only a strict, disabled-by-default production
+configuration contract.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
-This slice adds no configuration field, scheduler, worker, route, runtime
-invocation, acknowledgment action, migration, backup, restore, scheduled
-checkpoint, notification, or automation action. The query and maintenance APIs are
+The eighth slice adds configuration values but performs no filesystem or
+database access and adds no scheduler, worker, route, runtime invocation,
+acknowledgment action, migration, backup, restore, scheduled checkpoint,
+notification, or automation action. The query and maintenance APIs remain
 reachable only through direct use of the isolated package. Milestones 12
 through 17 remain the current behavior, including public `GET /api/health`
 schema version 1.
@@ -236,15 +240,16 @@ filesystems or multiple uncoordinated writer services.
 
 ## Recommended resource envelope
 
-These are reviewed initial implementation defaults, not current configuration
-fields or active runtime behavior:
+Sampling and retention now have dormant bounded configuration fields. Every
+other safety value remains code-owned, and none of these policies is active
+runtime behavior:
 
 | Policy | Recommendation | Required bound |
 | --- | --- | --- |
 | Scheduled sample interval | 30 seconds | Configurable 5–300 seconds; must be at least the dashboard refresh interval. |
 | Unchanged heartbeat interval | 15 minutes | From one sample interval through 24 hours. |
 | History retention | 30 days | Configurable 1–365 days. |
-| Main database limit | 64 MiB | Configurable only downward to 8 MiB in schema version 1; a larger cap requires a new budget review. |
+| Main database limit | 64 MiB | Fixed at 16,384 4-KiB pages; no caller configuration. |
 | WAL target | At most one `PASSIVE` attempt per hour after 256 pages; refuse writes above 960 pages or 4 MiB including WAL framing | Automatic checkpoints disabled; clean shutdown permits one budgeted `TRUNCATE` attempt. |
 | Scheduled state transactions | At most 120 per hour and 2,880 per day at the 30-second default | At most one transaction per accepted scheduled sample; no retry. |
 | History query page | 100 rows | Hard maximum 500 rows. |
@@ -1448,6 +1453,63 @@ nonblocking guard rejects concurrent or reentrant use and restores on every
 path. This scheduler starts no thread, timer, task, sleep loop, service hook,
 database, or runtime integration; actual dashboard-process scheduling and
 production enablement remain deferred.
+
+The eighth isolated slice adds the pure `HealthHistorySettings` configuration
+contract without importing the history package into runtime. It is explicitly
+disabled by default, with no database path, `open_existing` mode, a 30-second
+sampling interval, and 30-day retention. Sampling accepts only strict integers
+from 5 through 300 seconds; retention accepts only strict integers from 1
+through 365 days. When enabled, the sampling interval must be at least the
+existing dashboard refresh interval. Disabled configurations still validate
+explicit bounded values but do not impose that cross-section compatibility
+rule.
+
+The optional database path remains a strict string of at most 4,096 characters.
+When history is enabled it is mandatory and must be an absolute POSIX lexical
+file path with a real filename component. Validation rejects NUL, newline,
+carriage return and other ASCII controls, leading expansion syntax, `.` and
+`..` components, repeated separators, root alone, and a trailing separator. It
+does not expand, resolve, canonicalize, stat, list, open, or create the path or
+its parent. Public validation errors do not include the submitted value.
+
+`open_existing` means only that a future reviewed startup composition may use
+the existing fail-closed SQLite URI `mode=rw` boundary for an already-existing
+protected database. `create_if_missing` means that future composition may use
+that boundary when the main file exists or the separately reviewed exclusive
+main-file creation boundary when it does not. It does not authorize parent-
+directory creation, replacement, repair, deletion, migration, overwrite,
+following a conflicting reserved main/WAL/SHM object, or SQLite implicit
+creation by pathname. This slice executes neither mode.
+
+Five fixed environment names map to these fields:
+`AURORA_HEALTH_HISTORY__ENABLED`,
+`AURORA_HEALTH_HISTORY__DATABASE_PATH`,
+`AURORA_HEALTH_HISTORY__DATABASE_MODE`,
+`AURORA_HEALTH_HISTORY__SAMPLE_INTERVAL_SECONDS`, and
+`AURORA_HEALTH_HISTORY__RETENTION_DAYS`. Ordinary CLI-over-environment-over-
+YAML-over-default precedence is unchanged and no CLI flag is added. Milestone
+17 raw and effective profile validation uses the same contract; existing
+profiles inherit the disabled defaults, and profile apply/rollback still does
+not inspect or create a configured history path. The tracked example remains
+disabled and intentionally omits a database path.
+
+Production enablement remains blocked on separately reviewed lifecycle work:
+
+- a nonwaiting scheduler leadership mechanism;
+- history failure isolation from public `GET /api/health`;
+- scheduler join and bounded shutdown-TRUNCATE handling;
+- a protected writable deployment state directory and explicit service-account
+  ownership assumptions;
+- intermediate-directory ownership/mode and no-symlink hardening;
+- complete bounded foreign-key consistency verification during startup;
+- moving the SQLite 3.51.3 safe-WAL floor from WAL inspection into the complete
+  production bootstrap gate;
+- resolution of forward wall-clock archival suspension;
+- injection of validated `retention_days` into orchestration;
+- protected database create/open lifecycle composition; and
+- a shared writer gate for any future acknowledgment path.
+
+None is implemented or authorized by the configuration contract.
 
 ## Future dashboard and API boundaries
 

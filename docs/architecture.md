@@ -429,9 +429,10 @@ post-commit checks, and pre/post main-file and sidecar identity checks. A
 post-commit timeout may leave the selected cleanup durable and therefore never
 claims rollback. There is no retry, full vacuum, WAL checkpoint, or drain loop.
 
-No current runtime entry point imports this package. There is no configuration,
-deployment database creation, scheduler or maintenance cadence, route,
-acknowledgment, automatic capacity action, or device/service/network behavior.
+No current runtime entry point imports this package. These direct store and
+maintenance boundaries create no deployment database and add no scheduler or
+maintenance cadence, route, acknowledgment, automatic capacity action, or
+device/service/network behavior.
 
 The fifth isolated slice adds direct-only storage-envelope primitives. Every
 store connection sets and verifies SQLite's connection-scoped
@@ -512,9 +513,32 @@ behavior. A separate nonblocking guard rejects reentrancy. The module creates no
 thread, task, timer, sleep loop, path, database, configuration, or runtime
 import.
 
+The eighth isolated slice adds only the authoritative production configuration
+contract. `HealthHistorySettings` is disabled by default and contains a strict
+optional string database path, fixed `open_existing` or `create_if_missing`
+startup policy, a 5–300-second sampling interval (30 by default), and 1–365-day
+retention (30 by default). Enabling requires an absolute lexical database path,
+and the sampling interval must be at least the existing dashboard refresh
+interval. Path validation rejects traversal, repeated separators,
+directory-like trailing separators, controls, and values longer than 4,096
+characters using string operations only; it does not resolve, inspect, open, or
+create anything. The five fixed environment mappings retain
+CLI-over-environment-over-YAML-over-defaults precedence, existing profiles
+inherit disabled defaults, and the tracked example remains disabled without a
+database path.
+
+The two database modes authorize no behavior in this slice. `open_existing`
+describes a future startup composition that may use only the existing protected
+`mode=rw` boundary. `create_if_missing` additionally describes future use of the
+separately reviewed exclusive main-file creation boundary when the main file is
+absent; it never authorizes parent creation, replacement, repair, migration,
+deletion, overwrite, or SQLite implicit pathname creation. No store,
+orchestrator, scheduler, thread, lifecycle hook, deployment path, or database is
+constructed by configuration validation.
+
 Existing portal routes and public `GET /api/health` schema version 1 remain
-independent and unchanged. Scheduler/runtime integration, production database
-configuration and creation, startup/shutdown hooks, separately authenticated
-acknowledgment, and separately reviewed presentation integration remain
+independent and unchanged. Scheduler/runtime integration, protected production
+database open/create composition, startup/shutdown hooks, separately
+authenticated acknowledgment, and separately reviewed presentation integration remain
 deferred. See the detailed [health-history and alerting
 design](health-history-alerting.md).

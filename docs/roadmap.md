@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; seven isolated foundation
-    slices through direct scheduler/resume composition):
+18. **Milestone 18 (implementation in progress; eight isolated foundation
+    slices through a disabled production configuration contract):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -112,10 +112,16 @@
     calls an injected future shared-HealthService boundary and the existing
     projection/orchestrator at most once, then composes at most one existing
     maintenance opportunity. It starts no thread, timer, sleep loop, service
-    hook, or runtime import. Presentation routes, acknowledgment, actual
-    maintenance/sampling scheduling, production
-    configuration/database creation, notifications, and automation remain
-    unimplemented. It
+    hook, or runtime import. The eighth slice adds strict, lexical-only
+    `health_history` settings that remain disabled by default: an explicit
+    database path is required before enablement, database startup policy is one
+    of `open_existing` or `create_if_missing`, sampling is bounded to 5–300
+    seconds and cannot be faster than dashboard refresh when enabled, and
+    retention is bounded to 1–365 days. Validation performs no filesystem or
+    database access, and the tracked example remains disabled without a path.
+    Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
+    protected database lifecycle composition, notifications, and automation
+    remain unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).

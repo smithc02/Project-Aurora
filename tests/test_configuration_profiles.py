@@ -223,6 +223,68 @@ def test_raw_yaml_direct_model_validation_and_profile_match() -> None:
     assert "PRIVATE-VALUE" not in str(invalid.value)
 
 
+def test_legacy_profile_without_history_section_uses_disabled_defaults() -> None:
+    _, settings = validate_raw_yaml(_yaml("maintenance"))
+
+    assert not settings.health_history.enabled
+    assert settings.health_history.database_path is None
+
+
+@pytest.mark.parametrize("enabled", (False, True))
+def test_raw_and_effective_profile_validation_support_history_contract(
+    enabled: bool,
+) -> None:
+    history = (
+        "health_history:\n"
+        f"  enabled: {'true' if enabled else 'false'}\n"
+        "  database_mode: open_existing\n"
+        "  sample_interval_seconds: 30\n"
+        "  retention_days: 30\n"
+    )
+    if enabled:
+        history += "  database_path: /srv/aurora/history.db\n"
+    document, raw = validate_raw_yaml(_yaml("maintenance", extra=history))
+    effective = validate_effective_yaml(document)
+
+    assert raw.health_history.enabled is enabled
+    assert effective.health_history.enabled is enabled
+    assert raw.health_history.database_path == (
+        "/srv/aurora/history.db" if enabled else None
+    )
+
+
+def test_profile_validation_rejects_invalid_history_contract() -> None:
+    invalid_history = "health_history:\n  enabled: true\n"
+
+    with pytest.raises(ProfileOperationError) as error:
+        validate_raw_yaml(_yaml("maintenance", extra=invalid_history))
+
+    assert error.value.reason is ProfileReason.INVALID_CONFIGURATION
+
+
+def test_profile_apply_does_not_create_configured_history_path(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "unprovisioned-history.sqlite3"
+    history = (
+        "health_history:\n"
+        "  enabled: true\n"
+        f"  database_path: {database_path}\n"
+        "  database_mode: create_if_missing\n"
+        "  sample_interval_seconds: 30\n"
+        "  retention_days: 30\n"
+    )
+    config, profiles, backups, _ = _layout(
+        tmp_path,
+        candidate=_yaml("maintenance", extra=history),
+    )
+
+    result = _service().apply(config, profiles, backups, "maintenance", "maintenance")
+
+    assert result.exit_code == 0
+    assert not database_path.exists()
+
+
 def test_raw_validation_ignores_environment_and_effective_validation_uses_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
