@@ -213,9 +213,9 @@ class MaintenanceTriggerState:
             return self
         started = _validated_monotonic(started_monotonic)
         completed = _validated_monotonic(completed_monotonic)
+        marker = self.last_completed_monotonic
         if completed < started or (
-            self.last_completed_monotonic is not None
-            and completed < self.last_completed_monotonic
+            marker is not None and (started < marker or completed < marker)
         ):
             raise OrchestrationError(OrchestrationRejection.INVALID_MONOTONIC)
         return MaintenanceTriggerState(
@@ -283,6 +283,9 @@ class HealthHistoryOrchestrator:
             try:
                 started_monotonic = self._read_monotonic()
             except OrchestrationError:
+                return MaintenanceOpportunityResult(OrchestrationOutcome.INVALID_CLOCK)
+            marker = self._trigger_state.last_completed_monotonic
+            if marker is not None and started_monotonic < marker:
                 return MaintenanceOpportunityResult(OrchestrationOutcome.INVALID_CLOCK)
             result = self._run_maintenance_opportunity()
             if result.outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED:

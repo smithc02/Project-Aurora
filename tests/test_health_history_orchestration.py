@@ -896,6 +896,35 @@ def test_regressed_completion_marker_is_rejected() -> None:
     assert caught.value.reason is OrchestrationRejection.INVALID_MONOTONIC
 
 
+def test_pure_maintenance_transition_rejects_regressed_start() -> None:
+    state = MaintenanceTriggerState(True, 100.0, 120)
+    with pytest.raises(OrchestrationError) as caught:
+        state.after_maintenance(
+            MaintenanceOpportunityResult(OrchestrationOutcome.MAINTENANCE_COMPLETED),
+            started_monotonic=90.0,
+            completed_monotonic=110.0,
+        )
+    assert caught.value.reason is OrchestrationRejection.INVALID_MONOTONIC
+
+
+@pytest.mark.parametrize(
+    ("started", "completed", "expected_marker"),
+    [(100.0, 100.0, 100.0), (101.0, 102.0, 102.0)],
+)
+def test_pure_maintenance_transition_accepts_nonregressed_boundaries(
+    started: float,
+    completed: float,
+    expected_marker: float,
+) -> None:
+    state = MaintenanceTriggerState(True, 100.0, 120)
+    updated = state.after_maintenance(
+        MaintenanceOpportunityResult(OrchestrationOutcome.MAINTENANCE_COMPLETED),
+        started_monotonic=started,
+        completed_monotonic=completed,
+    )
+    assert updated == MaintenanceTriggerState(True, expected_marker, 0)
+
+
 def test_trigger_model_rejects_wrong_fixed_result_types() -> None:
     state = MaintenanceTriggerState()
     with pytest.raises(OrchestrationError) as observation:
@@ -1013,6 +1042,36 @@ def test_fresh_start_intra_op_clock_regression_preserves_startup_state() -> None
     )
 
 
+def test_existing_marker_start_regression_stops_before_maintenance() -> None:
+    fake = _FakeStore()
+    monotonic_reads: list[float] = []
+    utc_reads = 0
+
+    def regressed_monotonic() -> float:
+        monotonic_reads.append(90.0)
+        return 90.0
+
+    def tracked_utc() -> int:
+        nonlocal utc_reads
+        utc_reads += 1
+        return _BASE_TIME
+
+    initial = MaintenanceTriggerState(True, 100.0, 120)
+    orchestrator = _orchestrator(
+        fake,
+        monotonic=regressed_monotonic,
+        utc_now_us=tracked_utc,
+        trigger_state=initial,
+    )
+    result = orchestrator.run_maintenance_opportunity()
+    assert result.outcome is OrchestrationOutcome.INVALID_CLOCK
+    assert fake.calls == []
+    assert fake.cleanup_times == []
+    assert monotonic_reads == [90.0]
+    assert utc_reads == 0
+    assert orchestrator.trigger_state is initial
+
+
 def test_existing_marker_does_not_mask_intra_op_clock_regression() -> None:
     fake = _FakeStore()
     values = iter([100.0, 90.0])
@@ -1104,6 +1163,26 @@ def test_guard_restores_after_completion_clock_failure() -> None:
         "wal",
     ]
     assert orchestrator.trigger_state == MaintenanceTriggerState(True, 201.0, 0)
+
+
+def test_guard_restores_after_start_clock_regression() -> None:
+    fake = _FakeStore()
+    values = iter([90.0, 100.0, 101.0])
+    initial = MaintenanceTriggerState(True, 100.0, 120)
+    orchestrator = _orchestrator(
+        fake,
+        monotonic=lambda: next(values),
+        trigger_state=initial,
+    )
+    assert orchestrator.run_maintenance_opportunity().outcome is (
+        OrchestrationOutcome.INVALID_CLOCK
+    )
+    assert orchestrator.trigger_state is initial
+    assert orchestrator.run_maintenance_opportunity().outcome is (
+        OrchestrationOutcome.MAINTENANCE_COMPLETED
+    )
+    assert fake.calls == ["cleanup", "vacuum", "wal"]
+    assert orchestrator.trigger_state == MaintenanceTriggerState(True, 101.0, 0)
 
 
 def test_invalid_maintenance_clocks_stop_or_leave_trigger_due() -> None:
