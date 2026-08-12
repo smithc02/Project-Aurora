@@ -33,6 +33,7 @@ from aurora_core.health_history.models import (
 )
 from aurora_core.health_history.reasons import NormalizedReason
 
+FOREIGN_KEY_CHECK_SECONDS: Final = 1.0
 QUICK_CHECK_SECONDS: Final = 2.0
 PROGRESS_HANDLER_STEPS: Final = 1_000
 
@@ -463,11 +464,61 @@ def verify_schema_v1(
         ).fetchall()
         if not _valid_evaluation_rows(evaluation_rows):
             raise SchemaVerificationError("evaluation_state_mismatch")
+        _bounded_foreign_key_check(connection, monotonic=monotonic)
         _bounded_quick_check(connection, monotonic=monotonic)
     except SchemaVerificationError:
         raise
     except sqlite3.Error as error:
         raise SchemaVerificationError("schema_verification_failed") from error
+
+
+def _bounded_foreign_key_check(
+    connection: sqlite3.Connection, *, monotonic: Callable[[], float]
+) -> None:
+    try:
+        deadline = monotonic() + FOREIGN_KEY_CHECK_SECONDS
+    except Exception:
+        raise SchemaVerificationError("foreign_key_check_failed") from None
+
+    def progress() -> int:
+        try:
+            return 1 if monotonic() >= deadline else 0
+        except Exception:
+            return 1
+
+    cursor: sqlite3.Cursor | None = None
+    handler_attempted = False
+    failure_reason: str | None = None
+    try:
+        handler_attempted = True
+        connection.set_progress_handler(progress, PROGRESS_HANDLER_STEPS)
+        cursor = connection.execute("PRAGMA foreign_key_check")
+        rows = cursor.fetchmany(1)
+        completed_at = monotonic()
+        if type(rows) is not list or len(rows) > 1:
+            failure_reason = "foreign_key_check_failed"
+        elif completed_at > deadline:
+            failure_reason = "foreign_key_check_failed"
+        elif rows:
+            failure_reason = "foreign_key_violation"
+    except Exception:
+        failure_reason = "foreign_key_check_failed"
+    finally:
+        cleanup_failed = False
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:
+                cleanup_failed = True
+        if handler_attempted:
+            try:
+                connection.set_progress_handler(None, 0)
+            except Exception:
+                cleanup_failed = True
+        if cleanup_failed:
+            failure_reason = "foreign_key_check_failed"
+    if failure_reason is not None:
+        raise SchemaVerificationError(failure_reason) from None
 
 
 def _bounded_quick_check(

@@ -20,7 +20,9 @@ configuration contract. The ninth strengthens the protected history path
 boundary across the complete directory ancestry. The tenth adds one direct-only
 nonblocking cross-process leadership primitive without runtime composition. The
 eleventh adds one shared SQLite safe-runtime gate and enforces it before either
-direct Store bootstrap path can inspect or create database storage.
+direct Store bootstrap path can inspect or create database storage. The twelfth
+adds complete bounded persisted foreign-key verification to every direct Store
+verification path.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
@@ -59,8 +61,9 @@ reviewable boundaries without runtime integration:
   created implicitly;
 - pre-open and post-open type, owner, mode, link-count, device, inode, and
   sidecar validation; and
-- exact object, definition, migration-ledger, pragma, and one bounded
-  `quick_check(1)` verification with no repair or recreation.
+- exact object, definition, migration-ledger, pragma, one database-wide bounded
+  `foreign_key_check`, and one bounded `quick_check(1)` verification with no
+  repair or recreation.
 
 The ninth slice strengthens the existing filesystem boundary before any
 future leadership or lifecycle composition. Root and every intermediate path
@@ -99,6 +102,22 @@ exclusive file creation, SQLite connection, pragma, schema operation, or
 sidecar activity. The existing NOOP WAL-status path reuses the same source of
 truth and still executes no NOOP or PASSIVE statement when unsupported.
 Unsupported runtime is a capability rejection, not storage trust loss.
+
+The twelfth slice adds one database-wide `PRAGMA foreign_key_check` after exact
+schema and persisted-state invariants and before `quick_check(1)`. Merely
+requiring `PRAGMA foreign_keys=ON` proves current-connection enforcement, not
+that persisted rows are consistent. The foreign-key scan must complete with
+zero rows under its own one-second progress deadline; the first returned
+violation rejects verification without draining or exposing table, row,
+parent, or constraint details. Cursor close and progress-handler clearing are
+part of successful verification, and no handler is carried into the existing
+independent two-second `quick_check(1)`. The check performs no repair, schema
+version remains 1, and create, open-existing, and explicit Store verification
+inherit it without new Store behavior.
+
+Production history remains disabled. Settings-driven protected database
+lifecycle composition is the expected next isolated prerequisite; leadership,
+settings, scheduler, and runtime code do not invoke one another in this slice.
 
 The second slice remains inside that isolated package and adds:
 
