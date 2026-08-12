@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first eleven Milestone 18 production slices establish an isolated
+The first twelve Milestone 18 production slices establish an isolated
 `aurora_core.health_history` package plus disabled production configuration.
 Its stricter code-owned projection accepts only complete `HealthReport` schema
 version 1 snapshots and retains status,
@@ -582,9 +582,20 @@ main file or sidecar and cannot alter an existing database. The NOOP WAL-status
 path calls the same boundary and translates rejection into its existing
 non-trust storage-envelope result before executing checkpoint SQL.
 
-No settings-driven lifecycle, leadership acquisition, foreign-key consistency
-scan, scheduler, or runtime integration is added. Complete bounded startup
-foreign-key consistency verification remains the next isolated prerequisite.
+The twelfth isolated slice completes persisted foreign-key verification before
+any Store is considered verified. Connection-level `PRAGMA foreign_keys=ON`
+remains required, then one database-wide `PRAGMA foreign_key_check` must
+complete with zero returned violations under an independent one-second
+progress deadline. The first violation fails closed without enumerating or
+exposing table, row, parent, or constraint details; no repair is attempted.
+Cursor and progress-handler cleanup are required for success, and the handler
+is cleared before the existing independent two-second `quick_check(1)` begins.
+Create, open-existing, and explicit Store reverification inherit the same
+schema-version-1 check without changing Store APIs or schema DDL.
+
+No settings-driven lifecycle, leadership acquisition, scheduler, or runtime
+integration is added. Direct-only settings-driven protected database lifecycle
+composition remains the next isolated prerequisite.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production

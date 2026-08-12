@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; eleven isolated foundation
-    slices through the complete SQLite safe-runtime bootstrap gate):
+18. **Milestone 18 (implementation in progress; twelve isolated foundation
+    slices through complete bounded startup foreign-key verification):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -139,9 +139,15 @@
     open-existing enforce it before any filesystem or SQLite bootstrap work,
     while NOOP WAL inspection reuses the same gate; absent, malformed, or old
     metadata fails with fixed non-trust `unsupported_runtime`, creates no
-    database artifact, and exposes no version detail. Complete bounded startup
-    foreign-key consistency verification is the next isolated prerequisite;
-    production history remains disabled.
+    database artifact, and exposes no version detail. The twelfth slice adds one
+    database-wide `PRAGMA foreign_key_check` after exact schema and persisted-
+    state invariants and before the existing `quick_check(1)`. It requires zero
+    violations under an independent one-second progress deadline, stops at the
+    first violation without exposing its contents, treats cursor and handler
+    cleanup as part of verification, performs no repair, and keeps schema
+    version 1. Direct-only settings-driven protected database lifecycle
+    composition is the next isolated prerequisite; production history remains
+    disabled.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
     protected database lifecycle composition, notifications, and automation
     remain unimplemented. It

@@ -2026,11 +2026,293 @@ def test_database_check_constraints_reject_unknown_enums_and_bounds(
     connection.close()
 
 
+class _ForeignKeyCheckCursor:
+    def __init__(
+        self,
+        connection: _ForeignKeyCheckConnection,
+        *,
+        rows: object = None,
+        fetch_error: Exception | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
+        self.connection = connection
+        self.rows = [] if rows is None else rows
+        self.fetch_error = fetch_error
+        self.close_error = close_error
+        self.fetch_counts: list[int] = []
+        self.close_calls = 0
+
+    def fetchmany(self, count: int) -> object:
+        assert self.connection.current_handler is not None
+        self.fetch_counts.append(count)
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        return self.rows
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _ForeignKeyCheckConnection:
+    def __init__(
+        self,
+        *,
+        rows: object = None,
+        install_error: Exception | None = None,
+        execute_error: Exception | None = None,
+        fetch_error: Exception | None = None,
+        close_error: Exception | None = None,
+        clear_error: Exception | None = None,
+    ) -> None:
+        self.install_error = install_error
+        self.execute_error = execute_error
+        self.clear_error = clear_error
+        self.handlers: list[tuple[object, int]] = []
+        self.current_handler: object | None = None
+        self.statements: list[str] = []
+        self.cursor = _ForeignKeyCheckCursor(
+            self,
+            rows=rows,
+            fetch_error=fetch_error,
+            close_error=close_error,
+        )
+
+    def set_progress_handler(self, handler: object, steps: int) -> None:
+        self.handlers.append((handler, steps))
+        if handler is None:
+            self.current_handler = None
+            if self.clear_error is not None:
+                raise self.clear_error
+            return
+        if self.install_error is not None:
+            raise self.install_error
+        self.current_handler = handler
+
+    def execute(self, statement: str) -> _ForeignKeyCheckCursor:
+        assert self.current_handler is not None
+        self.statements.append(statement)
+        if self.execute_error is not None:
+            raise self.execute_error
+        return self.cursor
+
+
+def test_foreign_key_check_accepts_zero_rows_with_one_exact_bounded_query() -> None:
+    connection = _ForeignKeyCheckConnection()
+    current = 10.0
+
+    def monotonic() -> float:
+        return current
+
+    schema._bounded_foreign_key_check(  # type: ignore[arg-type]
+        connection,
+        monotonic=monotonic,
+    )
+
+    assert schema.FOREIGN_KEY_CHECK_SECONDS == 1.0
+    assert connection.statements == ["PRAGMA foreign_key_check"]
+    assert connection.cursor.fetch_counts == [1]
+    assert connection.cursor.close_calls == 1
+    assert connection.handlers[0][1] == schema.PROGRESS_HANDLER_STEPS
+    assert connection.handlers[-1] == (None, 0)
+    progress = connection.handlers[0][0]
+    assert callable(progress)
+    current = 10.0 + schema.FOREIGN_KEY_CHECK_SECONDS
+    assert progress() == 1
+
+
+def test_foreign_key_violation_stops_after_first_private_row() -> None:
+    canaries = ("private_table", 987654, "private_parent", 42)
+    connection = _ForeignKeyCheckConnection(rows=[canaries])
+
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_foreign_key_check(  # type: ignore[arg-type]
+            connection,
+            monotonic=lambda: 0.0,
+        )
+
+    assert caught.value.reason == "foreign_key_violation"
+    assert str(caught.value) == "foreign_key_violation"
+    assert connection.cursor.fetch_counts == [1]
+    assert connection.cursor.close_calls == 1
+    assert connection.handlers[-1] == (None, 0)
+    assert all(str(canary) not in str(caught.value) for canary in canaries)
+    assert "PRAGMA" not in str(caught.value)
+
+
+def test_foreign_key_check_rejects_post_result_deadline_overrun() -> None:
+    connection = _ForeignKeyCheckConnection()
+    ticks = iter((0.0, schema.FOREIGN_KEY_CHECK_SECONDS + 0.001))
+
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_foreign_key_check(  # type: ignore[arg-type]
+            connection,
+            monotonic=lambda: next(ticks),
+        )
+
+    assert caught.value.reason == "foreign_key_check_failed"
+    assert connection.cursor.fetch_counts == [1]
+    assert connection.cursor.close_calls == 1
+    assert connection.handlers[-1] == (None, 0)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"install_error": sqlite3.DatabaseError("install-canary")},
+        {"execute_error": sqlite3.DatabaseError("execute-canary")},
+        {"fetch_error": sqlite3.DatabaseError("fetch-canary")},
+        {"rows": (("malformed-container",),)},
+        {"rows": [("first",), ("impossible-second",)]},
+    ],
+)
+def test_foreign_key_check_faults_fail_closed_and_clear_handler(
+    arguments: dict[str, object],
+) -> None:
+    connection = _ForeignKeyCheckConnection(**arguments)
+
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_foreign_key_check(  # type: ignore[arg-type]
+            connection,
+            monotonic=lambda: 0.0,
+        )
+
+    assert caught.value.reason == "foreign_key_check_failed"
+    assert str(caught.value) == "foreign_key_check_failed"
+    assert connection.handlers[-1] == (None, 0)
+    if connection.statements:
+        assert connection.statements == ["PRAGMA foreign_key_check"]
+    assert not any(
+        canary in str(caught.value)
+        for canary in (
+            "install-canary",
+            "execute-canary",
+            "fetch-canary",
+            "malformed-container",
+        )
+    )
+
+
+@pytest.mark.parametrize("failure", ["cursor_close", "handler_clear"])
+def test_foreign_key_check_cleanup_failure_cannot_report_success(failure: str) -> None:
+    arguments: dict[str, Exception] = {}
+    if failure == "cursor_close":
+        arguments["close_error"] = sqlite3.DatabaseError("close-canary")
+    else:
+        arguments["clear_error"] = sqlite3.DatabaseError("clear-canary")
+    connection = _ForeignKeyCheckConnection(**arguments)
+
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_foreign_key_check(  # type: ignore[arg-type]
+            connection,
+            monotonic=lambda: 0.0,
+        )
+
+    assert caught.value.reason == "foreign_key_check_failed"
+    assert connection.cursor.close_calls == 1
+    assert connection.handlers[-1] == (None, 0)
+    assert "canary" not in str(caught.value)
+
+
+def test_foreign_key_check_cleanup_failure_supersedes_violation() -> None:
+    connection = _ForeignKeyCheckConnection(
+        rows=[("private-table", 1, "private-parent", 0)],
+        close_error=sqlite3.DatabaseError("close-canary"),
+    )
+
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_foreign_key_check(  # type: ignore[arg-type]
+            connection,
+            monotonic=lambda: 0.0,
+        )
+
+    assert caught.value.reason == "foreign_key_check_failed"
+    assert str(caught.value) == "foreign_key_check_failed"
+
+
+def test_schema_verification_orders_one_foreign_key_check_before_quick_check(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    calls: list[str] = []
+
+    def foreign_key_check(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        calls.append("foreign_key_check")
+
+    def quick_check(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        calls.append("quick_check")
+
+    monkeypatch.setattr(schema, "_bounded_foreign_key_check", foreign_key_check)
+    monkeypatch.setattr(schema, "_bounded_quick_check", quick_check)
+    schema.verify_schema_v1(connection)
+    connection.close()
+
+    assert calls == ["foreign_key_check", "quick_check"]
+
+
+def test_failed_foreign_key_check_stops_before_quick_check(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    calls: list[str] = []
+
+    def foreign_key_check(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        calls.append("foreign_key_check")
+        raise schema.SchemaVerificationError("foreign_key_violation")
+
+    def quick_check(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        calls.append("quick_check")
+
+    monkeypatch.setattr(schema, "_bounded_foreign_key_check", foreign_key_check)
+    monkeypatch.setattr(schema, "_bounded_quick_check", quick_check)
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema.verify_schema_v1(connection)
+    connection.close()
+
+    assert caught.value.reason == "foreign_key_violation"
+    assert calls == ["foreign_key_check"]
+
+
+def test_foreign_key_check_progress_interruption_is_sanitized_and_cleared(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    connection = _rw(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    monkeypatch.setattr(schema, "PROGRESS_HANDLER_STEPS", 1)
+    ticks = iter((0.0, schema.FOREIGN_KEY_CHECK_SECONDS + 1.0))
+
+    with pytest.raises(schema.SchemaVerificationError) as caught:
+        schema._bounded_foreign_key_check(
+            connection,
+            monotonic=lambda: next(ticks, schema.FOREIGN_KEY_CHECK_SECONDS + 1.0),
+        )
+
+    assert caught.value.reason == "foreign_key_check_failed"
+    assert connection.execute("SELECT 1").fetchone() == (1,)
+    connection.close()
+
+
 def test_quick_check_progress_handler_cancellation_fails_closed(
     protected_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path, store = _create_store(protected_directory)
     store.close()
+    monkeypatch.setattr(
+        schema, "_bounded_foreign_key_check", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(schema, "PROGRESS_HANDLER_STEPS", 1)
     ticks = iter((0.0, 3.0, 3.0, 3.0, 3.0))
     connection = _rw(path)
@@ -2102,6 +2384,148 @@ def test_quick_check_cleans_handler_after_sqlite_failure() -> None:
         )
     assert caught.value.reason == "quick_check_failed"
     assert connection.handlers[-1] == (None, 0)
+
+
+def test_store_create_and_open_each_run_one_foreign_key_check(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = schema._bounded_foreign_key_check
+    calls = 0
+
+    def counted(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(schema, "_bounded_foreign_key_check", counted)
+    path, store = _create_store(protected_directory)
+    assert calls == 1
+    store.close()
+
+    reopened = HealthHistoryStore.open_existing(path)
+    assert calls == 2
+    reopened.close()
+
+
+@pytest.mark.parametrize(
+    ("insert_statement", "table"),
+    [
+        (
+            "INSERT INTO alert_events("
+            "alert_id, event_type, event_at_utc_us, resulting_lifecycle"
+            ") VALUES (987654, 'opened', 1, 'open')",
+            "alert_events",
+        ),
+        (
+            "INSERT INTO component_samples("
+            "sample_id, component, status, reason_code_1, "
+            "checked_at_utc_us, latency_ms"
+            ") VALUES (987654, 'wled', 'healthy', 'wled.healthy', 1, 1)",
+            "component_samples",
+        ),
+    ],
+)
+def test_open_existing_rejects_real_persisted_orphan_without_repair(
+    protected_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    insert_statement: str,
+    table: str,
+) -> None:
+    path, store = _create_store(protected_directory)
+    store.close()
+    corruptor = _rw(path)
+    corruptor.execute("PRAGMA foreign_keys = OFF")
+    corruptor.execute(insert_statement)
+    corruptor.commit()
+    before_identity = path.stat()
+    before_schema = corruptor.execute(
+        "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    before_application_id = corruptor.execute("PRAGMA application_id").fetchone()
+    before_user_version = corruptor.execute("PRAGMA user_version").fetchone()
+    assert corruptor.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
+    assert corruptor.execute("PRAGMA foreign_key_check").fetchone() is not None
+    corruptor.close()
+
+    opened_connections: list[sqlite3.Connection] = []
+    original_connect = store_module._connect_existing
+
+    def tracked_connect(candidate: Path) -> sqlite3.Connection:
+        connection = original_connect(candidate)
+        opened_connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(store_module, "_connect_existing", tracked_connect)
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.open_existing(path)
+
+    assert caught.value.reason == "open_failed"
+    assert str(caught.value) == "open_failed"
+    assert len(opened_connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened_connections[0].execute("SELECT 1")
+    after_identity = path.stat()
+    assert (after_identity.st_dev, after_identity.st_ino) == (
+        before_identity.st_dev,
+        before_identity.st_ino,
+    )
+
+    verifier = _rw(path)
+    assert verifier.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
+    assert verifier.execute("PRAGMA foreign_key_check").fetchone() is not None
+    assert (
+        verifier.execute(
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+        == before_schema
+    )
+    assert verifier.execute("PRAGMA application_id").fetchone() == before_application_id
+    assert verifier.execute("PRAGMA user_version").fetchone() == before_user_version
+    verifier.close()
+
+
+def test_failed_create_foreign_key_verification_uses_existing_artifact_cleanup(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unrelated = protected_directory / "unrelated"
+    unrelated.write_bytes(b"preserved")
+    unrelated.chmod(0o600)
+    path = _database_path(protected_directory)
+    calls = 0
+
+    def fail(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        raise schema.SchemaVerificationError("foreign_key_check_failed")
+
+    monkeypatch.setattr(schema, "_bounded_foreign_key_check", fail)
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.create(path, created_at_utc_us=1)
+
+    assert caught.value.reason == "creation_failed"
+    assert calls == 1
+    assert not path.exists()
+    assert not path.with_name(f"{path.name}-wal").exists()
+    assert not path.with_name(f"{path.name}-shm").exists()
+    assert unrelated.read_bytes() == b"preserved"
+
+
+def test_store_verify_closes_after_foreign_key_verification_failure(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _path, store = _create_store(protected_directory)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise schema.SchemaVerificationError("foreign_key_violation")
+
+    monkeypatch.setattr(schema, "_bounded_foreign_key_check", fail)
+    with pytest.raises(StoreError) as caught:
+        store.verify()
+
+    assert caught.value.reason == "verification_failed"
+    assert store.closed is True
 
 
 def test_failed_creation_removes_only_its_incomplete_file(
