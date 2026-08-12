@@ -14,6 +14,14 @@ from aurora_core.health_history.models import (
     MAX_WAL_BYTES,
 )
 
+_DESCRIPTOR_TRAVERSAL_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+)
+
 
 class FilesystemRejection(StrEnum):
     MISSING = "missing"
@@ -46,31 +54,40 @@ class PathIdentity:
     size: int
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectorySnapshot:
+    device: int
+    inode: int
+    file_type: int
+    mode: int
+    owner: int
+    links: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryWalk:
+    components: tuple[_DirectorySnapshot, ...]
+    final_identity: PathIdentity
+
+
 def validate_protected_directory(path: Path) -> PathIdentity:
-    """Require an existing owned mode-0700 directory with no symlink component."""
+    """Require trusted ancestry ending in one owned mode-0700 directory."""
     _require_path(path)
-    _validate_parent_components(path)
     try:
-        before = path.lstat()
+        absolute, components = _directory_components(path)
+        first = _walk_directory_chain(absolute, components)
+        second = _walk_directory_chain(
+            absolute,
+            components,
+            expected=first.components,
+        )
+        if first.final_identity != second.final_identity:
+            raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+        return second.final_identity
+    except FilesystemBoundaryError:
+        raise
     except OSError as error:
-        raise FilesystemBoundaryError(FilesystemRejection.MISSING) from error
-    _validate_directory_metadata(before)
-    descriptor = _open_directory(path)
-    try:
-        opened = os.fstat(descriptor)
-        _validate_directory_metadata(opened)
-        _require_same_object(before, opened)
-    except OSError as error:
-        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED) from error
-    finally:
-        os.close(descriptor)
-    try:
-        after = path.lstat()
-    except OSError as error:
-        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED) from error
-    _validate_directory_metadata(after)
-    _require_unchanged(before, after)
-    return _identity(after)
+        raise FilesystemBoundaryError(FilesystemRejection.INVALID_PATH) from error
 
 
 def validate_database_file(
@@ -245,19 +262,164 @@ def _unlink_created_file(path: Path, identity: PathIdentity) -> None:
         return
 
 
-def _validate_parent_components(path: Path) -> None:
+def _directory_components(path: Path) -> tuple[Path, tuple[str, ...]]:
     absolute = path.absolute()
-    current = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        current /= part
+    if not absolute.anchor:
+        raise FilesystemBoundaryError(FilesystemRejection.INVALID_PATH)
+    components = absolute.parts[1:]
+    if any(part in {"", ".", ".."} for part in components):
+        raise FilesystemBoundaryError(FilesystemRejection.INVALID_PATH)
+    return absolute, components
+
+
+def _walk_directory_chain(
+    absolute: Path,
+    components: tuple[str, ...],
+    *,
+    expected: tuple[_DirectorySnapshot, ...] | None = None,
+) -> _DirectoryWalk:
+    _require_descriptor_traversal_support()
+    root = Path(absolute.anchor)
+    root_is_final = not components
+    try:
+        root_before = root.lstat()
+    except OSError as error:
+        raise FilesystemBoundaryError(FilesystemRejection.MISSING) from error
+    _validate_directory_component(root_before, final=root_is_final)
+    try:
+        descriptor = _open_directory(root)
+    except OSError as error:
+        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED) from error
+    snapshots: list[_DirectorySnapshot] = []
+    final_metadata = root_before
+    try:
+        root_opened = os.fstat(descriptor)
+        _validate_directory_component(root_opened, final=root_is_final)
+        _require_directory_unchanged(root_before, root_opened, final=root_is_final)
         try:
-            metadata = current.lstat()
+            root_after = root.lstat()
         except OSError as error:
-            raise FilesystemBoundaryError(FilesystemRejection.MISSING) from error
-        if stat.S_ISLNK(metadata.st_mode):
-            raise FilesystemBoundaryError(FilesystemRejection.SYMLINK)
-        if current != absolute and not stat.S_ISDIR(metadata.st_mode):
-            raise FilesystemBoundaryError(FilesystemRejection.WRONG_TYPE)
+            raise FilesystemBoundaryError(
+                FilesystemRejection.IDENTITY_CHANGED
+            ) from error
+        _validate_directory_component(root_after, final=root_is_final)
+        _require_directory_unchanged(root_before, root_after, final=root_is_final)
+        snapshot = _directory_snapshot(root_after)
+        _require_expected_directory(snapshot, expected, 0)
+        snapshots.append(snapshot)
+        final_metadata = root_after
+
+        for index, component in enumerate(components, start=1):
+            final = index == len(components)
+            before = _stat_directory_entry(descriptor, component, initial=True)
+            _validate_directory_component(before, final=final)
+            child_descriptor = _open_directory_at(descriptor, component)
+            try:
+                opened = os.fstat(child_descriptor)
+                _validate_directory_component(opened, final=final)
+                _require_directory_unchanged(before, opened, final=final)
+                after = _stat_directory_entry(descriptor, component, initial=False)
+                _validate_directory_component(after, final=final)
+                _require_directory_unchanged(before, after, final=final)
+                snapshot = _directory_snapshot(after)
+                _require_expected_directory(snapshot, expected, index)
+                snapshots.append(snapshot)
+                final_metadata = after
+            except Exception:
+                os.close(child_descriptor)
+                raise
+            parent_descriptor = descriptor
+            descriptor = child_descriptor
+            os.close(parent_descriptor)
+    finally:
+        os.close(descriptor)
+
+    if expected is not None and len(expected) != len(snapshots):
+        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+    return _DirectoryWalk(tuple(snapshots), _identity(final_metadata))
+
+
+def _stat_directory_entry(
+    parent_descriptor: int,
+    component: str,
+    *,
+    initial: bool,
+) -> os.stat_result:
+    try:
+        return os.stat(
+            component,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError as error:
+        rejection = (
+            FilesystemRejection.MISSING
+            if initial
+            else FilesystemRejection.IDENTITY_CHANGED
+        )
+        raise FilesystemBoundaryError(rejection) from error
+    except OSError as error:
+        rejection = (
+            FilesystemRejection.INVALID_PATH
+            if initial
+            else FilesystemRejection.IDENTITY_CHANGED
+        )
+        raise FilesystemBoundaryError(rejection) from error
+
+
+def _require_descriptor_traversal_support() -> None:
+    if not _DESCRIPTOR_TRAVERSAL_SUPPORTED:
+        raise FilesystemBoundaryError(FilesystemRejection.INVALID_PATH)
+
+
+def _validate_directory_component(
+    metadata: os.stat_result,
+    *,
+    final: bool,
+) -> None:
+    if stat.S_ISLNK(metadata.st_mode):
+        raise FilesystemBoundaryError(FilesystemRejection.SYMLINK)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise FilesystemBoundaryError(FilesystemRejection.WRONG_TYPE)
+    if final:
+        _validate_directory_metadata(metadata)
+        return
+    if metadata.st_uid not in {0, os.geteuid()}:
+        raise FilesystemBoundaryError(FilesystemRejection.WRONG_OWNER)
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise FilesystemBoundaryError(FilesystemRejection.WRONG_MODE)
+
+
+def _require_directory_unchanged(
+    left: os.stat_result,
+    right: os.stat_result,
+    *,
+    final: bool,
+) -> None:
+    if _directory_snapshot(left) != _directory_snapshot(right):
+        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+    if final and _identity(left) != _identity(right):
+        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+
+
+def _require_expected_directory(
+    snapshot: _DirectorySnapshot,
+    expected: tuple[_DirectorySnapshot, ...] | None,
+    index: int,
+) -> None:
+    if expected is not None and (index >= len(expected) or snapshot != expected[index]):
+        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED)
+
+
+def _directory_snapshot(metadata: os.stat_result) -> _DirectorySnapshot:
+    return _DirectorySnapshot(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        file_type=stat.S_IFMT(metadata.st_mode),
+        mode=stat.S_IMODE(metadata.st_mode),
+        owner=metadata.st_uid,
+        links=metadata.st_nlink,
+    )
 
 
 def _validate_directory_metadata(metadata: os.stat_result) -> None:
@@ -347,6 +509,21 @@ def _open_directory(path: Path) -> int:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     return os.open(path, flags)
+
+
+def _open_directory_at(parent_descriptor: int, component: str) -> int:
+    try:
+        return os.open(
+            component,
+            _directory_flags(),
+            dir_fd=parent_descriptor,
+        )
+    except OSError as error:
+        raise FilesystemBoundaryError(FilesystemRejection.IDENTITY_CHANGED) from error
+
+
+def _directory_flags() -> int:
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
 
 def _read_flags() -> int:

@@ -359,9 +359,10 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first seven Milestone 18 production slices supply an isolated
-`aurora_core.health_history` package. Its stricter code-owned projection accepts
-only complete `HealthReport` schema version 1 snapshots and retains status,
+The first nine Milestone 18 production slices establish an isolated
+`aurora_core.health_history` package plus disabled production configuration.
+Its stricter code-owned projection accepts only complete `HealthReport` schema
+version 1 snapshots and retains status,
 timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
 fields, messages, configuration, endpoints, identifiers, responses, request
 data, credentials, or exceptions. Production/reference parity tests bind its
@@ -535,6 +536,26 @@ absent; it never authorizes parent creation, replacement, repair, migration,
 deletion, overwrite, or SQLite implicit pathname creation. No store,
 orchestrator, scheduler, thread, lifecycle hook, deployment path, or database is
 constructed by configuration validation.
+
+The ninth isolated slice strengthens only the history filesystem trust
+boundary. Validation opens the filesystem root and walks every subsequent
+directory component relative to the already-open parent descriptor with
+directory-only, no-follow, close-on-exec flags. Each entry is checked before
+open, through `fstat`, and again relative to the same parent. A second complete
+walk must match the first walk's device, inode, type, owner, mode, and link-count
+snapshots, while the final returned identity must also remain unchanged. Root
+and intermediate directories may be owned only by root or the effective
+service user and cannot be group- or world-writable. The final parent remains
+effective-service-user-owned with exact mode `0700`.
+
+This validation is read-only: it creates, repairs, chmods, chowns, renames, or
+removes no directory. The existing direct database create/open and sidecar
+boundaries inherit it without an API or schema change. Standard-library SQLite
+still opens the database by pathname, so the documented residual same-identity
+race and dedicated-service-account threat model remain. No leadership lock,
+runtime lifecycle, scheduler thread, deployment directory, or production
+database is added; nonwaiting leadership remains the next isolated
+prerequisite.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production

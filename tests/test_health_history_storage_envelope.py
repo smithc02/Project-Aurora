@@ -76,9 +76,8 @@ def _block_external_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def store_path(tmp_path: Path) -> tuple[Path, HealthHistoryStore]:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+def store_path(history_test_directory: Path) -> tuple[Path, HealthHistoryStore]:
+    path = history_test_directory / "history.db"
     store = HealthHistoryStore.create(path, created_at_utc_us=1)
     try:
         yield path, store
@@ -463,9 +462,8 @@ def test_impossible_free_space_metadata_is_trust_loss(
     assert _snapshot(path) == before
 
 
-def test_wal_absence_and_zero_length_file(tmp_path: Path) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+def test_wal_absence_and_zero_length_file(history_test_directory: Path) -> None:
+    path = history_test_directory / "history.db"
     connection, fake = _fake_connection([(0, -1, -1)])
     assert envelope._inspect_wal(connection, path) == WalInspectionResult(
         False, 0, 0, 0, 0, False, False
@@ -479,8 +477,9 @@ def test_wal_absence_and_zero_length_file(tmp_path: Path) -> None:
     assert fake.cursor.fetch_sizes == [2]
 
 
-def test_real_noop_no_wal_result_is_normalized_to_zero(tmp_path: Path) -> None:
-    tmp_path.chmod(0o700)
+def test_real_noop_no_wal_result_is_normalized_to_zero(
+    history_test_directory: Path,
+) -> None:
     connection = sqlite3.connect(":memory:")
     try:
         assert connection.execute("PRAGMA wal_checkpoint(NOOP)").fetchone() == (
@@ -488,7 +487,9 @@ def test_real_noop_no_wal_result_is_normalized_to_zero(tmp_path: Path) -> None:
             -1,
             -1,
         )
-        result = envelope._inspect_wal(connection, tmp_path / "history.db")
+        result = envelope._inspect_wal(
+            connection, history_test_directory / "history.db"
+        )
     finally:
         connection.close()
     assert result == WalInspectionResult(False, 0, 0, 0, 0, False, False)
@@ -506,10 +507,12 @@ def test_real_noop_no_wal_result_is_normalized_to_zero(tmp_path: Path) -> None:
     ],
 )
 def test_wal_frame_boundaries_from_fixed_framing(
-    tmp_path: Path, frames: int, checkpoint_due: bool, oversize: bool
+    history_test_directory: Path,
+    frames: int,
+    checkpoint_due: bool,
+    oversize: bool,
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / f"history-{frames}.db"
+    path = history_test_directory / f"history-{frames}.db"
     size = envelope.WAL_HEADER_BYTES if frames == 0 else _wal_size(frames)
     _write_wal(path, size)
     connection, _fake = _fake_connection([(0, frames, 0)])
@@ -549,12 +552,11 @@ def test_malformed_wal_sizes_fail_closed(size: object) -> None:
 
 
 def test_wal_identity_replacement_is_trust_loss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_test_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     wal = _write_wal(path, _wal_size(1))
-    replacement = tmp_path / "replacement"
+    replacement = history_test_directory / "replacement"
     with replacement.open("wb") as output:
         output.truncate(_wal_size(1))
     replacement.chmod(0o600)
@@ -578,10 +580,9 @@ def test_wal_identity_replacement_is_trust_loss(
 
 
 def test_noop_reports_current_logical_frames_not_physical_slots(
-    tmp_path: Path,
+    history_test_directory: Path,
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     physical_slots = 500
     _write_wal(path, _wal_size(physical_slots))
     connection, fake = _fake_connection([(0, 3, 2)])
@@ -600,10 +601,9 @@ def test_noop_reports_current_logical_frames_not_physical_slots(
 
 
 def test_physical_wal_above_four_mib_is_blocked_with_small_logical_generation(
-    tmp_path: Path,
+    history_test_directory: Path,
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     physical_slots = (
         WAL_HARD_LIMIT_BYTES - envelope.WAL_HEADER_BYTES
     ) // envelope.WAL_FRAME_BYTES + 1
@@ -635,10 +635,9 @@ def test_physical_wal_above_four_mib_is_blocked_with_small_logical_generation(
     ],
 )
 def test_noop_malformed_results_are_trust_loss(
-    tmp_path: Path, rows: list[tuple[object, ...]]
+    history_test_directory: Path, rows: list[tuple[object, ...]]
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     _write_wal(path, _wal_size(1))
     connection, _fake = _fake_connection(rows)
     with pytest.raises(StorageEnvelopeError) as caught:
@@ -648,10 +647,9 @@ def test_noop_malformed_results_are_trust_loss(
 
 
 def test_noop_checkpoint_lock_busy_is_sanitized_non_trust(
-    tmp_path: Path,
+    history_test_directory: Path,
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     _write_wal(path, _wal_size(1))
     for connection, fake in (
         _fake_connection([(1, 1, 0)]),
@@ -667,10 +665,9 @@ def test_noop_checkpoint_lock_busy_is_sanitized_non_trust(
 
 
 def test_noop_logical_or_checkpointed_count_cannot_exceed_physical_state(
-    tmp_path: Path,
+    history_test_directory: Path,
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     _write_wal(path, _wal_size(1))
     connection, _fake = _fake_connection([(0, 2, 0)])
     with pytest.raises(StorageEnvelopeError) as logical:
@@ -684,10 +681,9 @@ def test_noop_logical_or_checkpointed_count_cannot_exceed_physical_state(
 
 
 def test_malformed_physical_size_is_trust_loss_with_valid_noop_fixture(
-    tmp_path: Path,
+    history_test_directory: Path,
 ) -> None:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+    path = history_test_directory / "history.db"
     _write_wal(path, _wal_size(1) + 1)
     connection, _fake = _fake_connection([(0, 1, 0)])
     with pytest.raises(StorageEnvelopeError) as caught:
