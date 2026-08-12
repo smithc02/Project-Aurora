@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import pytest
 
+import aurora_core.health_history.sqlite_runtime as sqlite_runtime
 import aurora_core.health_history.storage_envelope as envelope
 import aurora_core.health_history.store as store_module
 from aurora_core.health_history import (
@@ -26,6 +27,8 @@ from aurora_core.health_history import (
     FreeSpaceResult,
     PassiveCheckpointOutcome,
     PassiveCheckpointResult,
+    SQLiteRuntimeError,
+    SQLiteRuntimeRejection,
     StorageCapacityResult,
     StorageDecisionOutcome,
     StorageDecisionResult,
@@ -205,7 +208,7 @@ def _sqlite_error(code: int, message: str) -> sqlite3.OperationalError:
 def test_safe_wal_sqlite_versions_are_accepted(
     monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]
 ) -> None:
-    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", version)
     connection, fake = _fake_connection([(0, 1, 0)])
     assert envelope._read_noop_status(connection, None) == (1, 0, False)
     assert fake.execute_calls == ["PRAGMA wal_checkpoint(NOOP)"]
@@ -218,7 +221,7 @@ def test_safe_wal_sqlite_versions_are_accepted(
 def test_unsafe_wal_sqlite_version_executes_no_checkpoint_sql(
     monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]
 ) -> None:
-    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", version)
     connection, fake = _fake_connection([(0, 300, 0)])
     with pytest.raises(StorageEnvelopeError) as caught:
         envelope._passive_wal_checkpoint(
@@ -242,13 +245,13 @@ def test_unsafe_wal_sqlite_version_executes_no_checkpoint_sql(
         (3, "51", 3),
         (3, 51, 3.0),
         (-1, 51, 3),
-        (3, envelope._MAX_SQLITE_VERSION_COMPONENT + 1, 3),
+        (3, sqlite_runtime._MAX_SQLITE_VERSION_COMPONENT + 1, 3),
     ],
 )
 def test_malformed_sqlite_version_fails_safe_wal_guard_before_noop(
     monkeypatch: pytest.MonkeyPatch, version: object
 ) -> None:
-    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", version)
     connection, fake = _fake_connection([(0, 1, 0)])
     with pytest.raises(StorageEnvelopeError) as caught:
         envelope._read_noop_status(connection, None)
@@ -260,8 +263,30 @@ def test_malformed_sqlite_version_fails_safe_wal_guard_before_noop(
 def test_reviewed_pi_sqlite_3531_satisfies_safe_wal_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", (3, 53, 1))
-    envelope._require_safe_wal_sqlite_version()
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", (3, 53, 1))
+    sqlite_runtime.require_safe_sqlite_runtime()
+
+
+def test_noop_uses_shared_runtime_gate_before_checkpoint_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def reject() -> None:
+        nonlocal calls
+        calls += 1
+        raise SQLiteRuntimeError(SQLiteRuntimeRejection.UNSUPPORTED_RUNTIME)
+
+    monkeypatch.setattr(envelope, "require_safe_sqlite_runtime", reject)
+    connection, fake = _fake_connection([(0, 1, 0)])
+    with pytest.raises(StorageEnvelopeError) as caught:
+        envelope._read_noop_status(connection, None)
+    assert caught.value.reason is StorageEnvelopeRejection.UNSUPPORTED_RUNTIME
+    assert not caught.value.trust_lost
+    assert calls == 1
+    assert fake.execute_calls == []
+    assert not hasattr(envelope, "_MINIMUM_SAFE_WAL_SQLITE_VERSION")
+    assert not hasattr(envelope, "_require_safe_wal_sqlite_version")
 
 
 def test_new_database_capacity_and_fixed_connection_limit(
@@ -1224,7 +1249,7 @@ def test_public_unsupported_runtime_is_non_trust_and_executes_no_checkpoint(
     path, store = store_path
     before = _snapshot(path)
     traced: list[str] = []
-    monkeypatch.setattr(envelope.sqlite3, "sqlite_version_info", version)
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", version)
     store._connection.set_trace_callback(traced.append)  # noqa: SLF001
     try:
         with pytest.raises(StorageEnvelopeError) as caught:

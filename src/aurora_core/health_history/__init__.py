@@ -91,6 +91,12 @@ from aurora_core.health_history.scheduler import (
     SchedulerRejection,
     SchedulerResult,
 )
+from aurora_core.health_history.sqlite_runtime import (
+    MINIMUM_SAFE_SQLITE_VERSION,
+    SQLiteRuntimeError,
+    SQLiteRuntimeRejection,
+    require_safe_sqlite_runtime,
+)
 from aurora_core.health_history.storage_envelope import (
     FREE_SPACE_RESERVE_BYTES,
     WAL_CHECKPOINT_THRESHOLD_FRAMES,
@@ -163,6 +169,7 @@ __all__ = [
     "MaintenanceTriggerReason",
     "MaintenanceTriggerState",
     "MAINTENANCE_INTERVAL_SECONDS",
+    "MINIMUM_SAFE_SQLITE_VERSION",
     "ObservationCycleResult",
     "OrchestrationError",
     "OrchestrationOutcome",
@@ -189,6 +196,8 @@ __all__ = [
     "StorageDecisionResult",
     "StorageEnvelopeError",
     "StorageEnvelopeRejection",
+    "SQLiteRuntimeError",
+    "SQLiteRuntimeRejection",
     "STORED_ROWS_MAINTENANCE_TRIGGER",
     "WAL_CHECKPOINT_THRESHOLD_FRAMES",
     "WAL_HARD_LIMIT_BYTES",
@@ -196,5 +205,6 @@ __all__ = [
     "WalInspectionResult",
     "decide_storage_action",
     "project_health_report",
+    "require_safe_sqlite_runtime",
     "validate_health_projection",
 ]

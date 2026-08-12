@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; ten isolated foundation
-    slices through direct-only history leadership):
+18. **Milestone 18 (implementation in progress; eleven isolated foundation
+    slices through the complete SQLite safe-runtime bootstrap gate):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -134,8 +134,14 @@
     not retry, release never unlinks, and no PID, hostname, timestamp, UUID, or
     SQLite content is written. The lock, directory, and ancestry are revalidated
     around acquisition, but no runtime or settings integration invokes it. The
-    complete SQLite safe-runtime bootstrap gate is the next isolated
-    prerequisite; production history remains disabled.
+    eleventh slice centralizes the exact SQLite 3.51.3 minimum in one
+    standard-library-only capability boundary. Direct Store create and
+    open-existing enforce it before any filesystem or SQLite bootstrap work,
+    while NOOP WAL inspection reuses the same gate; absent, malformed, or old
+    metadata fails with fixed non-trust `unsupported_runtime`, creates no
+    database artifact, and exposes no version detail. Complete bounded startup
+    foreign-key consistency verification is the next isolated prerequisite;
+    production history remains disabled.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
     protected database lifecycle composition, notifications, and automation
     remain unimplemented. It
