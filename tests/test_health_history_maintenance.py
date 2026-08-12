@@ -83,9 +83,8 @@ def _block_external_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def store_path(tmp_path: Path) -> tuple[Path, HealthHistoryStore]:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+def store_path(history_test_directory: Path) -> tuple[Path, HealthHistoryStore]:
+    path = history_test_directory / "history.db"
     store = HealthHistoryStore.create(path, created_at_utc_us=1)
     try:
         yield path, store
@@ -395,9 +394,9 @@ def test_schema_v1_creation_enables_incremental_auto_vacuum_and_fixed_indexes(
 
 
 def test_schema_creation_rejects_auto_vacuum_none_before_creating_tables(
-    tmp_path: Path,
+    history_test_directory: Path,
 ) -> None:
-    path = tmp_path / "unconfigured.db"
+    path = history_test_directory / "unconfigured.db"
     connection = sqlite3.connect(path)
     assert connection.execute("PRAGMA auto_vacuum").fetchone() == (0,)
     with pytest.raises(schema.SchemaVerificationError) as caught:

@@ -15,13 +15,16 @@ from typing import Any
 
 import pytest
 
+import aurora_core.health_history.filesystem as history_filesystem
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
 from aurora_core.health_history import schema
 from aurora_core.health_history.filesystem import (
     FilesystemBoundaryError,
     FilesystemRejection,
+    create_database_file,
     remove_created_artifacts,
     validate_database_file,
+    validate_protected_directory,
 )
 from aurora_core.health_history.models import (
     APPLICATION_ID,
@@ -80,9 +83,36 @@ def _block_external_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def protected_directory(tmp_path: Path) -> Path:
-    tmp_path.chmod(0o700)
-    return tmp_path
+def protected_directory(history_test_directory: Path) -> Path:
+    return history_test_directory
+
+
+def _protected_chain(root: Path) -> tuple[Path, Path]:
+    intermediate = root / "trusted-intermediate"
+    intermediate.mkdir(mode=0o750)
+    intermediate.chmod(0o750)
+    final = intermediate / "protected"
+    final.mkdir(mode=0o700)
+    final.chmod(0o700)
+    return intermediate, final
+
+
+def _changed_stat(
+    metadata: os.stat_result,
+    *,
+    inode: int | None = None,
+    mode: int | None = None,
+    owner: int | None = None,
+) -> os.stat_result:
+    values = list(metadata)
+    if inode is not None:
+        values[1] = inode
+    if mode is not None:
+        file_type = stat.S_IFMT(mode) or stat.S_IFMT(metadata.st_mode)
+        values[0] = file_type | stat.S_IMODE(mode)
+    if owner is not None:
+        values[4] = owner
+    return os.stat_result(values)
 
 
 def _wled_details(
@@ -1077,19 +1107,372 @@ def test_creation_refuses_every_preexisting_reserved_sidecar_without_modificatio
 
 
 @pytest.mark.parametrize("mode", [0o755, 0o750, 0o777])
-def test_creation_rejects_insecure_parent_modes(tmp_path: Path, mode: int) -> None:
-    tmp_path.chmod(mode)
+def test_creation_rejects_insecure_parent_modes(
+    history_test_directory: Path, mode: int
+) -> None:
+    history_test_directory.chmod(mode)
     with pytest.raises(StoreError):
-        HealthHistoryStore.create(_database_path(tmp_path), created_at_utc_us=1)
+        HealthHistoryStore.create(
+            _database_path(history_test_directory), created_at_utc_us=1
+        )
 
 
-def test_creation_rejects_missing_and_symlinked_parents(tmp_path: Path) -> None:
-    missing = tmp_path / "missing" / "history.sqlite3"
+def test_trusted_root_and_service_owned_ancestry_is_accepted(
+    history_test_directory: Path,
+) -> None:
+    intermediate, final = _protected_chain(history_test_directory)
+    root = Path(final.anchor).stat()
+    assert root.st_uid in {0, os.geteuid()}
+    assert stat.S_IMODE(root.st_mode) & 0o022 == 0
+    assert intermediate.stat().st_uid == os.geteuid()
+    assert stat.S_IMODE(intermediate.stat().st_mode) == 0o750
+    assert validate_protected_directory(final).owner == os.geteuid()
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o777, 0o1777, 0o720, 0o702])
+def test_writable_intermediate_ancestry_is_rejected(
+    history_test_directory: Path,
+    mode: int,
+) -> None:
+    intermediate, final = _protected_chain(history_test_directory)
+    intermediate.chmod(mode)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason is FilesystemRejection.WRONG_MODE
+
+
+def test_foreign_owned_intermediate_is_rejected(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    original_stat = history_filesystem.os.stat
+    foreign_owner = 1 if os.geteuid() != 1 else 2
+
+    def stat_with_foreign_owner(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        metadata = original_stat(path, *args, **kwargs)
+        if path == "trusted-intermediate":
+            return _changed_stat(metadata, owner=foreign_owner)
+        return metadata
+
+    monkeypatch.setattr(history_filesystem.os, "stat", stat_with_foreign_owner)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason is FilesystemRejection.WRONG_OWNER
+
+
+def test_symlink_and_non_directory_intermediate_ancestry_are_rejected(
+    history_test_directory: Path,
+) -> None:
+    target = history_test_directory / "target"
+    target.mkdir(mode=0o750)
+    final = target / "protected"
+    final.mkdir(mode=0o700)
+    alias = history_test_directory / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    with pytest.raises(FilesystemBoundaryError) as symlink:
+        validate_protected_directory(alias / "protected")
+    assert symlink.value.reason is FilesystemRejection.SYMLINK
+
+    non_directory = history_test_directory / "not-a-directory"
+    non_directory.touch(mode=0o600)
+    with pytest.raises(FilesystemBoundaryError) as wrong_type:
+        validate_protected_directory(non_directory / "protected")
+    assert wrong_type.value.reason is FilesystemRejection.WRONG_TYPE
+
+
+def test_root_metadata_is_validated(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    original_lstat = history_filesystem.Path.lstat
+
+    def lstat_with_writable_root(path: Path) -> os.stat_result:
+        metadata = original_lstat(path)
+        if path == Path(path.anchor):
+            return _changed_stat(metadata, mode=0o777)
+        return metadata
+
+    monkeypatch.setattr(history_filesystem.Path, "lstat", lstat_with_writable_root)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason is FilesystemRejection.WRONG_MODE
+
+
+def test_missing_descriptor_traversal_capability_fails_closed_before_open(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    open_calls = 0
+    original_open = history_filesystem.os.open
+
+    def tracked_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        nonlocal open_calls
+        open_calls += 1
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(history_filesystem, "_DESCRIPTOR_TRAVERSAL_SUPPORTED", False)
+    monkeypatch.setattr(history_filesystem.os, "open", tracked_open)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason is FilesystemRejection.INVALID_PATH
+    assert open_calls == 0
+
+
+def test_final_parent_still_requires_service_owner(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    original_stat = history_filesystem.os.stat
+    foreign_owner = 0 if os.geteuid() != 0 else 1
+
+    def stat_with_foreign_final(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        metadata = original_stat(path, *args, **kwargs)
+        if path == "protected":
+            return _changed_stat(metadata, owner=foreign_owner)
+        return metadata
+
+    monkeypatch.setattr(history_filesystem.os, "stat", stat_with_foreign_final)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason is FilesystemRejection.WRONG_OWNER
+
+
+@pytest.mark.parametrize("mode", [0o701, 0o710, 0o600])
+def test_final_parent_still_requires_exact_mode_0700(
+    history_test_directory: Path,
+    mode: int,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    try:
+        final.chmod(mode)
+        with pytest.raises(FilesystemBoundaryError) as caught:
+            validate_protected_directory(final)
+        assert caught.value.reason is FilesystemRejection.WRONG_MODE
+    finally:
+        final.chmod(0o700)
+
+
+def test_path_entry_and_opened_descriptor_mismatch_is_rejected(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    original_open = history_filesystem.os.open
+    original_fstat = history_filesystem.os.fstat
+    descriptor_names: dict[int, object] = {}
+    changed = False
+
+    def tracked_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        descriptor = original_open(path, *args, **kwargs)
+        descriptor_names[descriptor] = path
+        return descriptor
+
+    def mismatched_fstat(descriptor: int) -> os.stat_result:
+        nonlocal changed
+        metadata = original_fstat(descriptor)
+        if descriptor_names.get(descriptor) == "trusted-intermediate" and not changed:
+            changed = True
+            return _changed_stat(metadata, inode=metadata.st_ino + 1)
+        return metadata
+
+    monkeypatch.setattr(history_filesystem.os, "open", tracked_open)
+    monkeypatch.setattr(history_filesystem.os, "fstat", mismatched_fstat)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason is FilesystemRejection.IDENTITY_CHANGED
+
+
+@pytest.mark.parametrize("change", ["identity", "metadata", "symlink"])
+def test_directory_entry_change_during_traversal_is_rejected(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    original_stat = history_filesystem.os.stat
+    matching_calls = 0
+
+    def changing_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        nonlocal matching_calls
+        metadata = original_stat(path, *args, **kwargs)
+        if path != "trusted-intermediate":
+            return metadata
+        matching_calls += 1
+        if matching_calls != 2:
+            return metadata
+        if change == "identity":
+            return _changed_stat(metadata, inode=metadata.st_ino + 1)
+        if change == "metadata":
+            return _changed_stat(metadata, mode=0o550)
+        return _changed_stat(metadata, mode=stat.S_IFLNK | 0o777)
+
+    monkeypatch.setattr(history_filesystem.os, "stat", changing_stat)
+    with pytest.raises(FilesystemBoundaryError) as caught:
+        validate_protected_directory(final)
+    assert caught.value.reason in {
+        FilesystemRejection.IDENTITY_CHANGED,
+        FilesystemRejection.SYMLINK,
+    }
+
+
+@pytest.mark.parametrize("failure", [None, "early", "middle", "final"])
+def test_descriptor_traversal_closes_every_opened_descriptor(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+) -> None:
+    intermediate, final = _protected_chain(history_test_directory)
+    target = final
+    if failure == "early":
+        target = history_test_directory / "missing" / "protected"
+    elif failure == "middle":
+        intermediate.chmod(0o770)
+    elif failure == "final":
+        final.chmod(0o710)
+    original_open = history_filesystem.os.open
+    original_close = history_filesystem.os.close
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def tracked_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        descriptor = original_open(path, *args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    with monkeypatch.context() as context:
+        context.setattr(history_filesystem.os, "open", tracked_open)
+        context.setattr(history_filesystem.os, "close", tracked_close)
+        if failure is None:
+            validate_protected_directory(target)
+        else:
+            with pytest.raises(FilesystemBoundaryError):
+                validate_protected_directory(target)
+    assert opened == closed
+
+
+def test_validation_is_read_only_and_uses_no_create_flags(
+    history_test_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, final = _protected_chain(history_test_directory)
+    original_open = history_filesystem.os.open
+    open_flags: list[int] = []
+
+    def tracked_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        open_flags.append(flags)
+        return original_open(path, flags, *args, **kwargs)
+
+    def mutation_prohibited(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("validation attempted filesystem mutation")
+
+    with monkeypatch.context() as context:
+        context.setattr(history_filesystem.os, "open", tracked_open)
+        for name in (
+            "mkdir",
+            "chmod",
+            "fchmod",
+            "chown",
+            "fchown",
+            "unlink",
+            "rename",
+            "replace",
+        ):
+            if hasattr(history_filesystem.os, name):
+                context.setattr(history_filesystem.os, name, mutation_prohibited)
+        validate_protected_directory(final)
+    assert open_flags
+    assert all(flags & (os.O_CREAT | os.O_TRUNC) == 0 for flags in open_flags)
+
+
+def test_ancestry_rejection_is_sanitized_and_create_inherits_without_mutation(
+    history_test_directory: Path,
+) -> None:
+    intermediate, final = _protected_chain(history_test_directory)
+    canary = "private-path-canary"
+    path = final / f"{canary}.sqlite3"
+    intermediate.chmod(0o1777)
+    with pytest.raises(FilesystemBoundaryError) as validation:
+        validate_protected_directory(final)
+    assert str(validation.value) == FilesystemRejection.WRONG_MODE.value
+    assert canary not in str(validation.value)
+    with pytest.raises(FilesystemBoundaryError) as creation:
+        create_database_file(path)
+    assert creation.value.reason is FilesystemRejection.WRONG_MODE
+    assert not path.exists()
+    assert not path.with_name(f"{path.name}-wal").exists()
+    assert not path.with_name(f"{path.name}-shm").exists()
+
+
+def test_store_create_preserves_reserved_artifacts_under_rejected_ancestry(
+    history_test_directory: Path,
+) -> None:
+    intermediate, final = _protected_chain(history_test_directory)
+    path = final / "history.sqlite3"
+    artifacts = (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+    evidence = {
+        artifact: f"evidence-{index}".encode()
+        for index, artifact in enumerate(artifacts)
+    }
+    for artifact, content in evidence.items():
+        artifact.write_bytes(content)
+        artifact.chmod(0o600)
+    before = {
+        artifact: (artifact.lstat().st_dev, artifact.lstat().st_ino, content)
+        for artifact, content in evidence.items()
+    }
+    intermediate.chmod(0o1777)
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.create(path, created_at_utc_us=1)
+    assert caught.value.reason == "creation_failed"
+    assert {
+        artifact: (
+            artifact.lstat().st_dev,
+            artifact.lstat().st_ino,
+            artifact.read_bytes(),
+        )
+        for artifact in artifacts
+    } == before
+
+
+def test_store_create_and_open_inherit_stronger_ancestry_boundary(
+    history_test_directory: Path,
+) -> None:
+    intermediate, final = _protected_chain(history_test_directory)
+    path = final / "history.sqlite3"
+    store = HealthHistoryStore.create(path, created_at_utc_us=1)
+    store.close()
+    reopened = HealthHistoryStore.open_existing(path)
+    reopened.close()
+    before = path.read_bytes()
+    intermediate.chmod(0o770)
+    with pytest.raises(StoreError) as opened:
+        HealthHistoryStore.open_existing(path)
+    assert opened.value.reason == "open_failed"
+    assert path.read_bytes() == before
+
+
+def test_creation_rejects_missing_and_symlinked_parents(
+    history_test_directory: Path,
+) -> None:
+    missing = history_test_directory / "missing" / "history.sqlite3"
     with pytest.raises(StoreError):
         HealthHistoryStore.create(missing, created_at_utc_us=1)
-    actual = tmp_path / "actual"
+    actual = history_test_directory / "actual"
     actual.mkdir(mode=0o700)
-    linked = tmp_path / "linked"
+    linked = history_test_directory / "linked"
     linked.symlink_to(actual, target_is_directory=True)
     with pytest.raises(StoreError):
         HealthHistoryStore.create(linked / "history.sqlite3", created_at_utc_us=1)

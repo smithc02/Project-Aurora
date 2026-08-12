@@ -16,15 +16,17 @@ inspection, decision models, and one bounded PASSIVE-checkpoint primitive. All
 remain without runtime invocation. The sixth added direct-only orchestration;
 the seventh added direct-only scheduler/resume composition without starting a
 scheduler. The eighth adds only a strict, disabled-by-default production
-configuration contract.
+configuration contract. The ninth strengthens the protected history path
+boundary across the complete directory ancestry without adding leadership or
+runtime composition.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
-The eighth slice adds configuration values but performs no filesystem or
-database access and adds no scheduler, worker, route, runtime invocation,
-acknowledgment action, migration, backup, restore, scheduled checkpoint,
-notification, or automation action. The query and maintenance APIs remain
-reachable only through direct use of the isolated package. Milestones 12
+The ninth slice performs read-only descriptor-relative ancestry validation but
+opens or creates no database and adds no scheduler, worker, route, runtime
+invocation, acknowledgment action, migration, backup, restore, scheduled
+checkpoint, notification, or automation action. The query and maintenance APIs
+remain reachable only through direct use of the isolated package. Milestones 12
 through 17 remain the current behavior, including public `GET /api/health`
 schema version 1.
 
@@ -57,6 +59,18 @@ reviewable boundaries without runtime integration:
   sidecar validation; and
 - exact object, definition, migration-ledger, pragma, and one bounded
   `quick_check(1)` verification with no repair or recreation.
+
+The ninth slice strengthens the existing filesystem boundary before any
+future leadership or lifecycle composition. Root and every intermediate path
+component must be a directory, must not be a symbolic link, must be owned by
+root or the effective Aurora service user, and must have neither group- nor
+world-write permission. The final parent retains the stricter existing rule:
+effective-service-user ownership and exact mode `0700`. Two descriptor-relative
+no-follow walks stat, open, fstat, and restat every component and require the
+second component identities and security metadata to match the first. The
+validation is read-only and performs no creation or permission repair. Existing
+direct exclusive-create and `mode=rw` open operations inherit this stronger
+boundary without changing their APIs.
 
 The second slice remains inside that isolated package and adds:
 
@@ -128,8 +142,9 @@ The fifth slice remains direct-only and adds:
 Python's standard-library `sqlite3` still opens the validated database by
 pathname. It does not accept the already inspected file descriptor and this
 implementation does not claim that SQLite's internal open uses `O_NOFOLLOW`.
-The accepted mode-`0700` directory and dedicated-service-account threat model
-remain mandatory.
+The descriptor-relative ancestry checks, accepted mode-`0700` final directory,
+and dedicated-service-account threat model strengthen but do not eliminate
+that residual pathname race.
 
 ## Scope
 
@@ -1500,7 +1515,6 @@ Production enablement remains blocked on separately reviewed lifecycle work:
 - scheduler join and bounded shutdown-TRUNCATE handling;
 - a protected writable deployment state directory and explicit service-account
   ownership assumptions;
-- intermediate-directory ownership/mode and no-symlink hardening;
 - complete bounded foreign-key consistency verification during startup;
 - moving the SQLite 3.51.3 safe-WAL floor from WAL inspection into the complete
   production bootstrap gate;
@@ -1509,7 +1523,10 @@ Production enablement remains blocked on separately reviewed lifecycle work:
 - protected database create/open lifecycle composition; and
 - a shared writer gate for any future acknowledgment path.
 
-None is implemented or authorized by the configuration contract.
+Leadership remains the intended next isolated prerequisite now that the
+directory ancestry used by its future lock location has a code-owned trust
+boundary. None of the remaining items is implemented or authorized by this
+path-hardening slice.
 
 ## Future dashboard and API boundaries
 

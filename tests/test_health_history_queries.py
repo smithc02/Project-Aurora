@@ -79,9 +79,8 @@ def _block_external_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def store_path(tmp_path: Path) -> tuple[Path, HealthHistoryStore]:
-    tmp_path.chmod(0o700)
-    path = tmp_path / "history.db"
+def store_path(history_test_directory: Path) -> tuple[Path, HealthHistoryStore]:
+    path = history_test_directory / "history.db"
     store = HealthHistoryStore.create(path, created_at_utc_us=1)
     try:
         yield path, store

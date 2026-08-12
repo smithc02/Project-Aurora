@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; eight isolated foundation
-    slices through a disabled production configuration contract):
+18. **Milestone 18 (implementation in progress; nine isolated foundation
+    slices through protected path ancestry hardening):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -119,6 +119,15 @@
     seconds and cannot be faster than dashboard refresh when enabled, and
     retention is bounded to 1–365 days. Validation performs no filesystem or
     database access, and the tracked example remains disabled without a path.
+    The ninth slice strengthens the direct-only history filesystem boundary:
+    descriptor-relative no-follow walks require root and intermediate
+    components to be root- or service-user-owned directories without group or
+    world write permission, retain exact service-user-owned mode `0700` for the
+    final parent, and reject identity or security-metadata changes across a
+    second complete walk. Validation remains read-only, existing direct
+    create/open operations inherit it, and the standard-library SQLite
+    pathname-open limitation remains documented. Nonwaiting leadership is
+    still the next isolated prerequisite; production history remains disabled.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
     protected database lifecycle composition, notifications, and automation
     remain unimplemented. It
