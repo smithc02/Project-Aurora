@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first nine Milestone 18 production slices establish an isolated
+The first eleven Milestone 18 production slices establish an isolated
 `aurora_core.health_history` package plus disabled production configuration.
 Its stricter code-owned projection accepts only complete `HealthReport` schema
 version 1 snapshots and retains status,
@@ -569,8 +569,22 @@ future process-local scheduler/acknowledgment writer gate remains separate.
 No runtime lifecycle, scheduler thread, deployment directory, production
 database, or settings-driven acquisition is added. The fixed leadership name
 is reserved, and future lifecycle composition must reject a configured database
-with that basename. A complete SQLite safe-runtime bootstrap gate remains the
-next isolated prerequisite.
+with that basename.
+
+The eleventh isolated slice moves the one authoritative SQLite 3.51.3 safety
+floor into a direct standard-library-only capability boundary. Exact bounded
+three-integer `sqlite3.sqlite_version_info` metadata is required; absent,
+malformed, or earlier metadata produces only fixed `unsupported_runtime`
+without a connection, filesystem access, behavioral probe, cache, retry, or
+raw version detail. Direct Store create and open-existing methods invoke the
+gate before all filesystem and SQLite bootstrap work, so rejection creates no
+main file or sidecar and cannot alter an existing database. The NOOP WAL-status
+path calls the same boundary and translates rejection into its existing
+non-trust storage-envelope result before executing checkpoint SQL.
+
+No settings-driven lifecycle, leadership acquisition, foreign-key consistency
+scan, scheduler, or runtime integration is added. Complete bounded startup
+foreign-key consistency verification remains the next isolated prerequisite.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production

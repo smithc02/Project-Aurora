@@ -69,6 +69,10 @@ from aurora_core.health_history.schema import (
     create_schema_v1,
     verify_schema_v1,
 )
+from aurora_core.health_history.sqlite_runtime import (
+    SQLiteRuntimeError,
+    require_safe_sqlite_runtime,
+)
 from aurora_core.health_history.storage_envelope import (
     WAL_INSPECTION_LIMIT_BYTES,
     FreeSpaceResult,
@@ -120,6 +124,7 @@ class HealthHistoryStore:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> HealthHistoryStore:
         """Exclusively create and verify one new production-format database."""
+        _require_safe_runtime_for_store()
         identity: PathIdentity | None = None
         created_sidecars: dict[str, PathIdentity] = {}
         connection: sqlite3.Connection | None = None
@@ -179,6 +184,7 @@ class HealthHistoryStore:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> HealthHistoryStore:
         """Open one existing verified production database without creating it."""
+        _require_safe_runtime_for_store()
         connection: sqlite3.Connection | None = None
         try:
             identity = validate_database_file(path)
@@ -512,6 +518,13 @@ def _connect_existing(path: Path) -> sqlite3.Connection:
         timeout=BUSY_TIMEOUT_MILLISECONDS / 1000,
         isolation_level=None,
     )
+
+
+def _require_safe_runtime_for_store() -> None:
+    try:
+        require_safe_sqlite_runtime()
+    except SQLiteRuntimeError:
+        raise StoreError("unsupported_runtime") from None
 
 
 def _advance_sidecar_snapshot(

@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 
 import aurora_core.health_history.filesystem as history_filesystem
+import aurora_core.health_history.sqlite_runtime as sqlite_runtime
+import aurora_core.health_history.store as store_module
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
 from aurora_core.health_history import schema
 from aurora_core.health_history.filesystem import (
@@ -1054,6 +1056,92 @@ def test_open_existing_uses_no_create_and_missing_file_remains_missing(
     assert not missing.exists()
 
 
+def test_unsupported_runtime_stops_create_before_filesystem_or_sqlite(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _database_path(protected_directory)
+    called: list[str] = []
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        called.append("unexpected")
+        raise AssertionError("bootstrap operation must not run")
+
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", (3, 51, 2))
+    monkeypatch.setattr(store_module, "create_database_file", unexpected)
+    monkeypatch.setattr(store_module, "_connect_existing", unexpected)
+    monkeypatch.setattr(store_module, "create_schema_v1", unexpected)
+    monkeypatch.setattr(store_module, "fsync_database_files", unexpected)
+
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.create(path, created_at_utc_us=1)
+
+    assert caught.value.reason == "unsupported_runtime"
+    assert str(caught.value) == "unsupported_runtime"
+    assert called == []
+    assert not path.exists()
+    assert not path.with_name(f"{path.name}-wal").exists()
+    assert not path.with_name(f"{path.name}-shm").exists()
+    assert not (protected_directory / ".aurora-health-history.lock").exists()
+
+
+def test_unsupported_runtime_stops_open_before_filesystem_or_sqlite(
+    protected_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _database_path(protected_directory)
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", (3, 53, 1))
+    store = HealthHistoryStore.create(path, created_at_utc_us=1)
+    store.close()
+    artifacts = (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+    before = {
+        artifact: (
+            artifact.lstat().st_dev,
+            artifact.lstat().st_ino,
+            stat.S_IMODE(artifact.lstat().st_mode),
+            artifact.lstat().st_size,
+            artifact.lstat().st_mtime_ns,
+            artifact.read_bytes(),
+        )
+        for artifact in artifacts
+        if artifact.exists()
+    }
+    called: list[str] = []
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        called.append("unexpected")
+        raise AssertionError("bootstrap operation must not run")
+
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version_info", (3, 51, 2))
+    monkeypatch.setattr(store_module, "validate_database_file", unexpected)
+    monkeypatch.setattr(store_module, "validate_sidecars", unexpected)
+    monkeypatch.setattr(store_module, "_connect_existing", unexpected)
+
+    with pytest.raises(StoreError) as caught:
+        HealthHistoryStore.open_existing(path)
+
+    assert caught.value.reason == "unsupported_runtime"
+    assert str(caught.value) == "unsupported_runtime"
+    assert called == []
+    assert {
+        artifact: (
+            artifact.lstat().st_dev,
+            artifact.lstat().st_ino,
+            stat.S_IMODE(artifact.lstat().st_mode),
+            artifact.lstat().st_size,
+            artifact.lstat().st_mtime_ns,
+            artifact.read_bytes(),
+        )
+        for artifact in artifacts
+        if artifact.exists()
+    } == before
+    assert not (protected_directory / ".aurora-health-history.lock").exists()
+
+
 def test_exclusive_creation_never_reuses_an_existing_path(
     protected_directory: Path,
 ) -> None:
@@ -1538,8 +1626,6 @@ def test_identity_change_during_open_fails_closed(
 ) -> None:
     path, store = _create_store(protected_directory)
     store.close()
-    import aurora_core.health_history.store as store_module
-
     original = store_module.validate_database_file
     calls = 0
 
@@ -2021,8 +2107,6 @@ def test_quick_check_cleans_handler_after_sqlite_failure() -> None:
 def test_failed_creation_removes_only_its_incomplete_file(
     protected_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import aurora_core.health_history.store as store_module
-
     unrelated = protected_directory / "unrelated"
     unrelated.write_bytes(b"evidence")
     unrelated.chmod(0o600)
@@ -2042,8 +2126,6 @@ def test_failed_creation_removes_only_its_incomplete_file(
 def test_creation_detects_a_newly_created_sidecar_identity_change_during_verification(
     protected_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import aurora_core.health_history.store as store_module
-
     path = _database_path(protected_directory)
     original_verify = store_module.verify_schema_v1
     original_sidecars = store_module.validate_sidecars

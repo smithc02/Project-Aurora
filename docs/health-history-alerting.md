@@ -18,7 +18,9 @@ the seventh added direct-only scheduler/resume composition without starting a
 scheduler. The eighth adds only a strict, disabled-by-default production
 configuration contract. The ninth strengthens the protected history path
 boundary across the complete directory ancestry. The tenth adds one direct-only
-nonblocking cross-process leadership primitive without runtime composition.
+nonblocking cross-process leadership primitive without runtime composition. The
+eleventh adds one shared SQLite safe-runtime gate and enforces it before either
+direct Store bootstrap path can inspect or create database storage.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
@@ -85,6 +87,18 @@ mechanism is added. Explicit or context-manager close unlocks and closes once;
 process exit also releases the kernel lock. The stable empty file is never
 unlinked on release and is reserved for future lifecycle composition, which
 must reject a configured database using the same basename.
+
+The eleventh slice centralizes the fixed minimum safe SQLite version at 3.51.3.
+`require_safe_sqlite_runtime()` accepts only an exact three-integer bounded
+`sqlite3.sqlite_version_info` tuple and fails with fixed
+`unsupported_runtime` when metadata is absent, malformed, or older. It reads no
+filesystem state, opens no SQLite connection, performs no behavioral probe,
+and does not cache, retry, or expose the observed version. Direct Store create
+and open-existing calls run this gate before any filesystem validation,
+exclusive file creation, SQLite connection, pragma, schema operation, or
+sidecar activity. The existing NOOP WAL-status path reuses the same source of
+truth and still executes no NOOP or PASSIVE statement when unsupported.
+Unsupported runtime is a capability rejection, not storage trust loss.
 
 The second slice remains inside that isolated package and adds:
 
@@ -1534,16 +1548,14 @@ Production enablement remains blocked on separately reviewed lifecycle work:
 - a protected writable deployment state directory and explicit service-account
   ownership assumptions;
 - complete bounded foreign-key consistency verification during startup;
-- moving the SQLite 3.51.3 safe-WAL floor from WAL inspection into the complete
-  production bootstrap gate;
 - resolution of forward wall-clock archival suspension;
 - injection of validated `retention_days` into orchestration;
 - protected database create/open lifecycle composition; and
 - a shared writer gate for any future acknowledgment path.
 
-The complete SQLite 3.51.3 safe-runtime bootstrap gate remains the intended
-next isolated prerequisite. None of the remaining lifecycle items is
-implemented or authorized by this leadership slice, and production history
+Complete bounded startup foreign-key consistency verification remains the
+intended next isolated prerequisite. None of the remaining lifecycle items is
+implemented or authorized by this capability slice, and production history
 remains disabled.
 
 ## Future dashboard and API boundaries

@@ -20,6 +20,10 @@ from aurora_core.health_history.models import (
     MAX_DATABASE_PAGES,
     PAGE_SIZE_BYTES,
 )
+from aurora_core.health_history.sqlite_runtime import (
+    SQLiteRuntimeError,
+    require_safe_sqlite_runtime,
+)
 
 FREE_SPACE_RESERVE_BYTES: Final = 128 * 1024 * 1024
 WAL_HEADER_BYTES: Final = 32
@@ -32,8 +36,6 @@ WAL_INSPECTION_LIMIT_BYTES: Final = MAX_DATABASE_BYTES
 MAX_WAL_INSPECTION_FRAMES: Final = (
     WAL_INSPECTION_LIMIT_BYTES - WAL_HEADER_BYTES
 ) // WAL_FRAME_BYTES
-_MINIMUM_SAFE_WAL_SQLITE_VERSION: Final = (3, 51, 3)
-_MAX_SQLITE_VERSION_COMPONENT: Final = 2**31 - 1
 CHECKPOINT_SECONDS: Final = 1.0
 PROGRESS_HANDLER_STEPS: Final = 1_000
 MAX_FILESYSTEM_BYTES: Final = 2**63 - 1
@@ -476,7 +478,12 @@ def _inspect_physical_wal(
 def _read_noop_status(
     connection: sqlite3.Connection, deadline: _Deadline | None
 ) -> tuple[int, int, bool]:
-    _require_safe_wal_sqlite_version()
+    try:
+        require_safe_sqlite_runtime()
+    except SQLiteRuntimeError:
+        raise StorageEnvelopeError(
+            StorageEnvelopeRejection.UNSUPPORTED_RUNTIME
+        ) from None
     cursor = connection.execute(_NOOP_CHECKPOINT_SQL)
     _check_deadline(deadline)
     rows = cursor.fetchmany(2)
@@ -504,20 +511,6 @@ def _read_noop_status(
     ):
         raise _malformed()
     return logical_frame_count, checkpointed_frames, False
-
-
-def _require_safe_wal_sqlite_version() -> None:
-    version: object = sqlite3.sqlite_version_info
-    if type(version) is not tuple or len(version) != 3:
-        raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
-    if any(
-        type(component) is not int
-        or not 0 <= component <= _MAX_SQLITE_VERSION_COMPONENT
-        for component in version
-    ):
-        raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
-    if version < _MINIMUM_SAFE_WAL_SQLITE_VERSION:
-        raise StorageEnvelopeError(StorageEnvelopeRejection.UNSUPPORTED_RUNTIME)
 
 
 def _check_deadline(deadline: _Deadline | None) -> None:
