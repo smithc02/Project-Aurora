@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first twelve Milestone 18 production slices establish an isolated
+The first thirteen Milestone 18 production slices establish an isolated
 `aurora_core.health_history` package plus disabled production configuration.
 Its stricter code-owned projection accepts only complete `HealthReport` schema
 version 1 snapshots and retains status,
@@ -593,9 +593,28 @@ is cleared before the existing independent two-second `quick_check(1)` begins.
 Create, open-existing, and explicit Store reverification inherit the same
 schema-version-1 check without changing Store APIs or schema DDL.
 
-No settings-driven lifecycle, leadership acquisition, scheduler, or runtime
-integration is added. Direct-only settings-driven protected database lifecycle
-composition remains the next isolated prerequisite.
+The thirteenth isolated slice adds direct-only protected database ownership
+composition. An already-validated `HealthHistorySettings` snapshot remains a
+true no-op while disabled. When enabled, the lifecycle converts the configured
+absolute path literally, rejects the reserved
+`.aurora-health-history.lock` database basename, acquires one nonblocking
+leadership handle on the protected parent, and only then applies the exact
+`open_existing` or create-first `create_if_missing` Store policy. Only the
+exact exclusive-create `already_exists` result permits one open-existing
+fallback; invalid databases are never replaced, repaired, or retried.
+
+One returned handle owns the verified schema-version-1 Store and leadership
+for their complete shared lifetime. Close always ends Store ownership before
+releasing leadership; Store-close uncertainty keeps leadership held and makes
+the Store unavailable until an explicit later close attempt succeeds. Disabled
+configuration, invalid timestamps, reserved paths, and leadership failures
+reach no Store operation. The composition reads no YAML, environment, CLI, or
+wall clock, creates no directory, and consumes neither sampling nor retention
+settings.
+
+No startup storage-envelope readiness check, scheduler, runtime integration,
+deployment path, or production database is enabled. Direct-only startup
+storage-envelope readiness composition remains the next isolated prerequisite.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production

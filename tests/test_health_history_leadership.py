@@ -17,6 +17,7 @@ import pytest
 
 import aurora_core.health_history.leadership as leadership_module
 from aurora_core.health_history import (
+    HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME,
     HealthHistoryLeadership,
     LeadershipError,
     LeadershipRejection,
@@ -190,7 +191,7 @@ def test_failed_new_file_validation_closes_the_created_descriptor(
 def test_fixed_name_is_not_a_caller_argument() -> None:
     signature = inspect.signature(HealthHistoryLeadership.acquire)
     assert tuple(signature.parameters) == ("directory",)
-    assert leadership_module._LOCK_FILENAME == _LOCK_NAME
+    assert HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME == _LOCK_NAME
 
 
 @pytest.mark.parametrize("mode", [0o755, 0o770, 0o777])

@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; twelve isolated foundation
-    slices through complete bounded startup foreign-key verification):
+18. **Milestone 18 (implementation in progress; thirteen isolated foundation
+    slices through direct-only protected database lifecycle composition):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -145,12 +145,18 @@
     violations under an independent one-second progress deadline, stops at the
     first violation without exposing its contents, treats cursor and handler
     cleanup as part of verification, performs no repair, and keeps schema
-    version 1. Direct-only settings-driven protected database lifecycle
-    composition is the next isolated prerequisite; production history remains
-    disabled.
+    version 1. The thirteenth slice composes an already-validated, enabled
+    `HealthHistorySettings` snapshot with one protected-parent leadership handle
+    and one verified Store. Disabled settings remain a no-op; the fixed lock
+    basename is rejected as a database target; leadership precedes every Store
+    operation; and `create_if_missing` falls back to one existing open only for
+    exact `already_exists`. Store closes before leadership, cleanup uncertainty
+    fails closed, and no storage preflight, scheduler, runtime, deployment path,
+    or production database is enabled. Direct-only startup storage-envelope
+    readiness composition is the next isolated prerequisite.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
-    protected database lifecycle composition, notifications, and automation
-    remain unimplemented. It
+    startup storage-envelope readiness, notifications, and automation remain
+    unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).

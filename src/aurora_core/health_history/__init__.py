@@ -3,6 +3,12 @@
 This package is intentionally not imported by a current runtime entry point.
 """
 
+from aurora_core.health_history.database_lifecycle import (
+    DatabaseLifecycleError,
+    DatabaseLifecycleRejection,
+    HealthHistoryDatabaseLifecycle,
+    bootstrap_health_history_database,
+)
 from aurora_core.health_history.ingestion import (
     IngestionError,
     IngestionOutcome,
@@ -10,6 +16,7 @@ from aurora_core.health_history.ingestion import (
     IngestionResult,
 )
 from aurora_core.health_history.leadership import (
+    HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME,
     HealthHistoryLeadership,
     LeadershipError,
     LeadershipRejection,
@@ -127,6 +134,8 @@ __all__ = [
     "AlertScope",
     "ComponentName",
     "ComponentProjection",
+    "DatabaseLifecycleError",
+    "DatabaseLifecycleRejection",
     "DEFAULT_ALERT_EVENT_PAGE_SIZE",
     "DEFAULT_ALERT_PAGE_SIZE",
     "DEFAULT_DASHBOARD_REFRESH_SECONDS",
@@ -137,6 +146,7 @@ __all__ = [
     "FreeSpaceResult",
     "HealthComponentRecord",
     "HealthHistoryLeadership",
+    "HealthHistoryDatabaseLifecycle",
     "HealthHistoryStatus",
     "HealthHistoryOrchestrator",
     "HealthHistoryScheduler",
@@ -151,6 +161,7 @@ __all__ = [
     "IngestionResult",
     "IncrementalVacuumResult",
     "INCREMENTAL_VACUUM_PAGES",
+    "HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME",
     "LifecycleEvent",
     "LeadershipError",
     "LeadershipRejection",
@@ -204,6 +215,7 @@ __all__ = [
     "WAL_HARD_LIMIT_FRAMES",
     "WalInspectionResult",
     "decide_storage_action",
+    "bootstrap_health_history_database",
     "project_health_report",
     "require_safe_sqlite_runtime",
     "validate_health_projection",
