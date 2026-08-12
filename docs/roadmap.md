@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; nine isolated foundation
-    slices through protected path ancestry hardening):
+18. **Milestone 18 (implementation in progress; ten isolated foundation
+    slices through direct-only history leadership):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -126,8 +126,16 @@
     final parent, and reject identity or security-metadata changes across a
     second complete walk. Validation remains read-only, existing direct
     create/open operations inherit it, and the standard-library SQLite
-    pathname-open limitation remains documented. Nonwaiting leadership is
-    still the next isolated prerequisite; production history remains disabled.
+    pathname-open limitation remains documented. The tenth slice adds a
+    direct-only cross-process leadership handle using the fixed empty
+    `.aurora-health-history.lock` file inside that protected directory. The
+    service-user-owned mode-`0600` single-link file remains stable on disk while
+    one nonblocking exclusive advisory `flock` represents leadership; busy does
+    not retry, release never unlinks, and no PID, hostname, timestamp, UUID, or
+    SQLite content is written. The lock, directory, and ancestry are revalidated
+    around acquisition, but no runtime or settings integration invokes it. The
+    complete SQLite safe-runtime bootstrap gate is the next isolated
+    prerequisite; production history remains disabled.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
     protected database lifecycle composition, notifications, and automation
     remain unimplemented. It

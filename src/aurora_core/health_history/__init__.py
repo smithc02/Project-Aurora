@@ -9,6 +9,11 @@ from aurora_core.health_history.ingestion import (
     IngestionRejection,
     IngestionResult,
 )
+from aurora_core.health_history.leadership import (
+    HealthHistoryLeadership,
+    LeadershipError,
+    LeadershipRejection,
+)
 from aurora_core.health_history.maintenance import (
     DEFAULT_RETENTION_DAYS,
     INCREMENTAL_VACUUM_PAGES,
@@ -125,6 +130,7 @@ __all__ = [
     "FREE_SPACE_RESERVE_BYTES",
     "FreeSpaceResult",
     "HealthComponentRecord",
+    "HealthHistoryLeadership",
     "HealthHistoryStatus",
     "HealthHistoryOrchestrator",
     "HealthHistoryScheduler",
@@ -140,6 +146,8 @@ __all__ = [
     "IncrementalVacuumResult",
     "INCREMENTAL_VACUUM_PAGES",
     "LifecycleEvent",
+    "LeadershipError",
+    "LeadershipRejection",
     "MAX_ALERT_EVENT_PAGE_SIZE",
     "MAX_ALERT_PAGE_SIZE",
     "MAX_HEALTH_SAMPLE_PAGE_SIZE",

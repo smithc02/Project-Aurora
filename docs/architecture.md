@@ -552,10 +552,25 @@ This validation is read-only: it creates, repairs, chmods, chowns, renames, or
 removes no directory. The existing direct database create/open and sidecar
 boundaries inherit it without an API or schema change. Standard-library SQLite
 still opens the database by pathname, so the documented residual same-identity
-race and dedicated-service-account threat model remain. No leadership lock,
-runtime lifecycle, scheduler thread, deployment directory, or production
-database is added; nonwaiting leadership remains the next isolated
-prerequisite.
+race and dedicated-service-account threat model remain.
+
+The tenth isolated slice adds a health-history-specific leadership handle. It
+creates or reuses only the fixed `.aurora-health-history.lock` entry relative
+to a slice-nine-validated final directory descriptor. The file must remain an
+empty, service-user-owned, exact mode-`0600`, single-link regular file. One
+`LOCK_EX | LOCK_NB` advisory `flock` decides leadership without waiting,
+retrying, polling, writing diagnostic content, or unlinking the stable file on
+release. Entry, descriptor, directory, and complete-ancestry identity are
+revalidated around acquisition. Explicit/context-manager close and process
+exit release the kernel lock. The API is direct-only, independent of SQLite,
+and advisory: every future Aurora scheduled writer must obey it, while the
+future process-local scheduler/acknowledgment writer gate remains separate.
+
+No runtime lifecycle, scheduler thread, deployment directory, production
+database, or settings-driven acquisition is added. The fixed leadership name
+is reserved, and future lifecycle composition must reject a configured database
+with that basename. A complete SQLite safe-runtime bootstrap gate remains the
+next isolated prerequisite.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production

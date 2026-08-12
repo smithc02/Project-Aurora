@@ -17,18 +17,18 @@ remain without runtime invocation. The sixth added direct-only orchestration;
 the seventh added direct-only scheduler/resume composition without starting a
 scheduler. The eighth adds only a strict, disabled-by-default production
 configuration contract. The ninth strengthens the protected history path
-boundary across the complete directory ancestry without adding leadership or
-runtime composition.
+boundary across the complete directory ancestry. The tenth adds one direct-only
+nonblocking cross-process leadership primitive without runtime composition.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
-The ninth slice performs read-only descriptor-relative ancestry validation but
-opens or creates no database and adds no scheduler, worker, route, runtime
+The tenth slice may create or reuse only one empty code-owned leadership file;
+it opens or creates no database and adds no scheduler, worker, route, runtime
 invocation, acknowledgment action, migration, backup, restore, scheduled
-checkpoint, notification, or automation action. The query and maintenance APIs
-remain reachable only through direct use of the isolated package. Milestones 12
-through 17 remain the current behavior, including public `GET /api/health`
-schema version 1.
+checkpoint, notification, or automation action. The query, maintenance, and
+leadership APIs remain reachable only through direct use of the isolated
+package. Milestones 12 through 17 remain the current behavior, including
+public `GET /api/health` schema version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -71,6 +71,20 @@ second component identities and security metadata to match the first. The
 validation is read-only and performs no creation or permission repair. Existing
 direct exclusive-create and `mode=rw` open operations inherit this stronger
 boundary without changing their APIs.
+
+The tenth slice adds `HealthHistoryLeadership.acquire()` for one fixed
+`.aurora-health-history.lock` entry directly inside that protected directory.
+The entry is an effective-service-user-owned, exact mode-`0600`, single-link,
+zero-length regular file opened relative to a validated directory descriptor.
+It is created exclusively when missing or reused only after entry/descriptor
+identity and metadata checks. Acquisition performs exactly one advisory
+`LOCK_EX | LOCK_NB` `flock`, then revalidates the lock and protected ancestry.
+Busy leadership is a fixed non-trust operational result; no wait, retry, queue,
+PID, hostname, timestamp, UUID, file content, SQLite operation, or fallback lock
+mechanism is added. Explicit or context-manager close unlocks and closes once;
+process exit also releases the kernel lock. The stable empty file is never
+unlinked on release and is reserved for future lifecycle composition, which
+must reject a configured database using the same basename.
 
 The second slice remains inside that isolated package and adds:
 
@@ -211,11 +225,14 @@ service unit and preserves the existing single-flight guarantee. A separate
 collector service is deferred unless later measurements demonstrate that the
 dashboard process cannot meet the bounded resource envelope.
 
-Only one scheduler may lead in a process. A nonblocking advisory lock in the
-explicit history directory should prevent two dashboard processes from both
-becoming scheduled writers. Failure to obtain leadership disables scheduled
-ingestion in that process; it does not queue, wait indefinitely, or affect the
-live health endpoint.
+Only one future scheduler may lead across Aurora processes for one history
+directory. The direct leadership primitive now provides a nonblocking advisory
+lock for that boundary, but no runtime calls it yet. Advisory locking protects
+Aurora only when every scheduled history writer follows the same contract.
+Failure to obtain leadership must later disable scheduled ingestion in that
+process; it must not queue, wait indefinitely, or affect the live health
+endpoint. The lifetime leadership handle is not the separate future
+process-local writer gate shared by scheduler and acknowledgment writes.
 
 ## Persistence technology decision
 
@@ -1510,7 +1527,8 @@ disabled and intentionally omits a database path.
 
 Production enablement remains blocked on separately reviewed lifecycle work:
 
-- a nonwaiting scheduler leadership mechanism;
+- settings-driven acquisition and lifetime ownership of the direct leadership
+  handle;
 - history failure isolation from public `GET /api/health`;
 - scheduler join and bounded shutdown-TRUNCATE handling;
 - a protected writable deployment state directory and explicit service-account
@@ -1523,10 +1541,10 @@ Production enablement remains blocked on separately reviewed lifecycle work:
 - protected database create/open lifecycle composition; and
 - a shared writer gate for any future acknowledgment path.
 
-Leadership remains the intended next isolated prerequisite now that the
-directory ancestry used by its future lock location has a code-owned trust
-boundary. None of the remaining items is implemented or authorized by this
-path-hardening slice.
+The complete SQLite 3.51.3 safe-runtime bootstrap gate remains the intended
+next isolated prerequisite. None of the remaining lifecycle items is
+implemented or authorized by this leadership slice, and production history
+remains disabled.
 
 ## Future dashboard and API boundaries
 
