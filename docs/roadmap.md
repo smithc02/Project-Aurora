@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; thirteen isolated foundation
-    slices through direct-only protected database lifecycle composition):
+18. **Milestone 18 (implementation in progress; fourteen isolated foundation
+    slices through direct-only startup storage readiness composition):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -153,11 +153,15 @@
     exact `already_exists`. Store closes before leadership, cleanup uncertainty
     fails closed, and a leadership release failure remains terminal without
     treating its `closed` property as proof of kernel release or retrying writer
-    handoff. No storage preflight, scheduler, runtime, deployment path, or
-    production database is enabled. Direct-only startup storage-envelope
-    readiness composition is the next isolated prerequisite.
+    handoff. The fourteenth slice borrows that already-open lifecycle for one
+    direct-only startup storage preflight: capacity, free space, and WAL are
+    inspected exactly once in order before the existing pure storage decision
+    runs with capacity maintenance unattempted. It performs no remediation,
+    retry, verification, or automatic close, and caller ownership remains
+    unchanged. No scheduler, runtime, deployment path, or production database
+    is enabled.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
-    startup storage-envelope readiness, notifications, and automation remain
+    production startup composition, notifications, and automation remain
     unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the

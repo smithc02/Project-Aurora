@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first thirteen Milestone 18 production slices establish an isolated
+The first fourteen Milestone 18 production slices establish an isolated
 `aurora_core.health_history` package plus disabled production configuration.
 Its stricter code-owned projection accepts only complete `HealthReport` schema
 version 1 snapshots and retains status,
@@ -619,13 +619,22 @@ after `RELEASE_FAILED`. The lifecycle remains `CLEANUP_FAILED`, exposes no
 Store, performs no second release attempt, and infers no writer handoff. Normal
 successful closure remains Store first and leadership second.
 
-No startup storage-envelope readiness check, scheduler, runtime integration,
-deployment path, or production database is enabled. Direct-only startup
-storage-envelope readiness composition remains the next isolated prerequisite.
+The fourteenth isolated slice adds one direct-only startup storage readiness
+preflight over an already-open database lifecycle. It borrows the lifecycle's
+Store, inspects capacity, free space, and WAL exactly once in that order, then
+calls the existing storage decision with capacity maintenance marked
+unattempted. Only `PROCEED` permits a future write; every existing non-ready
+decision is returned unchanged. The preflight performs no checkpoint,
+retention cleanup, vacuum, verification, retry, or automatic close, so Store
+and leadership ownership remain with the caller after results and exceptions.
+
+No scheduler, runtime integration, deployment path, or production database is
+enabled. The startup preflight remains a direct-only API disconnected from
+production startup.
 
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production
-database open/create composition, startup/shutdown hooks, separately
+deployment enablement, startup/shutdown hooks, separately
 authenticated acknowledgment, and separately reviewed presentation integration remain
 deferred. See the detailed [health-history and alerting
 design](health-history-alerting.md).
