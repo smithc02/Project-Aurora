@@ -104,6 +104,9 @@ from aurora_core.health_history.sqlite_runtime import (
     SQLiteRuntimeRejection,
     require_safe_sqlite_runtime,
 )
+from aurora_core.health_history.startup_preflight import (
+    preflight_health_history_storage,
+)
 from aurora_core.health_history.storage_envelope import (
     FREE_SPACE_RESERVE_BYTES,
     WAL_CHECKPOINT_THRESHOLD_FRAMES,
@@ -216,6 +219,7 @@ __all__ = [
     "WalInspectionResult",
     "decide_storage_action",
     "bootstrap_health_history_database",
+    "preflight_health_history_storage",
     "project_health_report",
     "require_safe_sqlite_runtime",
     "validate_health_projection",
