@@ -22,17 +22,18 @@ nonblocking cross-process leadership primitive without runtime composition. The
 eleventh adds one shared SQLite safe-runtime gate and enforces it before either
 direct Store bootstrap path can inspect or create database storage. The twelfth
 adds complete bounded persisted foreign-key verification to every direct Store
-verification path.
+verification path. The thirteenth adds direct-only settings-driven ownership of
+one verified Store under one protected-directory leadership handle.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
 The tenth slice may create or reuse only one empty code-owned leadership file;
 it opens or creates no database and adds no scheduler, worker, route, runtime
 invocation, acknowledgment action, migration, backup, restore, scheduled
-checkpoint, notification, or automation action. The query, maintenance, and
-leadership APIs remain reachable only through direct use of the isolated
-package. Milestones 12 through 17 remain the current behavior, including
-public `GET /api/health` schema version 1.
+checkpoint, notification, or automation action. The query, maintenance,
+leadership, and database-lifecycle APIs remain reachable only through direct
+use of the isolated package. Milestones 12 through 17 remain the current
+behavior, including public `GET /api/health` schema version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -115,9 +116,29 @@ independent two-second `quick_check(1)`. The check performs no repair, schema
 version remains 1, and create, open-existing, and explicit Store verification
 inherit it without new Store behavior.
 
-Production history remains disabled. Settings-driven protected database
-lifecycle composition is the expected next isolated prerequisite; leadership,
-settings, scheduler, and runtime code do not invoke one another in this slice.
+The thirteenth slice composes only database ownership. Disabled settings return
+without path conversion, leadership, SQLite inspection, or Store access.
+Enabled settings use the lexical configured path literally, reject the fixed
+leadership filename as the database basename, and acquire leadership on the
+already-protected parent before any Store operation. `open_existing` opens
+exactly once. `create_if_missing` attempts exclusive creation first and falls
+back to one verified existing open only for the exact `already_exists` result;
+it performs no existence precheck, replacement, repair, migration, or retry.
+
+The returned lifecycle owns one Store plus one leadership handle. Store closes
+before leadership, and an uncertain Store close keeps leadership held while
+making Store access fail closed. The lifecycle does not retain sampling or
+retention values, perform storage-envelope preflight, construct orchestration
+or scheduling, create a directory, or read configuration sources. Production
+history remains disabled, and direct-only startup storage-envelope readiness
+composition is the expected next isolated prerequisite.
+
+If leadership release reports `RELEASE_FAILED`, its `closed` property is not
+proof that the kernel unlock and descriptor close succeeded because descriptor
+ownership is cleared before those operations are attempted. The database
+lifecycle therefore remains terminal `CLEANUP_FAILED`, exposes no Store, does
+not retry the ambiguous release, and does not infer readiness for another
+writer. Normal successful close remains Store first and leadership second.
 
 The second slice remains inside that isolated package and adds:
 
@@ -1560,22 +1581,19 @@ disabled and intentionally omits a database path.
 
 Production enablement remains blocked on separately reviewed lifecycle work:
 
-- settings-driven acquisition and lifetime ownership of the direct leadership
-  handle;
 - history failure isolation from public `GET /api/health`;
 - scheduler join and bounded shutdown-TRUNCATE handling;
 - a protected writable deployment state directory and explicit service-account
   ownership assumptions;
-- complete bounded foreign-key consistency verification during startup;
+- direct startup storage-envelope readiness composition;
 - resolution of forward wall-clock archival suspension;
 - injection of validated `retention_days` into orchestration;
-- protected database create/open lifecycle composition; and
 - a shared writer gate for any future acknowledgment path.
 
-Complete bounded startup foreign-key consistency verification remains the
-intended next isolated prerequisite. None of the remaining lifecycle items is
-implemented or authorized by this capability slice, and production history
-remains disabled.
+Direct-only startup storage-envelope readiness composition remains the intended
+next isolated prerequisite. None of the remaining runtime lifecycle items is
+implemented or authorized by database ownership composition, and production
+history remains disabled.
 
 ## Future dashboard and API boundaries
 

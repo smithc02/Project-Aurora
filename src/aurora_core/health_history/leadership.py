@@ -10,7 +10,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType, TracebackType
-from typing import cast
+from typing import Final, cast
 
 from aurora_core.health_history.filesystem import (
     FilesystemBoundaryError,
@@ -18,7 +18,7 @@ from aurora_core.health_history.filesystem import (
     validate_protected_directory,
 )
 
-_LOCK_FILENAME = ".aurora-health-history.lock"
+HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME: Final = ".aurora-health-history.lock"
 _LOCK_FILE_MODE = 0o600
 
 try:
@@ -157,7 +157,7 @@ def _open_lock_file(directory_descriptor: int) -> int:
         return _create_or_open_raced_lock(directory_descriptor)
     _validate_lock_metadata(before)
     descriptor = os.open(
-        _LOCK_FILENAME,
+        HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME,
         _existing_lock_flags(),
         dir_fd=directory_descriptor,
     )
@@ -177,7 +177,7 @@ def _open_lock_file(directory_descriptor: int) -> int:
 def _create_or_open_raced_lock(directory_descriptor: int) -> int:
     try:
         descriptor = os.open(
-            _LOCK_FILENAME,
+            HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME,
             _new_lock_flags(),
             _LOCK_FILE_MODE,
             dir_fd=directory_descriptor,
@@ -201,7 +201,7 @@ def _open_lock_after_creation_race(directory_descriptor: int) -> int:
     before = _stat_lock_entry(directory_descriptor)
     _validate_lock_metadata(before)
     descriptor = os.open(
-        _LOCK_FILENAME,
+        HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME,
         _existing_lock_flags(),
         dir_fd=directory_descriptor,
     )
@@ -246,7 +246,7 @@ def _validate_lock_metadata(metadata: os.stat_result) -> None:
 
 def _stat_lock_entry(directory_descriptor: int) -> os.stat_result:
     return os.stat(
-        _LOCK_FILENAME,
+        HEALTH_HISTORY_LEADERSHIP_LOCK_FILENAME,
         dir_fd=directory_descriptor,
         follow_symlinks=False,
     )
