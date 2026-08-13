@@ -16,15 +16,19 @@
 > atomic activation, recovery, and operator-selected rollback. Its software is
 > merged and deployed, and controlled Linux filesystem validation passed; this
 > does not assert that production profiles were created or activated. Milestone
-> 18 implementation is in progress: its isolated production package now
-> includes the strict projection and SQLite foundation plus atomic projection
+> 18 is paused after sixteen isolated executable foundation slices and a
+> documentation-only clock-safety decision gate. Its disabled package includes
+> the strict projection and SQLite foundation plus atomic projection
 > ingestion, compacted history state, monotonic sequence and bounded replay
 > protection, deterministic automatic alert translation, bounded read-only
 > queries, direct-only retention cleanup and incremental-vacuum primitives, and
 > direct-only storage-envelope inspection and lifecycle/startup composition. A
 > checkpoint-due startup preflight may now invoke exactly one existing bounded
 > PASSIVE checkpoint before one final readiness preflight; capacity remediation
-> remains deferred.
+> remains deferred. Milestone 19 returns development to the integrated lighting
+> experience. Its first slice adds a prominent Current Lighting summary to the
+> Overview page using only the existing cached health report and loaded
+> configuration snapshot.
 > No runtime entry point imports it, no deployment database is created, and no
 > scheduled history or maintenance cadence, route, acknowledgment, worker,
 > notification, or automation behavior is enabled. Broader device control,
@@ -146,6 +150,13 @@ future-feature previews. The existing `aurora-dashboard` command and
 `GET /api/health` schema version 1 remain unchanged. The public portal pages
 have no mutation handlers, persistence, frame capture, or device control.
 
+Milestone 19's first presentation-only slice adds Current Lighting to Overview.
+It derives a Reported Ambient Path from exact cached WLED, HyperHDR, and capture
+booleans, shows the validated logical Aurora configuration profile, and reuses
+the existing Login-or-Controls session navigation. It makes no additional
+health or device request and does not claim physical illumination, fresh HDMI,
+visual correctness, or screen-content matching.
+
 Milestone 14's
 [control-plane security foundation](docs/control-plane-security.md) adds optional
 local authentication, bounded in-memory sessions, CSRF-protected logout,
@@ -209,7 +220,7 @@ operation, verification, activation, and rollback boundaries, and the
 [Milestone 16 HyperHDR control guide](docs/hyperhdr-controls.md) for its exact
 four-operation registry and two-request verification boundary. See the
 [Milestone 17 configuration-profile guide](docs/configuration-profiles.md) for
-the CLI, filesystem, backup, activation, and recovery boundaries. The in-progress
+the CLI, filesystem, backup, activation, and recovery boundaries. The paused
 [Milestone 18 health-history and alerting design](docs/health-history-alerting.md)
 documents the persistence, privacy, lifecycle, and bounded-automation decisions
 plus the isolated storage, ingestion, read-query, bounded-retention maintenance,

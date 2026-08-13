@@ -7,7 +7,9 @@ remaining dependency-free, local, and completely read-only. Milestone 13 itself
 was unauthenticated; Milestone 14 later adds a separate optional protected
 status boundary without changing these public pages. Milestones 15 and 16 later
 add separately enabled protected WLED and HyperHDR pages while the Milestone 13
-public portal remains read-only.
+public portal remains read-only. Milestone 19 Slice One adds a presentation-only
+Current Lighting summary to Overview without adding a device request or public
+operation.
 
 Run it with the existing command:
 
@@ -23,7 +25,7 @@ and installations require no configuration change.
 
 | Route | Purpose |
 | --- | --- |
-| `/` | Overview of overall, component, observed output, and host health. |
+| `/` | Current Lighting plus overall, component, observed output, and host health. |
 | `/wled` | Sanitized WLED health and currently observed output state. |
 | `/hyperhdr` | Sanitized HyperHDR instance, grabber, HDR, and LED-output state. |
 | `/capture` | Non-opening capture-device metadata and inferred grabber activity. |
@@ -63,6 +65,29 @@ requests cannot overlap hardware polls. Moving among pages during a cache
 interval reuses the same snapshot. Individual component failures remain isolated
 and render as degraded or unavailable states; one offline component cannot take
 the portal or another component page offline.
+
+## Current Lighting summary
+
+The Overview request derives Current Lighting from the `HealthReport` it already
+obtained and the loaded configuration snapshot. Reported Ambient Path is Active
+only when WLED output, HyperHDR instance, HyperHDR video grabber, HyperHDR LED
+output, and capture-device presence are all present exact booleans and true. If
+all are exact booleans and any is false, it is Inactive. Missing, unavailable,
+or wrongly typed evidence is Unavailable rather than an inferred false.
+
+The component cards retain their independent health meanings. For example, an
+LED-count mismatch may leave WLED degraded while the reported activity fields
+still produce Active. The card also shows only the existing allowlisted WLED,
+HyperHDR, and capture values. A loaded Aurora configuration profile is displayed
+only when it satisfies the existing bounded profile-ID grammar; all other values
+render as `Custom configuration` without exposing the submitted value. This is
+an Aurora configuration identity, not a Gaming, Movie, or other future visual
+preset.
+
+The existing server-side session boundary supplies Login or Controls
+navigation. The card contains no form, input, script, polling, or mutation route.
+It does not prove physical LED illumination, live HDMI signal freshness, visual
+correctness, or actual screen-content matching.
 
 The Milestone 13 portal added no state-changing operation. Milestone 14 accepted
 POST only for login and CSRF-protected logout in a separate authentication

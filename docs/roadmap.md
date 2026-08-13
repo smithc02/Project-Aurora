@@ -75,7 +75,7 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; sixteen executable foundation
+18. **Milestone 18 (paused after sixteen executable foundation
     slices plus the documentation-only Slice Seventeen clock-safety decision
     gate):
     Persistent health history, alerting, and bounded automation.** The proposed
@@ -190,15 +190,25 @@
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).
-19. **Milestone 19: Multi-zone virtual room model.**
-20. **Milestone 20: Real-time motion-tracking prototype.**
-21. **Milestone 21: Predictive off-screen continuation.**
-22. **Milestone 22: Scene and object intelligence.**
-23. **Milestone 23: Adaptive calibration and user-guided learning.**
-24. **Milestone 24: Deterministic spatial-effects engine.**
-25. **Milestone 25: Game and content profiles.**
+19. **Milestone 19 (Slice One completed): Integrated Aurora Lighting
+    Experience.** The first slice adds a presentation-only Current Lighting card
+    to Overview. It derives Reported Ambient Path from the existing cached WLED,
+    HyperHDR, and capture observations; displays only a validated logical Aurora
+    configuration profile ID; and reuses the existing session-selected Login or
+    Controls link. It adds no health sweep, device request, public API field,
+    operation, persistence, runtime behavior, or health-history integration.
+    Combined ambient controls, visual presets, tuning, startup recovery, room
+    mapping, and spatial intelligence require later separately reviewed slices.
+20. **Deferred prior proposal: Real-time motion-tracking prototype.**
+21. **Deferred prior proposal: Predictive off-screen continuation.**
+22. **Deferred prior proposal: Scene and object intelligence.**
+23. **Deferred prior proposal: Adaptive calibration and user-guided learning.**
+24. **Deferred prior proposal: Deterministic spatial-effects engine.**
+25. **Deferred prior proposal: Game and content profiles.**
 
-Each planned milestone requires a separate design and safety review. This order
+The prior multi-zone and spatial progression is paused and must be re-reviewed
+against a concrete user-facing lighting outcome before any item is scheduled.
+Each planned milestone requires a separate design and safety review; numbering
 does not authorize later behavior in an earlier milestone.
 
 ## Long-term spatial-intelligence flow

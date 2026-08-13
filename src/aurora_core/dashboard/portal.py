@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from aurora_core.config_profiles.identifiers import is_profile_id
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
 
 
@@ -76,8 +77,22 @@ class ControlNavigationLink(StrEnum):
     CONTROLS = "controls"
 
 
+class _ReportedAmbientPath(StrEnum):
+    ACTIVE = "Active"
+    INACTIVE = "Inactive"
+    UNAVAILABLE = "Unavailable"
+
+
 ValueFormatter = Callable[[object], str]
 MetricSpec = tuple[str, str, ValueFormatter]
+
+_AMBIENT_ACTIVITY_FIELDS = (
+    ("wled", "output_on"),
+    ("hyperhdr", "instance_running"),
+    ("hyperhdr", "grabber_active"),
+    ("hyperhdr", "led_output_active"),
+    ("capture", "device_node_present"),
+)
 
 
 def _plain(value: object) -> str:
@@ -293,6 +308,132 @@ def _component_state(
     return component.status, component.message
 
 
+def _strict_boolean_detail(
+    report: HealthReport,
+    component_name: str,
+    detail_name: str,
+) -> bool | None:
+    component = _component(report, component_name)
+    if component is None or component.status is HealthStatus.UNAVAILABLE:
+        return None
+    value = component.details.get(detail_name)
+    return value if type(value) is bool else None
+
+
+def _reported_ambient_path(report: HealthReport) -> _ReportedAmbientPath:
+    values = tuple(
+        _strict_boolean_detail(report, component_name, detail_name)
+        for component_name, detail_name in _AMBIENT_ACTIVITY_FIELDS
+    )
+    if any(value is None for value in values):
+        return _ReportedAmbientPath.UNAVAILABLE
+    return _ReportedAmbientPath.ACTIVE if all(values) else _ReportedAmbientPath.INACTIVE
+
+
+def _lighting_boolean(value: bool | None, true_label: str, false_label: str) -> str:
+    if value is None:
+        return "Unavailable"
+    return true_label if value else false_label
+
+
+def _lighting_brightness(report: HealthReport) -> str:
+    component = _component(report, "wled")
+    if component is None or component.status is HealthStatus.UNAVAILABLE:
+        return "Unavailable"
+    value = component.details.get("brightness")
+    if type(value) is not int or not 0 <= value <= 255:
+        return "Unavailable"
+    return f"{value} / 255"
+
+
+def _configuration_profile_label(configuration_profile: object) -> str:
+    if not is_profile_id(configuration_profile):
+        return "Custom configuration"
+    assert isinstance(configuration_profile, str)
+    return configuration_profile
+
+
+def _lighting_control_link(control_link: ControlNavigationLink | None) -> str:
+    if control_link is ControlNavigationLink.LOGIN:
+        return '<a class="lighting-action" href="/login">Login</a>'
+    if control_link is ControlNavigationLink.CONTROLS:
+        return '<a class="lighting-action" href="/controls">Controls</a>'
+    return ""
+
+
+def _current_lighting(
+    report: HealthReport,
+    configuration_profile: object,
+    control_link: ControlNavigationLink | None,
+) -> str:
+    ambient_path = _reported_ambient_path(report)
+    badge_status = {
+        _ReportedAmbientPath.ACTIVE: HealthStatus.HEALTHY,
+        _ReportedAmbientPath.INACTIVE: HealthStatus.DEGRADED,
+        _ReportedAmbientPath.UNAVAILABLE: HealthStatus.UNAVAILABLE,
+    }[ambient_path]
+    wled_output = _strict_boolean_detail(report, "wled", "output_on")
+    hyperhdr_instance = _strict_boolean_detail(report, "hyperhdr", "instance_running")
+    hyperhdr_grabber = _strict_boolean_detail(report, "hyperhdr", "grabber_active")
+    hyperhdr_led_output = _strict_boolean_detail(
+        report, "hyperhdr", "led_output_active"
+    )
+    capture_available = _strict_boolean_detail(report, "capture", "device_node_present")
+    metrics = (
+        (
+            "WLED output state",
+            _lighting_boolean(wled_output, "On", "Off"),
+        ),
+        ("WLED brightness", _lighting_brightness(report)),
+        (
+            "HyperHDR instance state",
+            _lighting_boolean(hyperhdr_instance, "Running", "Not running"),
+        ),
+        (
+            "HyperHDR video-grabber state",
+            _lighting_boolean(hyperhdr_grabber, "Active", "Inactive"),
+        ),
+        (
+            "HyperHDR LED-output state",
+            _lighting_boolean(hyperhdr_led_output, "Active", "Inactive"),
+        ),
+        (
+            "Capture-device availability",
+            _lighting_boolean(capture_available, "Available", "Unavailable"),
+        ),
+        (
+            "Aurora configuration profile",
+            _configuration_profile_label(configuration_profile),
+        ),
+    )
+    metric_items = "".join(
+        f"<div><dt>{_escape(label)}</dt><dd>{_escape(value)}</dd></div>"
+        for label, value in metrics
+    )
+    return f"""
+<section class="current-lighting" aria-labelledby="current-lighting-heading">
+  <div class="current-lighting-heading">
+    <div>
+      <p class="eyebrow">Lighting at a glance</p>
+      <h2 id="current-lighting-heading">Current Lighting</h2>
+    </div>
+    <div class="ambient-path">
+      <span>Reported Ambient Path</span>
+      <span class="status-badge {badge_status.value}"
+        aria-label="Reported Ambient Path: {_escape(ambient_path.value)}">
+        {_escape(ambient_path.value)}
+      </span>
+    </div>
+  </div>
+  <dl class="metrics lighting-metrics">{metric_items}</dl>
+  <div class="lighting-footer">
+    <p>Reported state does not verify physical LED illumination, live HDMI signal
+    freshness, visual correctness, or screen-content matching.</p>
+    {_lighting_control_link(control_link)}
+  </div>
+</section>"""
+
+
 def _navigation(
     active_path: str,
     control_link: ControlNavigationLink | None,
@@ -332,7 +473,11 @@ def _component_card(
 </article>"""
 
 
-def _overview(report: HealthReport) -> str:
+def _overview(
+    report: HealthReport,
+    configuration_profile: object,
+    control_link: ControlNavigationLink | None,
+) -> str:
     cards = "".join(
         _component_card(report, presentation) for presentation in COMPONENTS
     )
@@ -344,6 +489,7 @@ def _overview(report: HealthReport) -> str:
   </div>
   {_badge(report.status)}
 </section>
+{_current_lighting(report, configuration_profile, control_link)}
 <section class="component-grid" aria-label="Component health">
   {cards}
 </section>"""
@@ -418,9 +564,14 @@ def _preview(path: str) -> str:
 </section>"""
 
 
-def _page_content(report: HealthReport, path: str) -> str:
+def _page_content(
+    report: HealthReport,
+    path: str,
+    configuration_profile: object,
+    control_link: ControlNavigationLink | None,
+) -> str:
     if path == "/":
-        return _overview(report)
+        return _overview(report, configuration_profile, control_link)
     if path == "/wled":
         return _detail_panel(
             report,
@@ -470,10 +621,11 @@ def render_portal(
     refresh_seconds: int,
     *,
     control_link: ControlNavigationLink | None = None,
+    configuration_profile: object = None,
 ) -> str:
     """Render one allowlisted portal route from a shared sanitized snapshot."""
     page = PORTAL_PAGE_BY_PATH[path]
-    content = _page_content(report, path)
+    content = _page_content(report, path, configuration_profile, control_link)
     return f"""<!doctype html>
 <html lang="en">
 <head>

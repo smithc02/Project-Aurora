@@ -701,3 +701,32 @@ bounded scheduler stop/join and shutdown/TRUNCATE behavior, separately
 authenticated acknowledgment, presentation integration, backup/restore,
 migrations, notifications, and production enablement remain deferred. See the detailed
 [health-history and alerting design](health-history-alerting.md).
+
+## Integrated lighting summary boundary (Milestone 19 Slice One)
+
+The Overview page adds one prominent Current Lighting presentation over the
+same immutable `HealthReport` already obtained for that request and the loaded
+`AuroraSettings` snapshot. Rendering does not call `HealthService` again,
+invoke a collector, or construct a WLED, HyperHDR, or capture transport.
+`GET /api/health` remains schema version 1 with unchanged fields and meanings.
+
+Reported Ambient Path is active only when cached WLED output, HyperHDR instance,
+HyperHDR video-grabber, HyperHDR LED-output, and capture-device-presence fields
+are all present, exact booleans, and true. It is inactive when all five fields
+are exact booleans and at least one is false. A missing component, unavailable
+component, missing field, or non-Boolean value makes the aggregate unavailable;
+missing evidence is never inferred as false. Component health remains an
+independent diagnostic signal, so an active aggregate can coexist with a
+degraded warning such as LED-count mismatch.
+
+The summary renders only its fixed allowlist of cached fields. The loaded Aurora
+configuration profile appears only when it passes the existing bounded logical
+profile-ID grammar; every other value becomes `Custom configuration`. Existing
+server-side session resolution selects the same Login or Controls destination,
+and the public Overview adds no form or mutation. The summary does not verify
+physical LED illumination, HDMI-frame freshness, visual correctness, or actual
+screen-content matching.
+
+This slice adds no device operation, poll, retry, persistence, background work,
+runtime controller, configuration activation, or health-history dependency.
+Milestone 18 remains paused and production history remains disabled.
