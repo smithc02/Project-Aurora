@@ -816,38 +816,40 @@ def test_store_close_failure_poisoning_retains_leadership_until_retry() -> None:
     assert events == ["store_close", "store_close", "leadership_close"]
 
 
-def test_definitive_leadership_close_failure_closes_public_lifecycle() -> None:
+@pytest.mark.parametrize("reports_closed", [True, False])
+def test_leadership_close_failure_is_terminal_and_never_retried(
+    reports_closed: bool,
+) -> None:
     events: list[str] = []
     store = _FakeStore(events)
-    leadership = _FakeLeadership(events, close_failures=1, closes_on_failure=True)
-    lifecycle = _lifecycle(store, leadership)
-    with pytest.raises(DatabaseLifecycleError) as captured:
-        lifecycle.close()
-    assert captured.value.reason is DatabaseLifecycleRejection.CLEANUP_FAILED
-    assert lifecycle.closed
-    assert events == ["store_close", "leadership_close"]
-    with pytest.raises(DatabaseLifecycleError) as captured:
-        _ = lifecycle.store
-    assert captured.value.reason is DatabaseLifecycleRejection.CLOSED
-    lifecycle.close()
-    assert leadership.close_calls == 1
-
-
-def test_nondefinitive_leadership_close_failure_can_be_explicitly_retried() -> None:
-    events: list[str] = []
-    store = _FakeStore(events)
-    leadership = _FakeLeadership(events, close_failures=1, closes_on_failure=False)
+    leadership = _FakeLeadership(
+        events,
+        close_failures=1,
+        closes_on_failure=reports_closed,
+    )
     lifecycle = _lifecycle(store, leadership)
     with pytest.raises(DatabaseLifecycleError) as captured:
         lifecycle.close()
     assert captured.value.reason is DatabaseLifecycleRejection.CLEANUP_FAILED
     assert not lifecycle.closed
+    assert store.closed
+    assert store.close_calls == 1
+    assert leadership.closed is reports_closed
+    assert leadership.close_calls == 1
+    assert events == ["store_close", "leadership_close"]
     with pytest.raises(DatabaseLifecycleError) as captured:
         _ = lifecycle.store
     assert captured.value.reason is DatabaseLifecycleRejection.CLEANUP_FAILED
-    lifecycle.close()
-    assert lifecycle.closed
-    assert events == ["store_close", "leadership_close", "leadership_close"]
+    with pytest.raises(DatabaseLifecycleError) as captured:
+        lifecycle.__enter__()
+    assert captured.value.reason is DatabaseLifecycleRejection.CLEANUP_FAILED
+    with pytest.raises(DatabaseLifecycleError) as captured:
+        lifecycle.close()
+    assert captured.value.reason is DatabaseLifecycleRejection.CLEANUP_FAILED
+    assert not lifecycle.closed
+    assert store.close_calls == 1
+    assert leadership.close_calls == 1
+    assert events == ["store_close", "leadership_close"]
 
 
 def test_context_manager_returns_self_releases_and_does_not_suppress() -> None:

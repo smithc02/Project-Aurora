@@ -151,8 +151,10 @@
     basename is rejected as a database target; leadership precedes every Store
     operation; and `create_if_missing` falls back to one existing open only for
     exact `already_exists`. Store closes before leadership, cleanup uncertainty
-    fails closed, and no storage preflight, scheduler, runtime, deployment path,
-    or production database is enabled. Direct-only startup storage-envelope
+    fails closed, and a leadership release failure remains terminal without
+    treating its `closed` property as proof of kernel release or retrying writer
+    handoff. No storage preflight, scheduler, runtime, deployment path, or
+    production database is enabled. Direct-only startup storage-envelope
     readiness composition is the next isolated prerequisite.
     Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
     startup storage-envelope readiness, notifications, and automation remain

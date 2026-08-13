@@ -50,6 +50,7 @@ class HealthHistoryDatabaseLifecycle:
         "_cleanup_failed",
         "_closed",
         "_leadership",
+        "_leadership_release_uncertain",
         "_store",
     )
 
@@ -63,6 +64,7 @@ class HealthHistoryDatabaseLifecycle:
         self._leadership: HealthHistoryLeadership | None = leadership
         self._cleanup_failed = False
         self._closed = False
+        self._leadership_release_uncertain = False
 
     @property
     def store(self) -> HealthHistoryStore:
@@ -82,6 +84,10 @@ class HealthHistoryDatabaseLifecycle:
         """Close Store before leadership, without an internal retry loop."""
         if self._closed:
             return
+        if self._leadership_release_uncertain:
+            raise DatabaseLifecycleError(
+                DatabaseLifecycleRejection.CLEANUP_FAILED
+            ) from None
 
         store = self._store
         if store is not None:
@@ -102,12 +108,8 @@ class HealthHistoryDatabaseLifecycle:
         try:
             leadership.close()
         except Exception:
-            if leadership.closed:
-                self._leadership = None
-                self._closed = True
-                self._cleanup_failed = False
-            else:
-                self._cleanup_failed = True
+            self._cleanup_failed = True
+            self._leadership_release_uncertain = True
             raise DatabaseLifecycleError(
                 DatabaseLifecycleRejection.CLEANUP_FAILED
             ) from None
@@ -115,6 +117,7 @@ class HealthHistoryDatabaseLifecycle:
         self._leadership = None
         self._closed = True
         self._cleanup_failed = False
+        self._leadership_release_uncertain = False
 
     def __enter__(self) -> HealthHistoryDatabaseLifecycle:
         if self._closed:

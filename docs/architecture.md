@@ -612,6 +612,13 @@ reach no Store operation. The composition reads no YAML, environment, CLI, or
 wall clock, creates no directory, and consumes neither sampling nor retention
 settings.
 
+A leadership release failure is terminal for the lifecycle because the
+primitive clears its descriptor ownership before attempting the kernel unlock
+and descriptor close. Its `closed` property therefore cannot prove OS release
+after `RELEASE_FAILED`. The lifecycle remains `CLEANUP_FAILED`, exposes no
+Store, performs no second release attempt, and infers no writer handoff. Normal
+successful closure remains Store first and leadership second.
+
 No startup storage-envelope readiness check, scheduler, runtime integration,
 deployment path, or production database is enabled. Direct-only startup
 storage-envelope readiness composition remains the next isolated prerequisite.

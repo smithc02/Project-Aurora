@@ -133,6 +133,13 @@ or scheduling, create a directory, or read configuration sources. Production
 history remains disabled, and direct-only startup storage-envelope readiness
 composition is the expected next isolated prerequisite.
 
+If leadership release reports `RELEASE_FAILED`, its `closed` property is not
+proof that the kernel unlock and descriptor close succeeded because descriptor
+ownership is cleared before those operations are attempted. The database
+lifecycle therefore remains terminal `CLEANUP_FAILED`, exposes no Store, does
+not retry the ambiguous release, and does not infer readiness for another
+writer. Normal successful close remains Store first and leadership second.
+
 The second slice remains inside that isolated package and adds:
 
 - one singleton accepted-observation checkpoint plus a fixed 64-entry replay
