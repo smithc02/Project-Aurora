@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; fifteen isolated foundation
-    slices through direct-only retention-policy injection):
+18. **Milestone 18 (implementation in progress; sixteen isolated foundation
+    slices through direct-only startup WAL-checkpoint remediation):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -162,12 +162,16 @@
     `HealthHistoryOrchestrator` construction to inject a strict 1–365-day
     retention policy. Both existing cleanup paths receive that exact policy;
     construction remains I/O-free and no default fallback, runtime caller, or
-    scheduler change is added. No scheduler, runtime, deployment path, or
-    production database is enabled.
-    Startup remediation, the production scheduler driver, forward wall-clock
-    archival suspension, bounded shutdown/TRUNCATE handling, deployment,
-    presentation routes, acknowledgment, notifications, and production
-    enablement remain unimplemented. It
+    scheduler change is added. The sixteenth slice composes the existing
+    startup preflight with at most one existing PASSIVE checkpoint only for
+    `WAL_CHECKPOINT_DUE`. BUSY returns the original non-ready result without
+    retry; a non-BUSY checkpoint outcome receives exactly one final preflight.
+    It performs no capacity cleanup and retains caller ownership of the
+    lifecycle. No scheduler, runtime, deployment path, or production database
+    is enabled. Startup capacity remediation, the production scheduler driver,
+    forward wall-clock archival suspension, bounded shutdown/TRUNCATE handling,
+    deployment, presentation routes, acknowledgment, notifications, and
+    production enablement remain unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).

@@ -27,7 +27,9 @@ one verified Store under one protected-directory leadership handle. The
 fourteenth adds one direct-only storage readiness preflight over that
 already-open lifecycle. The fifteenth makes the configured retention policy a
 required direct `HealthHistoryOrchestrator` constructor input and forwards it
-unchanged to both existing cleanup paths.
+unchanged to both existing cleanup paths. The sixteenth adds one direct-only
+startup WAL-checkpoint remediation composition over the lifecycle and existing
+preflight.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
@@ -36,7 +38,8 @@ it opens or creates no database and adds no scheduler, worker, route, runtime
 invocation, acknowledgment action, migration, backup, restore, scheduled
 checkpoint, notification, or automation action. The query, maintenance,
 leadership, database-lifecycle, and startup-preflight APIs remain reachable
-only through direct use of the isolated package. Milestones 12 through 17
+only through direct use of the isolated package, as does the startup checkpoint
+composition. Milestones 12 through 17
 remain the current behavior, including public `GET /api/health` schema version
 1.
 
@@ -171,6 +174,25 @@ and the existing direct maintenance-opportunity retention cleanup. Each path
 keeps its existing single-call bound, ordering, failure translation, and
 caller-owned Store contract. Construction performs no I/O, and no production
 runtime constructs the orchestrator.
+
+The sixteenth slice adds
+`checkpoint_health_history_startup_wal(lifecycle)` as a direct-only composition
+over that same caller-owned lifecycle. It calls the inspection-only startup
+preflight once and returns the exact existing decision without mutation unless
+the result is `WAL_CHECKPOINT_DUE`. Only that result permits one call to the
+existing one-second-bounded `passive_wal_checkpoint()`. BUSY returns the
+original non-ready decision with no retry or second preflight. COMPLETED,
+NO_WORK, and OVERSIZE_BLOCKED each receive exactly one final startup preflight,
+whose current decision is returned without another checkpoint.
+
+This composition performs no capacity remediation, retention cleanup,
+incremental vacuum, verification, ingestion, shutdown checkpoint, retry, or
+automatic close. It preserves the lifecycle's fixed closed, cleanup-failed,
+Store-close retry, and terminal ambiguous leadership-release semantics. An
+internally closed owned Store fails through the fixed lifecycle `trust_failed`
+contract without exposing Store detail. No runtime, scheduler, dashboard,
+configuration loader, service, deployment, or production invocation imports
+this API.
 
 The second slice remains inside that isolated package and adds:
 
@@ -1629,8 +1651,8 @@ Production enablement remains blocked on separately reviewed lifecycle work:
 - a shared writer gate for any future acknowledgment path.
 
 None of the remaining runtime lifecycle items is implemented or authorized by
-the direct-only startup preflight or retention-policy injection, and production
-history remains disabled.
+the direct-only startup preflight, startup WAL-checkpoint composition, or
+retention-policy injection, and production history remains disabled.
 
 ## Future dashboard and API boundaries
 
@@ -1940,7 +1962,7 @@ direct-only foundation slices:
 - authenticated history/alert presentation routes;
 - operator acknowledgment and its authentication/CSRF route;
 - startup/hourly/120-row maintenance cadence and runtime invocation;
-- startup storage remediation and production capacity/checkpoint invocation;
+- startup capacity remediation and production startup/checkpoint invocation;
 - database migrations;
 - production database backup and restore commands;
 - portal grouping of overall and component alerts;

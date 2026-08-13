@@ -104,6 +104,9 @@ from aurora_core.health_history.sqlite_runtime import (
     SQLiteRuntimeRejection,
     require_safe_sqlite_runtime,
 )
+from aurora_core.health_history.startup_checkpoint import (
+    checkpoint_health_history_startup_wal,
+)
 from aurora_core.health_history.startup_preflight import (
     preflight_health_history_storage,
 )
@@ -217,8 +220,9 @@ __all__ = [
     "WAL_HARD_LIMIT_BYTES",
     "WAL_HARD_LIMIT_FRAMES",
     "WalInspectionResult",
-    "decide_storage_action",
     "bootstrap_health_history_database",
+    "checkpoint_health_history_startup_wal",
+    "decide_storage_action",
     "preflight_health_history_storage",
     "project_health_report",
     "require_safe_sqlite_runtime",

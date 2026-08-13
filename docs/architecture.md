@@ -641,10 +641,20 @@ exact injected value to `cleanup_retention`; neither falls back to the Store's
 default policy. Construction still performs no I/O, the orchestrator continues
 to borrow its Store, and no production runtime constructs it.
 
+The sixteenth isolated slice adds one direct-only startup WAL-remediation
+composition over an already-open lifecycle. It runs the existing startup
+preflight once and returns every result other than `WAL_CHECKPOINT_DUE`
+unchanged without borrowing the Store again. Only checkpoint-due may invoke
+exactly one existing bounded PASSIVE checkpoint. BUSY returns the original
+non-ready result without retry; every non-BUSY outcome receives exactly one
+final readiness preflight. The caller retains lifecycle ownership throughout,
+and capacity cleanup, retention, vacuum, verification, ingestion, and automatic
+close remain outside this boundary.
+
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production
-deployment enablement, startup remediation, scheduler runtime driving, bounded
-shutdown/TRUNCATE handling, forward wall-clock archival suspension, separately
-authenticated acknowledgment, presentation integration, and notifications
-remain deferred. See the detailed [health-history and alerting
-design](health-history-alerting.md).
+deployment enablement, startup capacity remediation, scheduler runtime driving,
+bounded shutdown/TRUNCATE handling, forward wall-clock archival suspension,
+separately authenticated acknowledgment, presentation integration, and
+notifications remain deferred. See the detailed
+[health-history and alerting design](health-history-alerting.md).

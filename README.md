@@ -21,7 +21,10 @@
 > ingestion, compacted history state, monotonic sequence and bounded replay
 > protection, deterministic automatic alert translation, bounded read-only
 > queries, direct-only retention cleanup and incremental-vacuum primitives, and
-> direct-only storage-envelope inspection plus one bounded PASSIVE checkpoint.
+> direct-only storage-envelope inspection and lifecycle/startup composition. A
+> checkpoint-due startup preflight may now invoke exactly one existing bounded
+> PASSIVE checkpoint before one final readiness preflight; capacity remediation
+> remains deferred.
 > No runtime entry point imports it, no deployment database is created, and no
 > scheduled history or maintenance cadence, route, acknowledgment, worker,
 > notification, or automation behavior is enabled. Broader device control,
@@ -210,11 +213,14 @@ the CLI, filesystem, backup, activation, and recovery boundaries. The in-progres
 [Milestone 18 health-history and alerting design](docs/health-history-alerting.md)
 documents the persistence, privacy, lifecycle, and bounded-automation decisions
 plus the isolated storage, ingestion, read-query, bounded-retention maintenance,
-and storage-envelope slices. The direct-only boundaries use one total
+storage-envelope, lifecycle, startup-preflight, configured-retention, and
+startup-WAL-checkpoint slices. The direct-only boundaries use one total
 500-logical-row cleanup budget, one fixed 128-page incremental-vacuum call, and
 at most one bounded PASSIVE checkpoint after fixed capacity, reserve, and WAL
-inspection. They do not enable a scheduler, cadence, automatic cleanup,
-production database, route, or other runtime behavior.
+inspection. Startup checkpoint BUSY remains non-ready without retry; a
+non-BUSY outcome receives one final readiness preflight. These boundaries do
+not enable a scheduler, cadence, startup capacity cleanup, production database,
+route, or other runtime behavior.
 
 ## Contributing
 
