@@ -359,8 +359,10 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first fifteen Milestone 18 production slices establish an isolated
+The first sixteen Milestone 18 production slices establish an isolated
 `aurora_core.health_history` package plus disabled production configuration.
+Slice Seventeen is a documentation-only clock-safety architecture gate and
+adds no executable behavior.
 Its stricter code-owned projection accepts only complete `HealthReport` schema
 version 1 snapshots and retains status,
 timestamps, bounded latency, and fixed reasons. It cannot copy arbitrary detail
@@ -651,10 +653,51 @@ final readiness preflight. The caller retains lifecycle ownership throughout,
 and capacity cleanup, retention, vacuum, verification, ingestion, and automatic
 close remain outside this boundary.
 
+The seventeenth slice defines clock-trust policy without implementing it. A
+trusted in-process UTC/monotonic anchor may compare only observations from that
+same process lifetime. Signed divergence is wall-clock advancement minus
+monotonic advancement; both positive and negative divergence outside a closed
+tolerance interval lose trust before mutation. Invalid or non-finite clock
+input fails closed. The repository has no deployment evidence from which to
+select the numeric tolerance, so that threshold remains an explicit blocker
+and the behavior slice is not authorized.
+
+Suspension must precede ingestion-time archival and all other UTC-dependent
+mutation. It blocks retention cleanup, capacity remediation, incremental
+vacuum, automatic alert opening/recovery/recurrence/occurrence/cooldown
+changes, and acknowledgment. Exactly one discontinuity marker per measured
+episode may be recorded without advancing ordinary alert or sampling-gap
+state. PASSIVE checkpointing remains permitted. Ordinary/replay ingestion may
+continue only after a future atomic gate can freeze alert state and preserve a
+separate durable trusted UTC high-water and suspension episode; until then it
+fails closed while suspended.
+
+Monotonic time resets at restart, legitimate downtime cannot be distinguished
+from a forward jump using wall-clock observations alone, and every new process
+therefore begins clock-non-ready. Only an authenticated local operator who has
+independently verified UTC may establish a new trusted high-water and
+in-process anchor through a future atomic, audited recovery operation. Stable
+time alone is not recovery proof. Schema version 1 cannot preserve the required
+trusted high-water, suspension episode and marker identity, recovery authority,
+and continued-ingestion distinction. A separately reviewed persistent-state
+design is required; no schema change is authorized here. Future clock readiness
+uses its own fixed sanitized model rather than `StorageDecisionResult`.
+
+SQLite thread ownership remains independent. The current Store uses default
+`sqlite3` thread affinity, and a `Lock` cannot make its connection safe on
+another thread. Neither `check_same_thread=False` nor a writer thread/queue is
+authorized. The scheduler driver, request-thread acknowledgment, and shared
+writer gate remain blocked until an ownership model is reviewed. The
+authoritative shutdown budget is five seconds total: at most three seconds for
+scheduler join and only the remainder, never more than two seconds, for one
+bounded shutdown checkpoint.
+
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production
-deployment enablement, startup capacity remediation, scheduler runtime driving,
-bounded shutdown/TRUNCATE handling, forward wall-clock archival suspension,
-separately authenticated acknowledgment, presentation integration, and
-notifications remain deferred. See the detailed
+deployment enablement, the clock tolerance and persistent-state design,
+clock-suspension behavior, startup capacity remediation, Store/thread ownership,
+writer serialization, scheduler runtime driving, history failure isolation,
+bounded scheduler stop/join and shutdown/TRUNCATE behavior, separately
+authenticated acknowledgment, presentation integration, backup/restore,
+migrations, notifications, and production enablement remain deferred. See the detailed
 [health-history and alerting design](health-history-alerting.md).

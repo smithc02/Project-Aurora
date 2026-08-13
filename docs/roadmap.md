@@ -75,8 +75,9 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; sixteen isolated foundation
-    slices through direct-only startup WAL-checkpoint remediation):
+18. **Milestone 18 (implementation in progress; sixteen executable foundation
+    slices plus the documentation-only Slice Seventeen clock-safety decision
+    gate):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -167,11 +168,25 @@
     `WAL_CHECKPOINT_DUE`. BUSY returns the original non-ready result without
     retry; a non-BUSY checkpoint outcome receives exactly one final preflight.
     It performs no capacity cleanup and retains caller ownership of the
-    lifecycle. No scheduler, runtime, deployment path, or production database
-    is enabled. Startup capacity remediation, the production scheduler driver,
-    forward wall-clock archival suspension, bounded shutdown/TRUNCATE handling,
-    deployment, presentation routes, acknowledgment, notifications, and
-    production enablement remain unimplemented. It
+    lifecycle. Slice Seventeen documents the required fail-closed wall-clock
+    trust, suspension, restart, operator-recovery, and sanitized-readiness
+    policy without implementing it. The divergence formula and inclusive
+    boundary behavior are fixed, but repository evidence is insufficient to
+    select the numeric tolerance. Schema version 1 also cannot represent the
+    selected durable suspension, trusted UTC high-water, episode identity, and
+    recovery state while ingestion continues. A separate persisted-state
+    decision is required, and no schema change is authorized by this gate.
+    Store thread affinity and writer serialization remain a separate decision:
+    a `Lock` does not override default `sqlite3` thread ownership, and neither
+    `check_same_thread=False` nor a writer thread/queue is authorized. No
+    scheduler, runtime, deployment path, or production database is enabled.
+    Clock behavior and mutation gating, startup capacity remediation, history
+    failure isolation, Store/thread ownership, the production scheduler driver,
+    writer serialization, bounded scheduler stop/join, bounded shutdown
+    `TRUNCATE`, protected deployment directory and service-account validation,
+    production startup/lifecycle composition, presentation routes,
+    acknowledgment, backup/restore, migrations, notifications, and production
+    enablement remain unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).
