@@ -437,6 +437,71 @@ def test_closed_and_cleanup_failed_lifecycles_reject_before_inspection() -> None
     failed_lifecycle.close()
 
 
+def test_closed_owned_store_fails_closed_without_releasing_ownership() -> None:
+    store = _FakeStore()
+    leadership = _FakeLeadership()
+    lifecycle = _lifecycle(store, leadership)
+    store.close()
+
+    with pytest.raises(DatabaseLifecycleError) as captured:
+        preflight_health_history_storage(lifecycle)
+
+    assert captured.value.reason is DatabaseLifecycleRejection.TRUST_FAILED
+    assert str(captured.value) == "trust_failed"
+    assert store.events == ["store_close"]
+    assert store.close_calls == 1
+    assert not lifecycle.closed
+    assert leadership.held
+    assert leadership.close_calls == 0
+
+    lifecycle.close()
+    assert lifecycle.closed
+    assert store.close_calls == 2
+    assert leadership.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected_events"),
+    [
+        ("inspect_storage_capacity", ["capacity"]),
+        ("inspect_free_space", ["capacity", "free_space"]),
+        ("inspect_wal", ["capacity", "free_space", "wal"]),
+    ],
+)
+def test_unrelated_inspection_exceptions_are_not_broadly_translated(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    expected_events: list[str],
+) -> None:
+    store = _FakeStore()
+    leadership = _FakeLeadership()
+    lifecycle = _lifecycle(store, leadership)
+    stage = expected_events[-1]
+    failure = RuntimeError("unrelated-inspection-failure")
+
+    def fail() -> None:
+        store.events.append(stage)
+        raise failure
+
+    def unexpected_decision(*args: object, **kwargs: object) -> StorageDecisionResult:
+        del args, kwargs
+        raise AssertionError("decision must not follow failed inspection")
+
+    monkeypatch.setattr(store, method_name, fail)
+    monkeypatch.setattr(preflight_module, "decide_storage_action", unexpected_decision)
+
+    with pytest.raises(RuntimeError) as captured:
+        preflight_health_history_storage(lifecycle)
+
+    assert captured.value is failure
+    assert store.events == expected_events
+    assert not lifecycle.closed
+    assert leadership.held
+    assert store.close_calls == leadership.close_calls == 0
+
+    lifecycle.close()
+
+
 def test_store_close_failure_after_preflight_remains_retryable() -> None:
     store = _FakeStore(close_failures=1)
     leadership = _FakeLeadership()
