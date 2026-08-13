@@ -21,6 +21,7 @@ import aurora_core.health_history.storage_envelope as storage_envelope
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
 from aurora_core.health_history.ingestion import IngestionOutcome, IngestionResult
 from aurora_core.health_history.maintenance import (
+    DEFAULT_RETENTION_DAYS,
     IncrementalVacuumResult,
     MaintenanceOutcome,
     RetentionCleanupResult,
@@ -482,11 +483,14 @@ def _composed_store() -> Mock:
 
 def _composed_scheduler(
     store: Mock,
+    *,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
 ) -> tuple[HealthHistoryScheduler, HealthHistoryOrchestrator]:
     orchestrator = HealthHistoryOrchestrator(
         cast(HealthHistoryStore, store),
         monotonic=lambda: 0.0,
         utc_now_us=lambda: _NOW_US,
+        retention_days=retention_days,
     )
     scheduler = HealthHistoryScheduler(
         cast(HealthHistoryStore, store),
@@ -1345,6 +1349,20 @@ def test_real_direct_acceptance_remains_eligible_for_scheduled_maintenance() -> 
     assert orchestrator.trigger_state.stored_rows_since_maintenance == 0
 
 
+def test_scheduler_preserves_preconstructed_orchestrator_retention_policy() -> None:
+    store = _composed_store()
+    scheduler, _orchestrator = _composed_scheduler(store, retention_days=73)
+
+    result = scheduler.run_due_opportunity()
+
+    assert result.outcome is SchedulerOutcome.STORED
+    assert result.maintenance_outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
+    store.cleanup_retention.assert_called_once_with(
+        now_utc_us=_NOW_US,
+        retention_days=73,
+    )
+
+
 @pytest.mark.parametrize(
     "outcome",
     [
@@ -1631,6 +1649,7 @@ def test_real_store_restart_resumes_next_sequence(
         store,
         monotonic=lambda: 100.0,
         utc_now_us=lambda: _NOW_US + 1_000_000,
+        retention_days=DEFAULT_RETENTION_DAYS,
     )
     first = HealthHistoryScheduler(
         store,
@@ -1649,6 +1668,7 @@ def test_real_store_restart_resumes_next_sequence(
             reopened,
             monotonic=lambda: 200.0,
             utc_now_us=lambda: _NOW_US + 31_000_000,
+            retention_days=DEFAULT_RETENTION_DAYS,
         )
         resumed = HealthHistoryScheduler(
             reopened,
@@ -1675,6 +1695,7 @@ def test_real_clock_discontinuity_does_not_open_sampling_gap(
         store,
         monotonic=lambda: 100.0,
         utc_now_us=lambda: _NOW_US - 1,
+        retention_days=DEFAULT_RETENTION_DAYS,
     )
     instance = HealthHistoryScheduler(
         store,

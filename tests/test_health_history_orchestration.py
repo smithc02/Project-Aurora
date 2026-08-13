@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import math
 import sqlite3
 import threading
@@ -21,7 +22,11 @@ from aurora_core.health_history.ingestion import (
     IngestionResult,
 )
 from aurora_core.health_history.maintenance import (
+    DEFAULT_RETENTION_DAYS,
     INCREMENTAL_VACUUM_PAGES,
+    MAX_RETENTION_DAYS,
+    MICROSECONDS_PER_DAY,
+    MIN_RETENTION_DAYS,
     RETENTION_ROW_BUDGET,
     IncrementalVacuumResult,
     MaintenanceError,
@@ -30,11 +35,13 @@ from aurora_core.health_history.maintenance import (
     RetentionCleanupResult,
 )
 from aurora_core.health_history.models import (
+    APPLICATION_ID,
     COMPONENT_ORDER,
     MAX_BOUNDED_COUNTER,
     MAX_DATABASE_BYTES,
     MAX_DATABASE_PAGES,
     PAGE_SIZE_BYTES,
+    SCHEMA_VERSION,
     ComponentName,
     HealthHistoryStatus,
     SampleKind,
@@ -176,6 +183,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.cleanup_times: list[int] = []
+        self.cleanup_retention_days: list[int] = []
         self.responses: dict[str, list[object]] = {
             "capacity": [_capacity()],
             "free": [_free_space()],
@@ -208,8 +216,14 @@ class _FakeStore:
     def inspect_wal(self) -> WalInspectionResult:
         return cast(WalInspectionResult, self._take("wal"))
 
-    def cleanup_retention(self, *, now_utc_us: int) -> RetentionCleanupResult:
+    def cleanup_retention(
+        self,
+        *,
+        now_utc_us: int,
+        retention_days: int,
+    ) -> RetentionCleanupResult:
         self.cleanup_times.append(now_utc_us)
+        self.cleanup_retention_days.append(retention_days)
         if self.on_cleanup is not None:
             callback, self.on_cleanup = self.on_cleanup, None
             callback()
@@ -231,12 +245,14 @@ def _orchestrator(
     *,
     monotonic: Callable[[], float] = lambda: 10.0,
     utc_now_us: Callable[[], int] = lambda: _BASE_TIME,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
     trigger_state: MaintenanceTriggerState | None = None,
 ) -> HealthHistoryOrchestrator:
     return HealthHistoryOrchestrator(
         cast(HealthHistoryStore, fake),
         monotonic=monotonic,
         utc_now_us=utc_now_us,
+        retention_days=retention_days,
         trigger_state=trigger_state,
     )
 
@@ -298,6 +314,22 @@ def _snapshot(path: Path) -> dict[str, list[tuple[object, ...]]]:
         connection.close()
 
 
+def _database_contract(
+    path: Path,
+) -> tuple[tuple[int], tuple[int], list[tuple[object, ...]]]:
+    connection = sqlite3.connect(path)
+    try:
+        application_id = connection.execute("PRAGMA application_id").fetchone()
+        user_version = connection.execute("PRAGMA user_version").fetchone()
+        objects = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        return application_id, user_version, objects
+    finally:
+        connection.close()
+
+
 @pytest.fixture
 def store_path(history_test_directory: Path) -> tuple[Path, HealthHistoryStore]:
     path = history_test_directory / "history.db"
@@ -306,6 +338,58 @@ def store_path(history_test_directory: Path) -> tuple[Path, HealthHistoryStore]:
         yield path, store
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("retention_days", [MIN_RETENTION_DAYS, MAX_RETENTION_DAYS])
+def test_constructor_accepts_exact_retention_boundaries(
+    retention_days: int,
+) -> None:
+    fake = _FakeStore()
+
+    orchestrator = _orchestrator(fake, retention_days=retention_days)
+
+    assert orchestrator.trigger_state == MaintenanceTriggerState()
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "retention_days",
+    [True, False, 30.0, "30", 0, -1, MAX_RETENTION_DAYS + 1, 10_000],
+)
+def test_invalid_retention_is_sanitized_before_store_or_clock_use(
+    retention_days: object,
+) -> None:
+    fake = _FakeStore()
+    clock_calls: list[str] = []
+
+    def monotonic() -> float:
+        clock_calls.append("monotonic")
+        raise AssertionError("constructor must not read monotonic time")
+
+    def utc_now_us() -> int:
+        clock_calls.append("utc")
+        raise AssertionError("constructor must not read UTC time")
+
+    with pytest.raises(ValueError) as captured:
+        HealthHistoryOrchestrator(
+            cast(HealthHistoryStore, fake),
+            monotonic=monotonic,
+            utc_now_us=utc_now_us,
+            retention_days=cast(int, retention_days),
+        )
+
+    assert str(captured.value) == "invalid_retention_days"
+    assert captured.value.args == ("invalid_retention_days",)
+    assert fake.calls == []
+    assert clock_calls == []
+
+
+def test_retention_policy_is_required_keyword_only() -> None:
+    parameter = inspect.signature(HealthHistoryOrchestrator).parameters[
+        "retention_days"
+    ]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
 
 
 def test_normal_observation_proceeds_to_exactly_one_ingestion() -> None:
@@ -491,7 +575,7 @@ def test_capacity_maintenance_runs_cleanup_vacuum_and_one_reinspection() -> None
     fake.responses["capacity"] = [_capacity(full=True), _capacity()]
     fake.responses["free"] = [_free_space(), _free_space()]
     fake.responses["wal"] = [_wal(), _wal()]
-    result = _orchestrator(fake).process_observation(_projection())
+    result = _orchestrator(fake, retention_days=73).process_observation(_projection())
     assert result.outcome is OrchestrationOutcome.STORED
     assert result.storage_maintenance_attempted
     assert fake.calls == [
@@ -506,6 +590,7 @@ def test_capacity_maintenance_runs_cleanup_vacuum_and_one_reinspection() -> None
         "ingest",
     ]
     assert fake.cleanup_times == [_BASE_TIME]
+    assert fake.cleanup_retention_days == [73]
 
 
 @pytest.mark.parametrize("shortage", ["capacity", "free_space"])
@@ -733,10 +818,11 @@ def test_invalid_utc_clock_fails_before_capacity_maintenance_mutation() -> None:
 
 def test_maintenance_below_threshold_runs_each_fixed_primitive_once() -> None:
     fake = _FakeStore()
-    orchestrator = _orchestrator(fake)
+    orchestrator = _orchestrator(fake, retention_days=91)
     result = orchestrator.run_maintenance_opportunity()
     assert result.outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
     assert fake.calls == ["cleanup", "vacuum", "wal"]
+    assert fake.cleanup_retention_days == [91]
     assert orchestrator.trigger_state == MaintenanceTriggerState(True, 10.0, 0)
 
 
@@ -1297,6 +1383,7 @@ def test_real_store_observation_and_replay_use_existing_ingestion_once_each(
         store,
         monotonic=lambda: 10.0,
         utc_now_us=lambda: _BASE_TIME,
+        retention_days=DEFAULT_RETENTION_DAYS,
     )
     projection = _projection()
     assert orchestrator.process_observation(projection).outcome is (
@@ -1320,11 +1407,65 @@ def test_real_no_work_maintenance_preserves_all_logical_tables(
         store,
         monotonic=lambda: 10.0,
         utc_now_us=lambda: _BASE_TIME,
+        retention_days=DEFAULT_RETENTION_DAYS,
     )
     assert orchestrator.run_maintenance_opportunity().outcome is (
         OrchestrationOutcome.MAINTENANCE_COMPLETED
     )
     assert _snapshot(path) == before
+
+
+def test_real_nondefault_retention_removes_only_rows_before_exact_cutoff(
+    store_path: tuple[Path, HealthHistoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, store = store_path
+    retention_days = 7
+    old_projection = _projection(1)
+    new_projection = _projection(31)
+    assert store.ingest(old_projection).outcome is IngestionOutcome.TRANSITION_STORED
+    assert store.ingest(new_projection).outcome is IngestionOutcome.HEARTBEAT_STORED
+    cutoff = (
+        old_projection.observed_at_utc_us + new_projection.observed_at_utc_us
+    ) // 2
+    now_utc_us = cutoff + retention_days * MICROSECONDS_PER_DAY
+    before_contract = _database_contract(path)
+    before_identity = (path.stat().st_dev, path.stat().st_ino)
+    cleanup_calls: list[tuple[int, int]] = []
+    cleanup_retention = store.cleanup_retention
+
+    def tracked_cleanup(
+        *,
+        now_utc_us: int,
+        retention_days: int,
+    ) -> RetentionCleanupResult:
+        cleanup_calls.append((now_utc_us, retention_days))
+        return cleanup_retention(
+            now_utc_us=now_utc_us,
+            retention_days=retention_days,
+        )
+
+    monkeypatch.setattr(store, "cleanup_retention", tracked_cleanup)
+    orchestrator = HealthHistoryOrchestrator(
+        store,
+        monotonic=lambda: 10.0,
+        utc_now_us=lambda: now_utc_us,
+        retention_days=retention_days,
+    )
+
+    result = orchestrator.run_maintenance_opportunity()
+
+    assert result.outcome is OrchestrationOutcome.MAINTENANCE_COMPLETED
+    assert cleanup_calls == [(now_utc_us, retention_days)]
+    samples = store.list_health_samples().items
+    assert [sample.observed_at_utc_us for sample in samples] == [
+        new_projection.observed_at_utc_us
+    ]
+    assert _database_contract(path) == before_contract
+    assert before_contract[0] == (APPLICATION_ID,)
+    assert before_contract[1] == (SCHEMA_VERSION,)
+    assert (path.stat().st_dev, path.stat().st_ino) == before_identity
+    assert not store.closed
 
 
 def test_real_unsupported_wal_runtime_skips_write_and_keeps_store_open(
@@ -1341,6 +1482,7 @@ def test_real_unsupported_wal_runtime_skips_write_and_keeps_store_open(
             store,
             monotonic=lambda: 10.0,
             utc_now_us=lambda: _BASE_TIME,
+            retention_days=DEFAULT_RETENTION_DAYS,
         ).process_observation(_projection())
     finally:
         store._connection.set_trace_callback(None)  # noqa: SLF001
@@ -1387,14 +1529,25 @@ def test_orchestration_source_has_no_runtime_or_external_operations() -> None:
     )
     source = path.read_text().lower()
     prohibited = (
+        "aurora_core.config",
+        "aurora_core.dashboard",
+        "aurora_core.runtime",
+        "database_lifecycle",
+        "healthhistoryscheduler",
+        "startup_preflight",
         "subprocess",
         "socket",
         "requests",
         "urllib",
         "http.client",
         "threading.thread",
+        "thread(",
+        "timer(",
         "create_task",
         "sleep(",
+        "mkdir(",
+        "touch(",
+        "open(",
         "systemctl",
         "wal_checkpoint(full)",
         "wal_checkpoint(restart)",
@@ -1439,11 +1592,13 @@ def test_public_models_and_constructor_reject_impossible_combinations() -> None:
             cast(HealthHistoryStore, fake),
             monotonic=cast(Callable[[], float], None),
             utc_now_us=lambda: _BASE_TIME,
+            retention_days=DEFAULT_RETENTION_DAYS,
         )
     with pytest.raises(ValueError, match="invalid_maintenance_trigger_state"):
         HealthHistoryOrchestrator(
             cast(HealthHistoryStore, fake),
             monotonic=lambda: 1.0,
             utc_now_us=lambda: _BASE_TIME,
+            retention_days=DEFAULT_RETENTION_DAYS,
             trigger_state=cast(MaintenanceTriggerState, object()),
         )

@@ -75,8 +75,8 @@
 
 ## Planned progression
 
-18. **Milestone 18 (implementation in progress; fourteen isolated foundation
-    slices through direct-only startup storage readiness composition):
+18. **Milestone 18 (implementation in progress; fifteen isolated foundation
+    slices through direct-only retention-policy injection):
     Persistent health history, alerting, and bounded automation.** The proposed
     design records only a strict projection of existing sanitized health
     snapshots. Its first production slice adds the strict projection and reason
@@ -158,11 +158,16 @@
     inspected exactly once in order before the existing pure storage decision
     runs with capacity maintenance unattempted. It performs no remediation,
     retry, verification, or automatic close, and caller ownership remains
-    unchanged. No scheduler, runtime, deployment path, or production database
-    is enabled.
-    Presentation routes, acknowledgment, actual maintenance/sampling scheduling,
-    production startup composition, notifications, and automation remain
-    unimplemented. It
+    unchanged. The fifteenth slice requires every direct
+    `HealthHistoryOrchestrator` construction to inject a strict 1–365-day
+    retention policy. Both existing cleanup paths receive that exact policy;
+    construction remains I/O-free and no default fallback, runtime caller, or
+    scheduler change is added. No scheduler, runtime, deployment path, or
+    production database is enabled.
+    Startup remediation, the production scheduler driver, forward wall-clock
+    archival suspension, bounded shutdown/TRUNCATE handling, deployment,
+    presentation routes, acknowledgment, notifications, and production
+    enablement remain unimplemented. It
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).

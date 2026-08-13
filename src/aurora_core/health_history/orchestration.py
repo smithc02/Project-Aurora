@@ -15,6 +15,8 @@ from aurora_core.health_history.ingestion import (
     IngestionRejection,
 )
 from aurora_core.health_history.maintenance import (
+    MAX_RETENTION_DAYS,
+    MIN_RETENTION_DAYS,
     MaintenanceError,
     MaintenanceRejection,
 )
@@ -238,8 +240,14 @@ class HealthHistoryOrchestrator:
         *,
         monotonic: Callable[[], float],
         utc_now_us: Callable[[], int],
+        retention_days: int,
         trigger_state: MaintenanceTriggerState | None = None,
     ) -> None:
+        if (
+            type(retention_days) is not int
+            or not MIN_RETENTION_DAYS <= retention_days <= MAX_RETENTION_DAYS
+        ):
+            raise ValueError("invalid_retention_days")
         if not callable(monotonic) or not callable(utc_now_us):
             raise ValueError("invalid_orchestration_clock")
         if (
@@ -250,6 +258,7 @@ class HealthHistoryOrchestrator:
         self._store = store
         self._monotonic = monotonic
         self._utc_now_us = utc_now_us
+        self._retention_days = retention_days
         self._trigger_state = trigger_state or MaintenanceTriggerState()
         self._cycle_guard = Lock()
 
@@ -323,7 +332,10 @@ class HealthHistoryOrchestrator:
             except OrchestrationError:
                 return ObservationCycleResult(OrchestrationOutcome.INVALID_CLOCK)
             try:
-                self._store.cleanup_retention(now_utc_us=now_utc_us)
+                self._store.cleanup_retention(
+                    now_utc_us=now_utc_us,
+                    retention_days=self._retention_days,
+                )
                 self._store.incremental_vacuum()
             except MaintenanceError as error:
                 return ObservationCycleResult(
@@ -489,7 +501,10 @@ class HealthHistoryOrchestrator:
         except OrchestrationError:
             return MaintenanceOpportunityResult(OrchestrationOutcome.INVALID_CLOCK)
         try:
-            self._store.cleanup_retention(now_utc_us=now_utc_us)
+            self._store.cleanup_retention(
+                now_utc_us=now_utc_us,
+                retention_days=self._retention_days,
+            )
             self._store.incremental_vacuum()
         except MaintenanceError as error:
             return MaintenanceOpportunityResult(_maintenance_error_outcome(error))

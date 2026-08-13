@@ -25,7 +25,9 @@ adds complete bounded persisted foreign-key verification to every direct Store
 verification path. The thirteenth adds direct-only settings-driven ownership of
 one verified Store under one protected-directory leadership handle. The
 fourteenth adds one direct-only storage readiness preflight over that
-already-open lifecycle.
+already-open lifecycle. The fifteenth makes the configured retention policy a
+required direct `HealthHistoryOrchestrator` constructor input and forwards it
+unchanged to both existing cleanup paths.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
@@ -160,6 +162,15 @@ runtime metadata. Existing fixed lifecycle and storage-envelope errors pass
 through without added private context. No scheduler, orchestrator, runtime,
 dashboard, configuration-source, environment, CLI, task, timer, or wall-clock
 integration is added.
+
+The fifteenth slice requires direct `HealthHistoryOrchestrator` construction to
+receive a strict integer `retention_days` from 1 through 365. Validation occurs
+before any Store or clock interaction and has no default fallback. The exact
+injected value is passed to the existing capacity-pressure retention cleanup
+and the existing direct maintenance-opportunity retention cleanup. Each path
+keeps its existing single-call bound, ordering, failure translation, and
+caller-owned Store contract. Construction performs no I/O, and no production
+runtime constructs the orchestrator.
 
 The second slice remains inside that isolated package and adds:
 
@@ -1093,10 +1104,11 @@ repair it. One separate direct `incremental_vacuum` call reads the freelist and,
 when nonzero, requests exactly 128 pages once. It does not run full `VACUUM`,
 loop, retry, or checkpoint the WAL.
 
-Startup, hourly, and 120-stored-row cleanup cadence remains deferred. The
-future scheduler/storage-envelope slice will also decide cleanup-before-capacity
-integration, WAL checkpoint thresholds, main-database page limits, and
-free-space policy. None of those paths invokes these primitives yet.
+The direct orchestrator already composes cleanup-before-capacity behavior and
+the direct scheduler models startup, hourly, and 120-stored-row opportunities.
+Production runtime invocation of that cadence remains deferred. Both existing
+orchestrator cleanup paths now receive the exact retention policy required at
+direct construction; neither adds a retry or an additional cleanup call.
 
 Ingestion classifies SQLite failures by fixed error code without returning SQL,
 the database path, SQLite text, or submitted values. `SQLITE_BUSY` and
@@ -1500,6 +1512,13 @@ due for a future caller but causes no internal retry. A nonblocking guard permit
 one observation or maintenance cycle at a time and restores after every result
 or exception.
 
+Direct `HealthHistoryOrchestrator` construction requires a strict integer
+`retention_days` from 1 through 365. It validates that policy before Store or
+clock interaction and passes the exact value unchanged to both the
+capacity-pressure cleanup and direct maintenance cleanup. This changes only the
+retention cutoff; existing operation ordering, bounds, outcomes, ownership, and
+failure translation remain unchanged.
+
 This core resolves no path, opens or creates no database, schedules nothing,
 and remains unimported by every current runtime entry point. Actual
 startup/hourly/120-row invocation, the 30-second sampling cadence, shutdown
@@ -1607,11 +1626,11 @@ Production enablement remains blocked on separately reviewed lifecycle work:
 - a protected writable deployment state directory and explicit service-account
   ownership assumptions;
 - resolution of forward wall-clock archival suspension;
-- injection of validated `retention_days` into orchestration;
 - a shared writer gate for any future acknowledgment path.
 
 None of the remaining runtime lifecycle items is implemented or authorized by
-the direct-only startup preflight, and production history remains disabled.
+the direct-only startup preflight or retention-policy injection, and production
+history remains disabled.
 
 ## Future dashboard and API boundaries
 
@@ -1915,13 +1934,13 @@ changes.
 | Schema-version-1 lifecycle | Accepted. | The immutable isolated reference model and exhaustive tests permit only open, acknowledged, recovered, and archived; the five persisted-event registry, cooldown, distinct escalation, idempotency, saturation, and fail-closed transitions are fixed. |
 
 The following work remains separately deferred and is not implemented by the
-isolated storage, ingestion, read-query, and maintenance slices:
+direct-only foundation slices:
 
 - runtime integration, scheduling, and production database deployment;
 - authenticated history/alert presentation routes;
 - operator acknowledgment and its authentication/CSRF route;
 - startup/hourly/120-row maintenance cadence and runtime invocation;
-- WAL checkpointing, capacity enforcement, and free-space policy;
+- startup storage remediation and production capacity/checkpoint invocation;
 - database migrations;
 - production database backup and restore commands;
 - portal grouping of overall and component alerts;
