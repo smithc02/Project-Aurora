@@ -29,7 +29,8 @@ already-open lifecycle. The fifteenth makes the configured retention policy a
 required direct `HealthHistoryOrchestrator` constructor input and forwards it
 unchanged to both existing cleanup paths. The sixteenth adds one direct-only
 startup WAL-checkpoint remediation composition over the lifecycle and existing
-preflight.
+preflight. The seventeenth slice is this documentation-only clock-safety
+architecture decision gate; it adds no executable behavior.
 
 No current runtime entry point imports the package, no installation or update
 creates a database, and production history remains disabled and unavailable.
@@ -39,9 +40,8 @@ invocation, acknowledgment action, migration, backup, restore, scheduled
 checkpoint, notification, or automation action. The query, maintenance,
 leadership, database-lifecycle, and startup-preflight APIs remain reachable
 only through direct use of the isolated package, as does the startup checkpoint
-composition. Milestones 12 through 17
-remain the current behavior, including public `GET /api/health` schema version
-1.
+composition. Slices one through sixteen remain the complete Milestone 18
+behavior. Public `GET /api/health` remains schema version 1.
 
 The initial implementation should be disabled by default and require explicit
 local configuration. Enabling history must not change `GET /api/health`, its
@@ -194,6 +194,18 @@ contract without exposing Store detail. No runtime, scheduler, dashboard,
 configuration loader, service, deployment, or production invocation imports
 this API.
 
+The seventeenth slice changes documentation only. It defines the fail-closed
+clock-trust policy required before a later behavior slice may gate archival,
+retention, or alert-lifecycle mutation. It does not add a clock model, result
+type, persistence, mutation gate, schema change, Store operation, thread,
+runtime hook, or production behavior. The required numeric divergence
+tolerance and durable clock-trust representation remain implementation
+blockers below; consequently this architecture decision does not authorize the
+subsequent clock-behavior slice. Importing or constructing existing code remains
+unchanged and creates no database, WAL, SHM, leadership lock, directory,
+scheduler, thread, timer, queue, task, or other persistent artifact because of
+this slice.
+
 The second slice remains inside that isolated package and adds:
 
 - one singleton accepted-observation checkpoint plus a fixed 64-entry replay
@@ -342,6 +354,17 @@ process; it must not queue, wait indefinitely, or affect the live health
 endpoint. The lifetime leadership handle is not the separate future
 process-local writer gate shared by scheduler and acknowledgment writes.
 
+Store thread ownership is a separate production-runtime decision. The current
+production Store relies on Python `sqlite3`'s default `check_same_thread=True`,
+so the thread that creates the connection owns its use. A process-local
+`Lock` can serialize callers but cannot override that SQLite affinity. The
+planned dashboard uses request threads, and a future scheduler driver may use a
+different worker thread; neither may use the connection until one ownership
+model is separately selected and reviewed. This slice authorizes neither
+`check_same_thread=False` nor a dedicated writer thread, work queue, or
+cross-thread marshaling design. The shared writer gate and acknowledgment path
+therefore remain blocked on that choice.
+
 ## Persistence technology decision
 
 The recommendation is SQLite through Python's standard-library `sqlite3`
@@ -396,7 +419,7 @@ runtime behavior:
 | Alert query page | 50 rows | Hard maximum 200 rows. |
 | Cleanup transaction | At most 500 total explicit sample, event, and archived-alert rows | One transaction per direct maintenance opportunity; no drain loop. Incremental vacuum is a separate one-call primitive. |
 | SQLite busy timeout | 250 milliseconds | No retry loop after timeout. |
-| Shutdown join | 5 seconds | No indefinite wait. |
+| Scheduler shutdown join | At most 3 seconds inside one fixed 5-second total shutdown budget | The remaining budget, never more than 2 seconds, is reserved for the separately deferred shutdown checkpoint; no indefinite wait. |
 
 The configured database limit applies to the main SQLite file. Deployment must
 also reserve bounded space for WAL, shared-memory, temporary, and explicit
@@ -1284,11 +1307,143 @@ UTC and monotonic clocks have separate jobs:
   move backward.
 
 Persisted timestamps are never taken from a browser, device response, request,
-or environment value. A backward or forward wall-clock step records at most one
-fixed clock-discontinuity marker and pauses time-based archival until ordering
-is safe. The clock marker does not contribute to sampling-gap state; only
-monotonic missed scheduler deadlines do. A wall-clock jump does not synthesize
-samples, recover or open an alert, or delete retention data.
+or environment value.
+
+### Clock-trust model and unresolved tolerance gate
+
+One process may establish a paired trusted anchor `(U0, M0)`, where `U0` is
+integer UTC microseconds and `M0` is a finite monotonic reading in seconds.
+For a later paired observation `(U1, M1)` in that same process, signed wall-
+clock divergence in seconds is exactly:
+
+```text
+D = ((U1 - U0) / 1_000_000) - (M1 - M0)
+```
+
+Positive `D` means UTC advanced farther than monotonic time; negative `D`
+means it advanced less or moved backward. Monotonic values have meaning only
+inside one process lifetime. They must never be persisted for, or compared
+with, another process lifetime. Expected UTC advancement may be derived from
+monotonic advancement only while both observations belong to the same process
+and `M1 >= M0`. The anchor remains fixed for that trusted process episode;
+ordinary accepted observations must not reset it and mask accumulated drift.
+
+Both positive and negative divergence are discontinuities. For a future
+positive tolerance `T`, the closed interval `-T <= D <= T` is trusted;
+`D < -T` or `D > T` begins a discontinuity episode. Equality at either
+boundary is therefore inside tolerance. A failed UTC conversion, a non-finite monotonic
+value, a monotonic regression, or another invalid clock observation is a fixed
+clock-unavailable failure and loses clock readiness before mutation. It is not
+a measured divergence and must not expose or persist the invalid value as a
+discontinuity marker.
+
+The repository has no target-platform evidence that bounds scheduler jitter,
+clock-read skew, or expected NTP slew tightly enough to select a safe numeric
+`T`. Ordinary jitter and NTP slew are expected to remain within the eventual
+deployment-validated tolerance, but that assertion must be measured. Selecting
+the numeric tolerance is an implementation-blocking decision; this document
+does not invent one, and no clock-behavior implementation is authorized until
+the value and its evidence receive separate review.
+
+### Suspension and marker policy
+
+Clock trust must be evaluated before any mutation whose eligibility or
+lifecycle result depends on UTC. A marker processed after ordinary ingestion
+is too late because current ingestion may archive alerts before it evaluates
+the supplied sample kind. Once trust is lost, one fail-closed suspension
+episode has this scope:
+
+- ingestion-time alert archival, ordinary retention deletion, and
+  capacity-remediation retention cleanup are blocked;
+- incremental vacuum is blocked, including any attempt to skip blocked
+  retention cleanup and proceed directly to page reclamation;
+- cooldown-dependent changes, alert opening, recovery, recurrence, occurrence
+  updates, and all other automatic alert-lifecycle transitions are frozen;
+- acknowledgment is blocked because its persisted UTC and future request-
+  thread writer ownership are not trustworthy or implemented;
+- ordinary health-sample and replay ingestion may continue only after a future
+  atomic mutation gate can keep automatic alert state frozen, preserve a
+  separate trusted UTC high-water, and durably retain the suspension episode;
+  until that gate and state exist, suspended ingestion fails closed;
+- sampling-gap accounting remains based only on monotonic intervals and stays
+  distinct from wall-clock trust, but its alert opening and recovery effects
+  remain frozen with every other automatic lifecycle transition; and
+- a bounded PASSIVE WAL checkpoint remains permitted because it changes no
+  logical history eligibility or alert lifecycle. It does not restore clock
+  trust.
+
+The existing combined maintenance opportunity begins with retention cleanup,
+so it is non-ready as a whole during suspension; it may not skip to vacuum or
+checkpoint. Only a separately reviewed checkpoint-only boundary, including the
+completed direct startup WAL composition, may perform the permitted PASSIVE
+operation.
+
+The future gate records exactly one fixed clock-discontinuity marker per
+measured episode. That marker must be the only marker for the episode even
+across restart, and it must not itself open, recover, recur, archive,
+acknowledge, increment occurrence, or otherwise advance ordinary alert state.
+It does not contribute to sampling-gap state and does not synthesize missed
+samples; only monotonic missed scheduler deadlines provide gap evidence. A
+clock-unavailable failure cannot safely supply the marker's timestamp and
+therefore produces no marker until a later valid observation can establish a
+measured episode under the reviewed policy.
+
+Startup capacity remediation remains blocked while the tolerance or durable
+suspension model is unresolved and whenever suspension is active. A future
+capacity path may not omit retention cleanup and continue to incremental
+vacuum. The completed startup WAL-remediation composition remains usable: only
+`WAL_CHECKPOINT_DUE` permits one existing PASSIVE attempt, and checkpoint BUSY
+remains non-ready without retry.
+
+### Restart and recovery policy
+
+Restart resets the monotonic domain. The last accepted observation UTC is not
+a trusted UTC high-water: suspended sample ingestion may accept untrusted UTC,
+and legitimate downtime cannot be distinguished from a forward wall-clock
+jump using only two wall-clock values. Suspension must therefore survive
+restart, and a new process must begin clock-non-ready until trust is explicitly
+re-established; a stable wall clock after a jump is not proof of correct
+absolute time. While trust is active, the durable high-water may advance only
+to a UTC observation accepted by this policy; suspended ingestion must leave it
+unchanged.
+
+The selected recovery authority is an authenticated local operator who has
+verified current UTC against an independent trusted time source. A future
+recovery operation must hold the selected exclusive writer boundary, atomically
+record the sanitized recovery audit and durable clock-trust state, and only
+then establish the current UTC as a new trusted high-water and capture a new
+in-process `(U0, M0)` anchor. It performs no alert transition. The recovery
+audit and high-water survive restart, but the authorization does not permit a
+new process to compare monotonic domains or start destructive UTC-based work;
+each process lifetime starts non-ready and requires fresh operator authority.
+There is no automatic recovery based on elapsed time, repeated stable samples,
+NTP status alone, or a newly observed UTC maximum.
+
+Schema version 1 cannot represent this selected restart-safe policy. Its last
+accepted UTC and sample kind do not separately preserve a trusted UTC
+high-water, durable suspension state, episode/marker identity, and recovery
+authority while ordinary ingestion continues. Reusing the most recent sample
+or discontinuity marker would lose the distinction after later ingestion and
+cannot make detection durable before destructive mutation. A separately
+reviewed persisted-state design is required. It may require a future schema
+version or a different protected durable state boundary; neither is authorized
+by Slice Seventeen, and schema version 1 remains unchanged.
+
+Future direct-only clock evaluation requires a dedicated fixed readiness model
+rather than overloading `StorageDecisionResult`, because storage evidence does
+not establish wall-clock trust. That future boundary has exactly three public
+outcomes: `trusted` is ready, `suspended` is normal non-ready, and
+`clock_unavailable` is a fixed failure result for an invalid clock observation.
+Persistence and Store trust failures retain their existing fixed protected
+errors. Public results and diagnostics never expose raw UTC values, monotonic
+values, deltas, tolerance values, SQL, PRAGMA output, paths, SQLite text,
+persisted metadata, or submitted/private context.
+
+The future evaluation remains work-bounded: one paired UTC/monotonic
+observation, one arithmetic comparison, and at most one marker transaction per
+episode, with no polling, retry, catch-up loop, or aggregate deadline. Operator
+recovery is one explicitly requested bounded action with no automatic retry.
+This policy creates no executable behavior in Slice Seventeen.
 
 ## Isolated bounded read-query boundary
 
@@ -1643,11 +1798,13 @@ disabled and intentionally omits a database path.
 
 Production enablement remains blocked on separately reviewed lifecycle work:
 
+- a reviewed numeric clock-divergence tolerance and durable clock-trust state;
+- clock-suspension mutation gating before ingestion archival or cleanup;
 - history failure isolation from public `GET /api/health`;
 - scheduler join and bounded shutdown-TRUNCATE handling;
 - a protected writable deployment state directory and explicit service-account
   ownership assumptions;
-- resolution of forward wall-clock archival suspension;
+- Store/SQLite connection thread-ownership selection;
 - a shared writer gate for any future acknowledgment path.
 
 None of the remaining runtime lifecycle items is implemented or authorized by
@@ -1958,7 +2115,14 @@ changes.
 The following work remains separately deferred and is not implemented by the
 direct-only foundation slices:
 
-- runtime integration, scheduling, and production database deployment;
+- the numeric divergence tolerance, durable clock-trust representation, and
+  clock-suspension behavior/mutation gate;
+- Store/SQLite thread ownership, writer serialization, runtime integration,
+  scheduler driving, production startup/lifecycle composition, and production
+  database deployment;
+- history failure isolation from public `GET /api/health`;
+- bounded scheduler stop/join and shutdown `TRUNCATE` handling;
+- protected deployment directory and service-account validation;
 - authenticated history/alert presentation routes;
 - operator acknowledgment and its authentication/CSRF route;
 - startup/hourly/120-row maintenance cadence and runtime invocation;
@@ -1991,13 +2155,23 @@ The reviewed design accepts the following as the implementation baseline:
 The following decisions remain separately deferred; they do not reopen the
 accepted preimplementation gates or authorize their implementation:
 
-1. Whether overall and component alerts should both be displayed or whether
+1. The numeric divergence tolerance and target-platform evidence proving that
+   ordinary read skew, scheduler jitter, and expected NTP slew remain inside
+   it. Clock behavior is NO-GO until this is reviewed.
+2. The protected persisted-state representation for trusted UTC high-water,
+   suspension episode and marker identity, and operator recovery. Schema
+   version 1 is insufficient for the selected continue-ingestion policy, but
+   this slice authorizes neither a schema change nor an external state file.
+3. Whether one thread owns all Store work or another reviewed SQLite ownership
+   design is adopted. A `Lock`, `check_same_thread=False`, and a dedicated
+   writer queue are not interchangeable and none is selected here.
+4. Whether overall and component alerts should both be displayed or whether
    the portal should visually group an overall alert with its component causes.
-2. The production SQLite schema, runtime integration, configuration, scheduler,
+5. The production SQLite schema, runtime integration, configuration, scheduler,
    migrations, and enablement sequence.
-3. The operator command, backup count, and byte cap for explicit SQLite backup
+6. The operator command, backup count, and byte cap for explicit SQLite backup
    and restore; these will not reuse Milestone 17 artifacts.
-4. Which fixed outbound notification channel, if any, deserves a later design.
+7. Which fixed outbound notification channel, if any, deserves a later design.
    No outbound channel is authorized by Milestone 18's initial implementation.
 
 None of these open decisions authorizes implementation or broadens the safe
