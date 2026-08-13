@@ -359,7 +359,7 @@ WLED/HyperHDR configuration, or restore device state. See the
 
 ## Persistent health-history foundation (Milestone 18 in progress)
 
-The first fourteen Milestone 18 production slices establish an isolated
+The first fifteen Milestone 18 production slices establish an isolated
 `aurora_core.health_history` package plus disabled production configuration.
 Its stricter code-owned projection accepts only complete `HealthReport` schema
 version 1 snapshots and retains status,
@@ -632,9 +632,19 @@ No scheduler, runtime integration, deployment path, or production database is
 enabled. The startup preflight remains a direct-only API disconnected from
 production startup.
 
+The fifteenth isolated slice makes retention policy explicit at the existing
+direct orchestration boundary. `HealthHistoryOrchestrator` construction now
+requires a strict integer `retention_days` from 1 through 365 and rejects an
+invalid value before Store or clock interaction. Both the capacity-pressure
+cleanup path and the direct maintenance-opportunity cleanup path pass that
+exact injected value to `cleanup_retention`; neither falls back to the Store's
+default policy. Construction still performs no I/O, the orchestrator continues
+to borrow its Store, and no production runtime constructs it.
+
 Existing portal routes and public `GET /api/health` schema version 1 remain
 independent and unchanged. Scheduler/runtime integration, protected production
-deployment enablement, startup/shutdown hooks, separately
-authenticated acknowledgment, and separately reviewed presentation integration remain
-deferred. See the detailed [health-history and alerting
+deployment enablement, startup remediation, scheduler runtime driving, bounded
+shutdown/TRUNCATE handling, forward wall-clock archival suspension, separately
+authenticated acknowledgment, presentation integration, and notifications
+remain deferred. See the detailed [health-history and alerting
 design](health-history-alerting.md).
