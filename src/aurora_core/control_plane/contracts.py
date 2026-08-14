@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aurora_core.config.models import HyperHDROperation, WLEDOperation
+from aurora_core.config.models import AuroraOperation, HyperHDROperation, WLEDOperation
 
 WLED_ADAPTER_ID = "wled.fixed_state_adapter"
 POWER_OFF_CONFIRMATION_ID = "wled.confirm_power_off"
@@ -14,6 +14,8 @@ VIDEO_GRABBER_DISABLE_CONFIRMATION_ID = "hyperhdr.confirm_video_grabber_disable"
 VIDEO_GRABBER_DISABLE_CONFIRMATION_VALUE = "confirm_video_grabber_disable"
 LED_OUTPUT_DISABLE_CONFIRMATION_ID = "hyperhdr.confirm_led_output_disable"
 LED_OUTPUT_DISABLE_CONFIRMATION_VALUE = "confirm_led_output_disable"
+AURORA_AMBIENT_OFF_CONFIRMATION_ID = "aurora.confirm_ambient_off"
+AURORA_AMBIENT_OFF_CONFIRMATION_VALUE = "confirm_ambient_off"
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,38 @@ class HyperHDROperationContract:
             raise ValueError("enable operations cannot request confirmation")
 
 
+@dataclass(frozen=True, slots=True)
+class AmbientOperationContract:
+    """Code-owned metadata for one bounded Aurora composite operation."""
+
+    operation_id: AuroraOperation
+    disruptive: bool
+    confirmation_metadata_id: str | None = None
+    authentication_required: bool = True
+    csrf_required: bool = True
+    audit_required: bool = True
+    sanitized_errors_required: bool = True
+
+    def __post_init__(self) -> None:
+        if not (
+            self.authentication_required
+            and self.csrf_required
+            and self.audit_required
+            and self.sanitized_errors_required
+        ):
+            raise ValueError(
+                "control-operation security requirements cannot be disabled"
+            )
+        if self.operation_id is AuroraOperation.AMBIENT_OFF:
+            if (
+                not self.disruptive
+                or self.confirmation_metadata_id != AURORA_AMBIENT_OFF_CONFIRMATION_ID
+            ):
+                raise ValueError("ambient off requires its fixed confirmation metadata")
+        elif self.disruptive or self.confirmation_metadata_id is not None:
+            raise ValueError("ambient on cannot request confirmation")
+
+
 def operation_registry(timeout_seconds: float) -> tuple[OperationContract, ...]:
     """Build the deterministic, code-owned registry with a configured timeout."""
     return (
@@ -203,6 +237,18 @@ def hyperhdr_operation_registry(
     )
 
 
+def ambient_operation_registry() -> tuple[AmbientOperationContract, ...]:
+    """Build the exact deterministic Milestone 19 composite registry."""
+    return (
+        AmbientOperationContract(AuroraOperation.AMBIENT_ON, False),
+        AmbientOperationContract(
+            AuroraOperation.AMBIENT_OFF,
+            True,
+            AURORA_AMBIENT_OFF_CONFIRMATION_ID,
+        ),
+    )
+
+
 REGISTERED_OPERATIONS = operation_registry(2.0)
 IMPLEMENTED_OPERATION_ORDER = tuple(
     contract.operation_id for contract in REGISTERED_OPERATIONS
@@ -210,6 +256,10 @@ IMPLEMENTED_OPERATION_ORDER = tuple(
 REGISTERED_HYPERHDR_OPERATIONS = hyperhdr_operation_registry(2.0)
 HYPERHDR_IMPLEMENTED_OPERATION_ORDER = tuple(
     contract.operation_id for contract in REGISTERED_HYPERHDR_OPERATIONS
+)
+REGISTERED_AMBIENT_OPERATIONS = ambient_operation_registry()
+AMBIENT_IMPLEMENTED_OPERATION_ORDER = tuple(
+    contract.operation_id for contract in REGISTERED_AMBIENT_OPERATIONS
 )
 CONTROL_CAPABILITIES = ControlCapabilities()
 

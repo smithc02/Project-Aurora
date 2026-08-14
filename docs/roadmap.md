@@ -190,7 +190,7 @@
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).
-19. **Milestone 19 (Slices One and Two completed): Integrated Aurora Lighting
+19. **Milestone 19 (Slices One through Three completed): Integrated Aurora Lighting
     Experience.** Slice One adds a presentation-only Current Lighting card
     to Overview. It derives Reported Ambient Path from the existing cached WLED,
     HyperHDR, and capture observations; displays only a validated logical Aurora
@@ -200,9 +200,14 @@
     presents the existing three WLED and four HyperHDR forms together while
     retaining their original independent POST routes, security boundaries, and
     result behavior. The component-specific control routes remain available.
-    These slices add no new operation, extra device request, public API field,
-    persistence, runtime behavior, or health-history integration.
-    Combined ambient controls, visual presets, tuning, startup recovery, room
+    Slice Three adds exactly `aurora.ambient_on` and `aurora.ambient_off` as
+    separately disabled and allowlisted synchronous compositions over the
+    existing child services. Exact sequencing, one shared reentrant nonblocking
+    mutation gate, independent parent and child limiting, fixed aggregate
+    results, and parent-plus-child audit preserve bounded partial-failure
+    handling without rollback or retry. It adds no extra render-time device
+    request, public API field, persistence, runtime behavior, or health-history
+    integration. Visual presets, tuning, startup recovery, room
     mapping, and spatial intelligence require later separately reviewed slices.
 20. **Deferred prior proposal: Real-time motion-tracking prototype.**
 21. **Deferred prior proposal: Predictive off-screen continuation.**

@@ -19,6 +19,7 @@ from aurora_core.control_plane.contracts import (
     operation_registry,
 )
 from aurora_core.control_plane.limiter import MutationAttemptLimiter
+from aurora_core.control_plane.mutation_gate import ControlMutationGate
 from aurora_core.control_plane.sessions import SessionContext, csrf_is_valid
 from aurora_core.control_plane.wled_adapter import (
     AdapterReason,
@@ -88,6 +89,7 @@ class WLEDControlService:
         limiter_digest_key: bytes | None = None,
         audit: SecurityAudit | None = None,
         cache_invalidator: CacheInvalidator | None = None,
+        mutation_gate: ControlMutationGate | None = None,
     ) -> None:
         self._settings = settings
         self._authentication_enabled = authentication_enabled
@@ -105,6 +107,9 @@ class WLEDControlService:
             digest_key=limiter_digest_key,
         )
         self._operation_lock = Lock()
+        self._mutation_gate = (
+            ControlMutationGate() if mutation_gate is None else mutation_gate
+        )
         self._adapter: WLEDMutationExecutor | None
         if adapter is not None:
             self._adapter = adapter
@@ -156,6 +161,10 @@ class WLEDControlService:
     @property
     def tracked_client_count(self) -> int:
         return self._limiter.tracked_client_count
+
+    @property
+    def mutation_gate(self) -> ControlMutationGate:
+        return self._mutation_gate
 
     def capabilities(self) -> ControlCapabilities:
         operations = tuple(operation.value for operation in self.available_operations)
@@ -285,7 +294,7 @@ class WLEDControlService:
                 WLEDControlStatus.RATE_LIMITED,
                 AuditReason.OPERATION_LIMIT,
             )
-        if not self._operation_lock.acquire(blocking=False):
+        if not self._mutation_gate.acquire():
             self._audit.emit_operation(
                 AuditEvent.WLED_OPERATION_BUSY,
                 AuditReason.OPERATION_IN_PROGRESS,
@@ -296,17 +305,30 @@ class WLEDControlService:
                 AuditReason.OPERATION_IN_PROGRESS,
             )
         try:
-            if self._adapter is None:
-                return self._deny(operation, AuditReason.CONTROLS_DISABLED)
-            try:
-                adapter_result = self._adapter.execute(operation, operation_input)
-            except Exception:
-                adapter_result = AdapterResult(
-                    False,
-                    AdapterReason.CONNECTION_FAILURE,
+            if not self._operation_lock.acquire(blocking=False):
+                self._audit.emit_operation(
+                    AuditEvent.WLED_OPERATION_BUSY,
+                    AuditReason.OPERATION_IN_PROGRESS,
+                    operation,
                 )
+                return WLEDControlResult(
+                    WLEDControlStatus.BUSY,
+                    AuditReason.OPERATION_IN_PROGRESS,
+                )
+            try:
+                if self._adapter is None:
+                    return self._deny(operation, AuditReason.CONTROLS_DISABLED)
+                try:
+                    adapter_result = self._adapter.execute(operation, operation_input)
+                except Exception:
+                    adapter_result = AdapterResult(
+                        False,
+                        AdapterReason.CONNECTION_FAILURE,
+                    )
+            finally:
+                self._operation_lock.release()
         finally:
-            self._operation_lock.release()
+            self._mutation_gate.release()
 
         reason = _ADAPTER_AUDIT_REASONS.get(adapter_result.reason)
         if adapter_result.verified:

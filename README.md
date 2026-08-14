@@ -30,8 +30,13 @@
 > Overview page using only the existing cached health report and loaded
 > configuration snapshot. Its second slice makes `/controls` the unified
 > Lighting Controls page, presenting those cached observations beside the seven
-> existing independently bounded WLED and HyperHDR operations.
-> No runtime entry point imports it, no deployment database is created, and no
+> existing independently bounded WLED and HyperHDR operations. Its third slice
+> adds separately disabled and allowlisted Ambient On and Ambient Off actions as
+> bounded synchronous compositions over those same child services. One shared
+> nonblocking mutation gate prevents composite and standalone operations from
+> interleaving; partial outcomes remain visible without retry or rollback.
+> The Milestone 18 package still has no runtime entry-point import, no deployment
+> database is created, and no
 > scheduled history or maintenance cadence, route, acknowledgment, worker,
 > notification, or automation behavior is enabled. Broader device control,
 > browser configuration, room mapping, and spatial intelligence remain deferred.
@@ -169,6 +174,17 @@ sanitized-result behavior. Rendering asks the shared `HealthService` for one
 cached report and makes no direct device request. No combined ambient action or
 new operation is introduced.
 
+Milestone 19's third slice adds exactly `aurora.ambient_on` and
+`aurora.ambient_off` to that protected page. Ambient On runs video-grabber
+enable, WLED power on, then LED-output enable and fails fast. Ambient Off first
+isolates LED output, then attempts grabber disable and WLED power off; after
+verified LED-output isolation it still attempts WLED off if grabber disable is
+not verified. The parent and every child retain separate allowlists and attempt
+limiters. A single reentrant nonblocking mutation gate is shared with standalone
+WLED and HyperHDR operations. There is no cached-state shortcut, retry,
+rollback, worker, persistence, service action, or public mutation endpoint. See
+the [combined ambient control guide](docs/ambient-controls.md).
+
 Milestone 14's
 [control-plane security foundation](docs/control-plane-security.md) adds optional
 local authentication, bounded in-memory sessions, CSRF-protected logout,
@@ -231,6 +247,9 @@ the [Milestone 15 WLED control guide](docs/wled-controls.md) for the exact
 operation, verification, activation, and rollback boundaries, and the
 [Milestone 16 HyperHDR control guide](docs/hyperhdr-controls.md) for its exact
 four-operation registry and two-request verification boundary. See the
+[Milestone 19 combined ambient control guide](docs/ambient-controls.md) for its
+exact sequences, partial-result, shared-gate, rate-limit, confirmation, and
+audit boundaries. See the
 [Milestone 17 configuration-profile guide](docs/configuration-profiles.md) for
 the CLI, filesystem, backup, activation, and recovery boundaries. The paused
 [Milestone 18 health-history and alerting design](docs/health-history-alerting.md)

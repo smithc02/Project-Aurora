@@ -24,6 +24,7 @@ from aurora_core.control_plane.hyperhdr_adapter import (
     HyperHDRMutationExecutor,
 )
 from aurora_core.control_plane.limiter import MutationAttemptLimiter
+from aurora_core.control_plane.mutation_gate import ControlMutationGate
 from aurora_core.control_plane.sessions import SessionContext, csrf_is_valid
 
 Clock = Callable[[], float]
@@ -106,6 +107,7 @@ class HyperHDRControlService:
         limiter_digest_key: bytes | None = None,
         audit: SecurityAudit | None = None,
         cache_invalidator: CacheInvalidator | None = None,
+        mutation_gate: ControlMutationGate | None = None,
     ) -> None:
         self._settings = settings
         self._authentication_enabled = authentication_enabled
@@ -123,6 +125,9 @@ class HyperHDRControlService:
             digest_key=limiter_digest_key,
         )
         self._operation_lock = Lock()
+        self._mutation_gate = (
+            ControlMutationGate() if mutation_gate is None else mutation_gate
+        )
         if adapter is not None:
             self._adapter: HyperHDRMutationExecutor | None = adapter
         elif settings.host is not None and settings.port is not None:
@@ -174,6 +179,10 @@ class HyperHDRControlService:
     @property
     def tracked_client_count(self) -> int:
         return self._limiter.tracked_client_count
+
+    @property
+    def mutation_gate(self) -> ControlMutationGate:
+        return self._mutation_gate
 
     def capabilities(self) -> ControlCapabilities:
         operations = tuple(operation.value for operation in self.available_operations)
@@ -302,7 +311,7 @@ class HyperHDRControlService:
                 HyperHDRControlStatus.RATE_LIMITED,
                 AuditReason.OPERATION_LIMIT,
             )
-        if not self._operation_lock.acquire(blocking=False):
+        if not self._mutation_gate.acquire():
             self._audit.emit_operation(
                 AuditEvent.HYPERHDR_OPERATION_BUSY,
                 AuditReason.OPERATION_IN_PROGRESS,
@@ -313,18 +322,31 @@ class HyperHDRControlService:
                 AuditReason.OPERATION_IN_PROGRESS,
             )
         try:
-            if self._adapter is None:
-                return self._deny(operation, AuditReason.CONTROLS_DISABLED)
-            try:
-                adapter_result = self._adapter.execute(operation)
-            except Exception:
-                adapter_result = HyperHDRAdapterResult(
-                    False,
-                    False,
-                    HyperHDRAdapterReason.CONNECTION_FAILURE,
+            if not self._operation_lock.acquire(blocking=False):
+                self._audit.emit_operation(
+                    AuditEvent.HYPERHDR_OPERATION_BUSY,
+                    AuditReason.OPERATION_IN_PROGRESS,
+                    operation,
                 )
+                return HyperHDRControlResult(
+                    HyperHDRControlStatus.BUSY,
+                    AuditReason.OPERATION_IN_PROGRESS,
+                )
+            try:
+                if self._adapter is None:
+                    return self._deny(operation, AuditReason.CONTROLS_DISABLED)
+                try:
+                    adapter_result = self._adapter.execute(operation)
+                except Exception:
+                    adapter_result = HyperHDRAdapterResult(
+                        False,
+                        False,
+                        HyperHDRAdapterReason.CONNECTION_FAILURE,
+                    )
+            finally:
+                self._operation_lock.release()
         finally:
-            self._operation_lock.release()
+            self._mutation_gate.release()
 
         if adapter_result.verified:
             self._audit.emit_operation(

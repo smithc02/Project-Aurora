@@ -2,8 +2,9 @@
 
 Milestone 14 added an authenticated boundary for future Project Aurora controls.
 It did not add a device control. Milestones 15 and 16 now place three bounded
-WLED and four bounded HyperHDR operations inside that boundary without changing
-its session or CSRF model. The
+WLED and four bounded HyperHDR operations inside that boundary. Milestone 19
+Slice Three adds two separately authorized composite operations without changing
+the session or CSRF model. The
 public health portal and `GET /api/health`
 continue to use the Milestone 12 single-flight health service and remain backward
 compatible. Authentication state is held by a separate in-process service and
@@ -20,6 +21,7 @@ The route groups are intentionally separate:
 | Protected status | `GET /controls`, `GET /api/control/status` | Authenticated status and a versioned, configuration-derived capability response. |
 | Protected WLED | `GET /controls/wled`, three fixed route-specific POST handlers | Optional Milestone 15 operations described in the [WLED control guide](wled-controls.md). |
 | Protected HyperHDR | `GET /controls/hyperhdr`, four fixed route-specific POST handlers | Optional Milestone 16 operations described in the [HyperHDR control guide](hyperhdr-controls.md). |
+| Protected ambient | `POST /controls/ambient/on`, `POST /controls/ambient/off` | Optional bounded compositions described in the [ambient control guide](ambient-controls.md). |
 
 Authentication is disabled by default. In that state, protected routes return
 an unavailable response rather than treating the visitor as authenticated. When
@@ -28,15 +30,15 @@ the control-status API returns JSON `401`. Authentication therefore fails
 closed: a missing or disabled authentication configuration cannot grant control
 access.
 
-The protected capability response returns the deterministic WLED-then-HyperHDR
-union of operations whose device configuration, separate control switch,
+The protected capability response returns the deterministic Aurora-parent,
+WLED, then HyperHDR union of operations whose configuration, separate switch,
 allowlist, and code registry are all enabled. Authentication is also required.
 Otherwise it reports false and an empty list. There is no generic execute route,
 arbitrary HyperHDR mutation, DDP output, system command, service action,
 configuration write, capture operation, room-zone output, or AI operation.
 
-Login, logout, `/controls`, and the capability API do not query the public
-health snapshot. The protected WLED and HyperHDR pages use the same cached
+Login, logout, mutation POSTs, and the capability API do not query the public
+health snapshot. The protected `/controls`, WLED, and HyperHDR pages use the same cached
 snapshot as public pages and never create a page-specific direct read. Public
 pages continue to share the existing cached, single-flight snapshot.
 
@@ -172,21 +174,23 @@ logout; unauthorized protected-page and protected-API access; CSRF rejection;
 malformed authentication requests; and malformed, invalid, or expired sessions.
 
 Authentication audit fields contain only schema version, event name, and
-bounded reason code. WLED and HyperHDR audit events add only an allowlisted
-operation ID.
+bounded reason code. WLED, HyperHDR, and parent Aurora audit events add only an
+allowlisted operation ID.
 They never accept passwords, password hashes, cookies, session identifiers,
 CSRF tokens, request bodies, client identifiers, raw exceptions, device
 endpoints, or installation details. Events are not persisted to a database in
 this milestone; retention is controlled by the operator's existing logging
 environment.
 
-## Typed operation contracts after Milestone 16
+## Typed operation contracts after Milestone 19 Slice Three
 
 Milestone 14 defined non-executable metadata and an empty operation tuple.
 Milestone 15 replaced that empty registry with strict WLED contracts only for
 `wled.power_on`, `wled.power_off`, and `wled.brightness_set`. Milestone 16 adds a
 separate exact HyperHDR registry for video-grabber enable/disable and LED-output
-enable/disable. Fixed routes invoke fixed device-specific adapters; no
+enable/disable. Slice Three adds exactly `aurora.ambient_on` and
+`aurora.ambient_off`; parent authorization never follows implicitly from child
+authorization. Fixed routes invoke fixed services and device-specific adapters; no
 browser-facing generic executor exists. Every future operation must separately
 review and implement all of these boundaries:
 
@@ -240,5 +244,5 @@ Milestone 15's narrow WLED exception and Milestone 16's narrow HyperHDR
 component-state exception are fully documented in the
 [bounded WLED control guide](wled-controls.md) and
 [bounded HyperHDR control guide](hyperhdr-controls.md). The remaining original
-non-goals are unchanged; neither milestone adds generic forwarding, combined
-operations, profiles, or automation.
+non-goals are unchanged. Slice Three's narrow combined operations add no generic
+forwarding, profiles, background automation, retry, or rollback.

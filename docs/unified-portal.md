@@ -10,8 +10,8 @@ add separately enabled protected WLED and HyperHDR pages while the Milestone 13
 public portal remains read-only. Milestone 19 Slice One adds a presentation-only
 Current Lighting summary to Overview without adding a device request or public
 operation. Milestone 19 Slice Two evolves the existing authenticated `/controls`
-destination into one Lighting Controls view without adding an operation or
-changing the public portal.
+destination into one Lighting Controls view. Slice Three adds two separately
+authorized parent ambient forms there without changing the public portal.
 
 Run it with the existing command:
 
@@ -39,6 +39,8 @@ and installations require no configuration change.
 | `/controls` | Authenticated Current Lighting summary plus the existing WLED and HyperHDR controls in one appliance-oriented page. |
 | `/controls/wled` | Authenticated Milestone 15 WLED status and bounded forms; unavailable when authentication is disabled. |
 | `/controls/hyperhdr` | Authenticated Milestone 16 HyperHDR status and four bounded forms; unavailable when authentication is disabled. |
+| `POST /controls/ambient/on` | Authenticated, CSRF-protected fixed Ambient On sequence. |
+| `POST /controls/ambient/off` | Authenticated, confirmed, CSRF-protected fixed Ambient Off sequence. |
 
 Milestone 14 adds separate authentication routes at `GET`/`POST /login` and
 `POST /logout`, plus protected status routes at `GET /controls` and
@@ -49,11 +51,13 @@ Milestone 15 adds three fixed POST routes under `/controls/wled`; they are not
 part of the public portal route group. Milestone 16 adds four fixed POST routes
 under `/controls/hyperhdr` with the same separation.
 
-Milestone 19 Slice Two keeps `/controls` as the canonical protected destination
+Milestone 19 keeps `/controls` as the canonical protected destination
 and renders only the operations those same services report as allowlisted. The
 three WLED and four HyperHDR forms retain their original component-specific POST
 routes. Existing `/controls/wled` and `/controls/hyperhdr` deep links remain
 functional for detailed component status and fixed operation notices.
+Slice Three adds an Aurora-level Ambient Mode section near the top while
+retaining all individual forms for recovery from partial or unverified results.
 
 Every HTML page has a semantic header, primary navigation, current page title,
 overall health indicator, component status where applicable, snapshot time,
@@ -109,10 +113,13 @@ identifier display rule.
 The page groups the existing WLED power-on, confirmed power-off, and absolute
 brightness forms under WLED / Brightness. It groups the existing HyperHDR video
 grabber and LED-output enable/confirmed-disable forms under Ambient Processing /
-HyperHDR. Every form posts to its existing handler; authentication, session,
+HyperHDR. Every child form posts to its existing handler; authentication, session,
 CSRF, confirmation, allowlist, attempt limiting, serialized device access,
 verification, audit, sanitized notice, and redirect semantics are unchanged.
-There is no combined ambient action, sequencing, transaction, or rollback.
+Slice Three adds only the separately disabled and allowlisted Ambient On and
+Ambient Off sequences. They call existing child services, never use the cached
+summary to skip a step, and never retry or roll back. Rendering remains free of
+device mutations and direct probes.
 
 The Milestone 13 portal added no state-changing operation. Milestone 14 accepted
 POST only for login and CSRF-protected logout in a separate authentication
@@ -161,7 +168,8 @@ Milestone 16 registers only HyperHDR video-grabber enable/disable and LED-output
 enable/disable. The protected page also uses the shared snapshot. Each accepted
 operation can perform one fixed mutation POST and one fixed verification GET;
 the page itself never polls. The capability API reports a deterministic union
-of enabled and allowlisted WLED and HyperHDR operations.
+of available Aurora parent, WLED, and HyperHDR operations without changing
+schema version 1.
 
 Future state-changing controls must remain inside that boundary and must not
 turn the health snapshot API into a mutation or forwarding channel. Before an
@@ -222,6 +230,7 @@ room, or AI capabilities deferred by Milestone 13. The public portal routes and
 health snapshot remain read-only and backward compatible.
 
 Milestones 15 and 16 later add only the separately protected WLED and HyperHDR
-operation subsets. They do not alter the historical Milestone 13 scope or
-implement combined controls, profiles, automation, the room model, or
-spatial-intelligence features.
+operation subsets. Milestone 19 Slice Three adds only two bounded synchronous
+compositions. They do not alter the historical Milestone 13 scope or implement
+profiles, background automation, the room model, or spatial-intelligence
+features.
