@@ -43,6 +43,8 @@ WLEDOperationWindow = Annotated[int, Field(ge=1, le=3600, strict=True)]
 HyperHDRControlTimeout = Annotated[float, Field(ge=0.1, le=5.0, strict=True)]
 HyperHDROperationLimit = Annotated[int, Field(ge=1, le=120, strict=True)]
 HyperHDROperationWindow = Annotated[int, Field(ge=1, le=3600, strict=True)]
+AmbientOperationLimit = Annotated[int, Field(ge=1, le=120, strict=True)]
+AmbientOperationWindow = Annotated[int, Field(ge=1, le=3600, strict=True)]
 
 
 class LoggingLevel(StrEnum):
@@ -70,6 +72,13 @@ class HyperHDROperation(StrEnum):
     VIDEO_GRABBER_DISABLE = "hyperhdr.video_grabber_disable"
     LED_OUTPUT_ENABLE = "hyperhdr.led_output_enable"
     LED_OUTPUT_DISABLE = "hyperhdr.led_output_disable"
+
+
+class AuroraOperation(StrEnum):
+    """The complete Milestone 19 composite-operation allowlist."""
+
+    AMBIENT_ON = "aurora.ambient_on"
+    AMBIENT_OFF = "aurora.ambient_off"
 
 
 class HealthHistoryDatabaseMode(StrEnum):
@@ -206,6 +215,26 @@ class WLEDSettings(EndpointSettings):
                     "expected active and skipped LEDs must total expected LED count"
                 )
         return self
+
+
+class AmbientControlSettings(AuroraModel):
+    """Fail-closed policy for bounded Aurora ambient-mode composition."""
+
+    enabled: StrictBoolean = False
+    allowed_operations: tuple[AuroraOperation, ...] = ()
+    operation_limit: AmbientOperationLimit = 20
+    operation_window_seconds: AmbientOperationWindow = 60
+
+    @field_validator("allowed_operations", mode="before")
+    @classmethod
+    def operation_allowlist_is_unique(cls, value: object) -> object:
+        if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+            raise ValueError(
+                "allowed_operations must be a list of operation identifiers"
+            )
+        if len(value) != len(set(value)):
+            raise ValueError("allowed_operations must not contain duplicates")
+        return value
 
 
 class DDPSettings(EndpointSettings):
@@ -380,6 +409,9 @@ class AuroraSettings(AuroraModel):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     hyperhdr: HyperHDRSettings = Field(default_factory=HyperHDRSettings)
     wled: WLEDSettings = Field(default_factory=WLEDSettings)
+    ambient_controls: AmbientControlSettings = Field(
+        default_factory=AmbientControlSettings
+    )
     ddp: DDPSettings = Field(default_factory=DDPSettings)
     capture_device: CaptureDeviceSettings = Field(default_factory=CaptureDeviceSettings)
     lighting_zones: tuple[LightingZoneSettings, ...] = ()

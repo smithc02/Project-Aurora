@@ -5,8 +5,10 @@ from __future__ import annotations
 import html
 import math
 
-from aurora_core.config.models import HyperHDROperation, WLEDOperation
+from aurora_core.config.models import AuroraOperation, HyperHDROperation, WLEDOperation
+from aurora_core.control_plane.ambient_service import AmbientControlAvailability
 from aurora_core.control_plane.contracts import (
+    AURORA_AMBIENT_OFF_CONFIRMATION_VALUE,
     LED_OUTPUT_DISABLE_CONFIRMATION_VALUE,
     POWER_OFF_CONFIRMATION_VALUE,
     VIDEO_GRABBER_DISABLE_CONFIRMATION_VALUE,
@@ -152,6 +154,85 @@ def _hyperhdr_availability_text(
     }[availability]
 
 
+def _ambient_availability_text(availability: AmbientControlAvailability) -> str:
+    return {
+        AmbientControlAvailability.AUTHENTICATION_UNAVAILABLE: (
+            "Authentication unavailable"
+        ),
+        AmbientControlAvailability.CONTROLS_DISABLED: "Ambient controls disabled",
+        AmbientControlAvailability.NO_OPERATIONS: "No operations allowlisted",
+        AmbientControlAvailability.REQUIRED_CHILDREN_UNAVAILABLE: (
+            "Required component controls unavailable"
+        ),
+        AmbientControlAvailability.AVAILABLE: "Ambient controls available",
+    }[availability]
+
+
+def _ambient_forms(
+    session: SessionContext,
+    operations: tuple[AuroraOperation, ...],
+) -> str:
+    forms: list[str] = []
+    if AuroraOperation.AMBIENT_ON in operations:
+        forms.append(f"""
+<form method="post" action="/controls/ambient/on" class="auth-form">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <button type="submit">Ambient On</button>
+</form>""")
+    if AuroraOperation.AMBIENT_OFF in operations:
+        forms.append(f"""
+<form method="post" action="/controls/ambient/off"
+  class="auth-form destructive-control">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <label>
+    <input type="checkbox" name="confirmation"
+      value="{AURORA_AMBIENT_OFF_CONFIRMATION_VALUE}" required>
+    Confirm that the complete ambient lighting path may black out
+  </label>
+  <button type="submit">Ambient Off</button>
+</form>""")
+    if not forms:
+        return "<p>No Aurora ambient operation forms are currently available.</p>"
+    return f'<div class="control-operation-grid">{"".join(forms)}</div>'
+
+
+def _ambient_notice(notice: str | None) -> str:
+    messages = {
+        "ambient_completed": (
+            "success",
+            "The complete requested ambient sequence was verified.",
+        ),
+        "ambient_partial": (
+            "warning",
+            "The ambient sequence completed only partially. Review refreshed "
+            "Current Lighting state and use the individual controls if needed.",
+        ),
+        "ambient_unverified": (
+            "warning",
+            "Aurora could not verify the requested ambient state. Review refreshed "
+            "Current Lighting state and use the individual controls if needed.",
+        ),
+        "ambient_denied": ("warning", "The ambient operation was not allowed."),
+        "ambient_rate_limited": (
+            "warning",
+            "Too many ambient-operation attempts. Try again later.",
+        ),
+        "ambient_busy": (
+            "warning",
+            "Another lighting mutation is already in progress.",
+        ),
+        "ambient_failed": (
+            "warning",
+            "The ambient operation failed. Its physical outcome may be uncertain.",
+        ),
+    }
+    active = messages.get(notice or "")
+    if active is None:
+        return ""
+    style, message = active
+    return f'<p class="form-notice {style}" role="status">{_escape(message)}</p>'
+
+
 def _wled_forms(
     session: SessionContext,
     operations: tuple[WLEDOperation, ...],
@@ -246,6 +327,11 @@ def render_controls(
     report: HealthReport,
     configuration_profile: object = None,
     capabilities: ControlCapabilities | None = None,
+    ambient_availability: AmbientControlAvailability = (
+        AmbientControlAvailability.CONTROLS_DISABLED
+    ),
+    ambient_operations: tuple[AuroraOperation, ...] = (),
+    ambient_notice: str | None = None,
     wled_availability: WLEDControlAvailability = (
         WLEDControlAvailability.CONTROLS_DISABLED
     ),
@@ -284,6 +370,27 @@ def render_controls(
   bounded WLED and HyperHDR controls in one Aurora view.</p>
 </header>
 {render_current_lighting(report, configuration_profile)}
+<section class="panel control-section ambient-control-section"
+  aria-labelledby="ambient-control-heading">
+  <div class="panel-heading">
+    <div>
+      <p class="eyebrow">Aurora appliance control</p>
+      <h2 id="ambient-control-heading">Ambient Mode</h2>
+    </div>
+    <span class="status-badge healthy">Authenticated</span>
+  </div>
+  <p>Run one bounded Aurora-owned sequence across the existing HyperHDR and WLED
+  controls. Cached lighting state is not used to skip any step.</p>
+  <dl class="metrics compact-metrics">
+    <div><dt>Control availability</dt>
+      <dd>{_escape(_ambient_availability_text(ambient_availability))}</dd></div>
+  </dl>
+  {_ambient_notice(ambient_notice)}
+  <div class="control-forms" aria-labelledby="ambient-operations-heading">
+    <h3 id="ambient-operations-heading">Allowlisted ambient operations</h3>
+    {_ambient_forms(session, ambient_operations)}
+  </div>
+</section>
 <div class="lighting-controls-grid">
   <section class="panel control-section" aria-labelledby="wled-control-heading">
     <div class="panel-heading">
@@ -346,9 +453,10 @@ def render_controls(
   </section>
   <section class="panel safety-statement" aria-labelledby="safety-heading">
     <h2 id="safety-heading">Strict control boundary</h2>
-    <p>Each form invokes one existing independently bounded operation. No combined
-    Ambient On or Ambient Off action, sequencing, rollback, preset, effect,
-    service, power-supply, or arbitrary device operation exists.</p>
+    <p>Ambient Mode coordinates only the fixed allowlisted child operations shown
+    above. It never retries or rolls back. The individual controls remain
+    available for operator-owned recovery after a partial or unverified result.
+    No preset, effect, service, power-supply, or arbitrary operation exists.</p>
   </section>
 </div>"""
     return _shell(title="Lighting Controls", content=content, active_label="Controls")

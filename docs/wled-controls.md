@@ -117,10 +117,11 @@ response details are not exposed.
 
 ## Concurrency, limiting, cache, and audit
 
-One nonblocking process-local lock serializes mutations. A concurrent request
-receives an immediate sanitized busy result; there is no wait queue or
-background worker. Double-clicks therefore cannot create overlapping WLED
-requests.
+One shared Aurora mutation gate now precedes the existing nonblocking WLED lock.
+Both are process-local and nonblocking. This prevents a standalone WLED request
+from interleaving with the bounded ambient sequence while retaining WLED's
+private serialization. A concurrent request receives an immediate sanitized
+busy result; there is no wait queue or background worker.
 
 A separate monotonic, in-memory mutation-attempt limiter stores only keyed
 digests of bounded client identifiers. It has per-client, global, and memory
@@ -179,8 +180,9 @@ or restart its own service.
 Milestone 15 does not implement brightness zero, toggle or relative adjustment,
 presets, effects, speed, intensity, colors, palettes, segments, LED-count or
 current-limit changes, network settings, WLED login/PIN support, firmware,
-reboot, factory reset, realtime override, DDP or MQTT output, HyperHDR control,
-ambient resumption, service or power-supply control, configuration writes,
+reboot, factory reset, realtime override, DDP or MQTT output, direct HyperHDR
+control outside the reviewed ambient composition, automatic ambient resumption,
+service or power-supply control, configuration writes,
 profiles, backup or rollback automation, room mapping, multi-zone output, frame
 analysis, AI, spatial effects, TLS termination, internet exposure, arbitrary
 paths, URLs, headers, JSON, HTTP proxying, or shell execution.

@@ -15,7 +15,18 @@ from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
 from aurora_core.config import AuroraConfigurationError, load_settings
-from aurora_core.config.models import AuroraSettings, HyperHDROperation, WLEDOperation
+from aurora_core.config.models import (
+    AuroraOperation,
+    AuroraSettings,
+    HyperHDROperation,
+    WLEDOperation,
+)
+from aurora_core.control_plane.ambient_service import (
+    AmbientControlAvailability,
+    AmbientControlResult,
+    AmbientControlService,
+    AmbientControlStatus,
+)
 from aurora_core.control_plane.audit import AuditReason
 from aurora_core.control_plane.contracts import ControlCapabilities
 from aurora_core.control_plane.cookies import (
@@ -24,6 +35,7 @@ from aurora_core.control_plane.cookies import (
     session_cookie,
 )
 from aurora_core.control_plane.forms import (
+    AMBIENT_CONTROL_BODY_LIMIT,
     HYPERHDR_CONTROL_BODY_LIMIT,
     LOGIN_BODY_LIMIT,
     LOGOUT_BODY_LIMIT,
@@ -39,6 +51,7 @@ from aurora_core.control_plane.hyperhdr_service import (
     HyperHDRControlService,
     HyperHDRControlStatus,
 )
+from aurora_core.control_plane.mutation_gate import ControlMutationGate
 from aurora_core.control_plane.rendering import (
     render_controls,
     render_hyperhdr_controls,
@@ -82,6 +95,21 @@ _HYPERHDR_POST_OPERATIONS = {
 _HYPERHDR_NOTICE_VALUES = frozenset(
     {"verified", "denied", "rate_limited", "busy", "failed", "unverified"}
 )
+_AMBIENT_POST_OPERATIONS = {
+    "/controls/ambient/on": AuroraOperation.AMBIENT_ON,
+    "/controls/ambient/off": AuroraOperation.AMBIENT_OFF,
+}
+_AMBIENT_NOTICE_VALUES = frozenset(
+    {
+        "ambient_completed",
+        "ambient_partial",
+        "ambient_unverified",
+        "ambient_denied",
+        "ambient_rate_limited",
+        "ambient_busy",
+        "ambient_failed",
+    }
+)
 
 
 def _parse_brightness(value: str | None) -> int | None:
@@ -115,6 +143,18 @@ def _hyperhdr_result_notice(result: HyperHDRControlResult) -> str:
     }[result.status]
 
 
+def _ambient_result_notice(result: AmbientControlResult) -> str:
+    return {
+        AmbientControlStatus.COMPLETED: "ambient_completed",
+        AmbientControlStatus.PARTIALLY_COMPLETED: "ambient_partial",
+        AmbientControlStatus.UNVERIFIED: "ambient_unverified",
+        AmbientControlStatus.DENIED: "ambient_denied",
+        AmbientControlStatus.RATE_LIMITED: "ambient_rate_limited",
+        AmbientControlStatus.BUSY: "ambient_busy",
+        AmbientControlStatus.FAILED: "ambient_failed",
+    }[result.status]
+
+
 def _render_page(report: HealthReport, refresh_seconds: int) -> str:
     """Retain the original rendering helper as an overview-page wrapper."""
     return render_portal(report, "/", refresh_seconds)
@@ -134,6 +174,7 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         control_plane: ControlPlaneService,
         wled_controls: WLEDControlService,
         hyperhdr_controls: HyperHDRControlService,
+        ambient_controls: AmbientControlService,
         configuration_profile: object = None,
     ) -> None:
         self.health_service = service
@@ -141,6 +182,7 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.control_plane = control_plane
         self.wled_controls = wled_controls
         self.hyperhdr_controls = hyperhdr_controls
+        self.ambient_controls = ambient_controls
         self.configuration_profile = configuration_profile
         super().__init__(server_address, DashboardHandler)
 
@@ -187,7 +229,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlsplit(self.path).path
-        if path in _WLED_POST_OPERATIONS or path in _HYPERHDR_POST_OPERATIONS:
+        if (
+            path in _WLED_POST_OPERATIONS
+            or path in _HYPERHDR_POST_OPERATIONS
+            or path in _AMBIENT_POST_OPERATIONS
+        ):
             self._method_not_allowed()
             return
         if path == PORTAL_CSS_PATH:
@@ -272,6 +318,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         wled = self._wled_control_plane()
         hyperhdr = self._hyperhdr_control_plane()
+        ambient = self._ambient_control_plane()
         server = cast(DashboardHTTPServer, self.server)
         report = server.health_service.get_health()
         self._send(
@@ -280,6 +327,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 report=report,
                 configuration_profile=getattr(server, "configuration_profile", None),
                 capabilities=self._combined_capabilities(),
+                ambient_availability=(
+                    AmbientControlAvailability.CONTROLS_DISABLED
+                    if ambient is None
+                    else ambient.availability
+                ),
+                ambient_operations=(
+                    () if ambient is None else ambient.available_operations
+                ),
+                ambient_notice=self._ambient_notice(),
                 wled_availability=(
                     WLEDControlAvailability.CONTROLS_DISABLED
                     if wled is None
@@ -392,6 +448,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             path == "/logout"
             or path in _WLED_POST_OPERATIONS
             or path in _HYPERHDR_POST_OPERATIONS
+            or path in _AMBIENT_POST_OPERATIONS
         ):
             allowed = "POST"
         else:
@@ -419,7 +476,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if hyperhdr_operation is not None:
             self._post_hyperhdr_operation(hyperhdr_operation)
             return
+        ambient_operation = _AMBIENT_POST_OPERATIONS.get(path)
+        if ambient_operation is not None:
+            self._post_ambient_operation(ambient_operation)
+            return
         self._method_not_allowed()
+
+    def _post_ambient_operation(self, operation: AuroraOperation) -> None:
+        control = self._control_plane()
+        ambient = self._ambient_control_plane()
+        if control is None or not control.authentication_enabled or ambient is None:
+            if ambient is not None:
+                ambient.audit_denied(operation, AuditReason.AUTHENTICATION_DISABLED)
+            self.close_connection = True
+            self._control_unavailable(html=True)
+            return
+        _, session = self._request_session(control)
+        if session is None:
+            ambient.audit_denied(operation, AuditReason.AUTHENTICATION_REQUIRED)
+            self._redirect("/login?next=%2Fcontrols")
+            return
+
+        allowed_fields = {"csrf_token"}
+        if operation is AuroraOperation.AMBIENT_OFF:
+            allowed_fields.add("confirmation")
+        fields, error = self._read_form(
+            maximum_body_bytes=AMBIENT_CONTROL_BODY_LIMIT,
+            allowed_fields=frozenset(allowed_fields),
+        )
+        if error is not None or fields is None:
+            active_error = error or FormError(
+                HTTPStatus.BAD_REQUEST,
+                AuditReason.MALFORMED_FORM,
+            )
+            ambient.audit_denied(operation, active_error.reason)
+            self._send(
+                b"Unable to process the ambient operation request.\n",
+                "text/plain; charset=utf-8",
+                active_error.status,
+            )
+            return
+
+        csrf_token = fields.get("csrf_token")
+        client_identifier = self._client_identifier()
+        if operation is AuroraOperation.AMBIENT_ON:
+            result = ambient.ambient_on(session, csrf_token, client_identifier)
+        else:
+            result = ambient.ambient_off(
+                session,
+                csrf_token,
+                fields.get("confirmation"),
+                client_identifier,
+            )
+        self._redirect(f"/controls?notice={_ambient_result_notice(result)}")
 
     def _post_wled_operation(self, operation: WLEDOperation) -> None:
         control = self._control_plane()
@@ -700,8 +809,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _hyperhdr_control_plane(self) -> HyperHDRControlService | None:
         return getattr(self.server, "hyperhdr_controls", None)
 
+    def _ambient_control_plane(self) -> AmbientControlService | None:
+        return getattr(self.server, "ambient_controls", None)
+
     def _combined_capabilities(self) -> ControlCapabilities:
         operations: list[str] = []
+        ambient = self._ambient_control_plane()
+        if ambient is not None:
+            operations.extend(ambient.capabilities().available_operations)
         wled = self._wled_control_plane()
         if wled is not None:
             operations.extend(wled.capabilities().available_operations)
@@ -814,6 +929,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return None
         return values[0]
 
+    def _ambient_notice(self) -> str | None:
+        try:
+            query = parse_qs(
+                urlsplit(self.path).query,
+                keep_blank_values=True,
+                max_num_fields=2,
+            )
+        except ValueError:
+            return None
+        values = query.get("notice")
+        if (
+            values is None
+            or len(values) != 1
+            or values[0] not in _AMBIENT_NOTICE_VALUES
+        ):
+            return None
+        return values[0]
+
     def _client_identifier(self) -> str:
         address = getattr(self, "client_address", None)
         if isinstance(address, tuple) and address:
@@ -922,6 +1055,7 @@ def build_server(
     control_plane: ControlPlaneService | None = None,
     wled_controls: WLEDControlService | None = None,
     hyperhdr_controls: HyperHDRControlService | None = None,
+    ambient_controls: AmbientControlService | None = None,
     port: int | None = None,
 ) -> DashboardHTTPServer:
     """Build a server without starting its request loop."""
@@ -931,11 +1065,21 @@ def build_server(
         if control_plane is None
         else control_plane
     )
+    active_mutation_gate = (
+        wled_controls.mutation_gate
+        if wled_controls is not None
+        else (
+            hyperhdr_controls.mutation_gate
+            if hyperhdr_controls is not None
+            else ControlMutationGate()
+        )
+    )
     active_wled_controls = (
         WLEDControlService(
             settings.wled,
             authentication_enabled=active_control_plane.authentication_enabled,
             cache_invalidator=active_service.invalidate,
+            mutation_gate=active_mutation_gate,
         )
         if wled_controls is None
         else wled_controls
@@ -945,9 +1089,21 @@ def build_server(
             settings.hyperhdr,
             authentication_enabled=active_control_plane.authentication_enabled,
             cache_invalidator=active_service.invalidate,
+            mutation_gate=active_mutation_gate,
         )
         if hyperhdr_controls is None
         else hyperhdr_controls
+    )
+    active_ambient_controls = (
+        AmbientControlService(
+            settings.ambient_controls,
+            authentication_enabled=active_control_plane.authentication_enabled,
+            wled_controls=active_wled_controls,
+            hyperhdr_controls=active_hyperhdr_controls,
+            mutation_gate=active_mutation_gate,
+        )
+        if ambient_controls is None
+        else ambient_controls
     )
     address = (
         settings.dashboard.bind_host,
@@ -965,6 +1121,7 @@ def build_server(
         active_control_plane,
         active_wled_controls,
         active_hyperhdr_controls,
+        active_ambient_controls,
         settings.application.configuration_profile,
     )
 

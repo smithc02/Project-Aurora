@@ -753,3 +753,35 @@ This composition does not define Ambient On or Ambient Off, cross-device
 sequencing, rollback, presets, tuning, discovery, polling, recovery, service
 control, DDP output, persistence, or runtime automation. Milestone 18 stays
 paused and disconnected; production history remains disabled.
+
+## Combined ambient control boundary (Milestone 19 Slice Three)
+
+The protected control plane now owns exactly `aurora.ambient_on` and
+`aurora.ambient_off`. Both default disabled and require their own explicit
+allowlist in addition to every required child's existing availability and
+allowlist. The public portal and `GET /api/health` schema version 1 do not change.
+
+Ambient On calls the existing services in the fixed order HyperHDR video-grabber
+enable, WLED power on, then HyperHDR LED-output enable. It stops at the first
+non-verified child. Ambient Off first requires verified HyperHDR LED-output
+disable, then attempts video-grabber disable and WLED power off. After verified
+LED-output isolation, WLED power off remains independently safe to attempt even
+when grabber disable is not verified. Cached health never skips a child. Earlier
+verified work is retained; there is no retry, compensation, or rollback.
+
+One neutral reentrant nonblocking process-local mutation gate is injected into
+the ambient, WLED, and HyperHDR services. The ambient service holds it across the
+sequence; same-thread child acquisition is reentrant. Standalone component
+operations also acquire it before their unchanged private component lock.
+Competing mutations fail busy without waiting. Parent and child monotonic
+attempt limiters remain independent, so later child limiting can yield a partial
+result. Each invoked child preserves verification, cache invalidation, and audit;
+exactly one sanitized parent aggregate audit follows.
+
+Each request invokes at most two HyperHDR and one WLED mutation. With maximum
+child timeouts the synchronous path may take approximately 25 seconds. The
+threaded dashboard continues serving other request threads, but no queue,
+worker, scheduler, polling loop, aggregate deadline, persistent job, runtime
+controller, service restart, or DDP behavior is added. Milestone 18 remains
+paused and production history remains disabled. See
+[combined ambient-mode controls](ambient-controls.md).

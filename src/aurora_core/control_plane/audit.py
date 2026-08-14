@@ -7,7 +7,7 @@ from enum import StrEnum
 
 import structlog
 
-from aurora_core.config.models import HyperHDROperation, WLEDOperation
+from aurora_core.config.models import AuroraOperation, HyperHDROperation, WLEDOperation
 
 
 class AuditEvent(StrEnum):
@@ -36,6 +36,13 @@ class AuditEvent(StrEnum):
     HYPERHDR_OPERATION_BUSY = "hyperhdr_operation_busy"
     HYPERHDR_CONFIRMATION_REJECTED = "hyperhdr_confirmation_rejected"
     HYPERHDR_STATE_VERIFICATION_FAILED = "hyperhdr_state_verification_failed"
+    AURORA_OPERATION_SUCCEEDED = "aurora_operation_succeeded"
+    AURORA_OPERATION_PARTIALLY_COMPLETED = "aurora_operation_partially_completed"
+    AURORA_OPERATION_DENIED = "aurora_operation_denied"
+    AURORA_OPERATION_RATE_LIMITED = "aurora_operation_rate_limited"
+    AURORA_OPERATION_BUSY = "aurora_operation_busy"
+    AURORA_OPERATION_FAILED = "aurora_operation_failed"
+    AURORA_OPERATION_UNVERIFIED = "aurora_operation_unverified"
 
 
 class AuditReason(StrEnum):
@@ -79,6 +86,7 @@ class AuditReason(StrEnum):
     MISSING_COMPONENT_STATE = "missing_component_state"
     AMBIGUOUS_COMPONENT_STATE = "ambiguous_component_state"
     VERIFIED = "verified"
+    PARTIAL_COMPLETION = "partial_completion"
 
 
 AuditFields = Mapping[str, str | int]
@@ -109,7 +117,7 @@ class SecurityAudit:
         self,
         event: AuditEvent,
         reason: AuditReason,
-        operation: WLEDOperation | HyperHDROperation,
+        operation: WLEDOperation | HyperHDROperation | AuroraOperation,
     ) -> None:
         """Emit a fixed operation event without accepting arbitrary audit fields."""
         self._sink(

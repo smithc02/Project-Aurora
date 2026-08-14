@@ -121,8 +121,10 @@ capture will be interrupted. Disabling LED output separately requires
 confirmation that LED transmission will be interrupted. Enable operations need
 no disruptive confirmation.
 
-One nonblocking process-local lock covers all HyperHDR mutations. An overlap is
-rejected as busy rather than queued. A separate HyperHDR mutation limiter uses
+One shared Aurora mutation gate now precedes the existing nonblocking HyperHDR
+lock. It prevents standalone HyperHDR operations from interleaving with a
+bounded ambient sequence while retaining HyperHDR's private serialization. An
+overlap is rejected as busy rather than queued. A separate HyperHDR mutation limiter uses
 the bounded per-client, global, expiry-cleanup, and maximum-client protections;
 it does not share or change WLED limiter state.
 
@@ -174,5 +176,6 @@ Milestone 16 has no `ALL` component control, browser-selected component or state
 generic executor, arbitrary JSON-RPC or HTTP proxy, instance operation, service
 or process restart, HDR-mode change, effect, color, priority, smoothing,
 configuration, calibration, preset, WebSocket, MQTT, DDP, UDP, shell, subprocess,
-profile, automation, or combined ambient operation. WLED behavior is unchanged.
-Combined operations remain deferred to later profile and automation milestones.
+profile, background automation, or generic combined operation. Milestone 19
+Slice Three's only exception is the two fixed Aurora ambient sequences, which
+call these existing service methods without changing their adapter behavior.

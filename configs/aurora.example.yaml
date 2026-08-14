@@ -31,6 +31,13 @@ wled:
   # expected_led_count:
   # expected_active_led_count:
   # expected_skipped_leds:
+ambient_controls:
+  # Composite controls require this separate switch, parent allowlist, and all
+  # required WLED/HyperHDR child operations. Keep disabled until reviewed.
+  enabled: false
+  allowed_operations: []
+  operation_limit: 20
+  operation_window_seconds: 60
 ddp:
   enabled: false
   # port defaults to the standard DDP port, 4048
