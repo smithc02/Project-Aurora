@@ -187,7 +187,7 @@ h2 { margin-block: 0; font-size: 1.22rem; }
 h3 { margin-block: 0; font-size: 1rem; }
 .lede { margin: 0.7rem 0 0; color: var(--muted); font-size: 1.05rem; }
 
-.overview-hero, .panel, .component-card, .preview-panel {
+.overview-hero, .current-lighting, .panel, .component-card, .preview-panel {
   border: 1px solid var(--border);
   border-radius: 1rem;
   background: linear-gradient(145deg, rgb(23 34 49 / 96%), rgb(13 20 29 / 96%));
@@ -203,6 +203,46 @@ h3 { margin-block: 0; font-size: 1rem; }
 }
 .overview-hero p { margin: 0.45rem 0 0; color: var(--muted); }
 .overview-hero .status-badge { font-size: 0.85rem; padding: 0.55rem 0.8rem; }
+
+.current-lighting {
+  padding: clamp(1.15rem, 4vw, 2rem);
+  margin-bottom: 1.3rem;
+  border-color: #256a91;
+  background:
+    linear-gradient(135deg, rgb(17 48 74 / 96%), rgb(13 20 29 / 96%));
+}
+.current-lighting-heading, .ambient-path, .lighting-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.current-lighting-heading .eyebrow { margin-bottom: 0.35rem; }
+.ambient-path { justify-content: flex-end; color: var(--muted); font-weight: 700; }
+.ambient-path .status-badge { font-size: 0.85rem; padding: 0.55rem 0.8rem; }
+.lighting-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr) minmax(7rem, auto));
+  column-gap: 1.5rem;
+  margin-top: 1.25rem;
+}
+.lighting-footer { align-items: flex-end; margin-top: 1rem; }
+.lighting-footer p {
+  max-width: 48rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.lighting-action {
+  flex: none;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid #2677a5;
+  border-radius: 0.55rem;
+  color: #06101a;
+  background: var(--accent);
+  font-weight: 800;
+  text-decoration: none;
+}
+.lighting-action:hover { color: #06101a; background: #bae6fd; }
 
 .component-grid {
   display: grid;
@@ -337,6 +377,10 @@ h3 { margin-block: 0; font-size: 1rem; }
     gap: 0.35rem;
   }
   .component-grid, .detail-layout { grid-template-columns: 1fr; }
+  .lighting-metrics {
+    grid-template-columns: minmax(0, 1fr) minmax(7rem, auto);
+    column-gap: 0;
+  }
 }
 
 @media (max-width: 520px) {
@@ -344,6 +388,10 @@ h3 { margin-block: 0; font-size: 1rem; }
   .header-top { align-items: stretch; flex-direction: column; }
   .snapshot-summary { align-items: flex-start; text-align: left; }
   .overview-hero { grid-template-columns: 1fr; }
+  .current-lighting-heading, .ambient-path, .lighting-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .metrics {
     grid-template-columns: minmax(0, 1fr) minmax(6rem, auto);
     font-size: 0.9rem;

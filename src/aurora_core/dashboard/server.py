@@ -134,12 +134,14 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         control_plane: ControlPlaneService,
         wled_controls: WLEDControlService,
         hyperhdr_controls: HyperHDRControlService,
+        configuration_profile: object = None,
     ) -> None:
         self.health_service = service
         self.refresh_seconds = refresh_seconds
         self.control_plane = control_plane
         self.wled_controls = wled_controls
         self.hyperhdr_controls = hyperhdr_controls
+        self.configuration_profile = configuration_profile
         super().__init__(server_address, DashboardHandler)
 
 
@@ -229,6 +231,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             path,
             server.refresh_seconds,
             control_link=control_link,
+            configuration_profile=getattr(server, "configuration_profile", None),
         ).encode()
         self._send(page, "text/html; charset=utf-8")
 
@@ -951,6 +954,7 @@ def build_server(
         active_control_plane,
         active_wled_controls,
         active_hyperhdr_controls,
+        settings.application.configuration_profile,
     )
 
 

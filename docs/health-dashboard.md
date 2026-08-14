@@ -83,6 +83,23 @@ the launch command, and `GET /api/health` retains its version 1 schema and field
 meanings. See the [unified portal guide](unified-portal.md) for presentation and
 future-boundary details.
 
+## Milestone 19 Current Lighting presentation
+
+Overview now gives the existing cached observations a single appliance-oriented
+Current Lighting summary. The request still calls `HealthService.get_health()`
+once. The summary derives Reported Ambient Path from the cached WLED output,
+HyperHDR instance, video-grabber and LED-output, and capture-presence booleans;
+it does not run a second sweep or make a direct device request.
+
+All five fields must be present exact booleans. All true reports Active, any
+false reports Inactive, and missing, unavailable, or malformed evidence reports
+Unavailable. This aggregate does not replace component health. The loaded
+configuration's logical profile ID is shown only after the existing bounded
+identifier validation; otherwise the page says `Custom configuration`. Login or
+Controls continues to follow server-side session state. The page remains
+read-only, local-asset-only, and JavaScript-free, while `GET /api/health` remains
+schema version 1 and unchanged.
+
 ## Milestone 14 security boundary
 
 Milestone 14 preserves the original health collectors, single-flight cache,

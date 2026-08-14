@@ -259,6 +259,27 @@ def test_enabled_public_portal_has_server_rendered_login_link() -> None:
     page, _, status, _ = _request(service, _control(), "/")
     assert status is HTTPStatus.OK
     assert b'href="/login">Login</a>' in page
+    assert b"Current Lighting" in page
+    assert service.calls == 1
+
+
+def test_authenticated_public_portal_has_current_lighting_controls_link() -> None:
+    service = StubHealthService()
+    control = _control()
+    _, _, _, login_headers = _login(service, control)
+    cookie = _request_cookie(login_headers["Set-Cookie"])
+    page, content_type, status, _ = _request(
+        service,
+        control,
+        "/",
+        headers=_headers(cookie=cookie),
+    )
+    assert status is HTTPStatus.OK
+    assert content_type == "text/html; charset=utf-8"
+    assert b"Current Lighting" in page
+    assert b'<a class="lighting-action" href="/controls">Controls</a>' in page
+    assert b"<form" not in page
+    assert b"<input" not in page
     assert service.calls == 1
 
 

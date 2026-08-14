@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from http import HTTPStatus
 from types import SimpleNamespace
 
@@ -13,7 +14,11 @@ from aurora_core.config import load_settings
 from aurora_core.dashboard.assets import PORTAL_CSS_PATH
 from aurora_core.dashboard.collectors import CollectorSpec
 from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
-from aurora_core.dashboard.portal import PORTAL_PATHS, render_portal
+from aurora_core.dashboard.portal import (
+    PORTAL_PATHS,
+    ControlNavigationLink,
+    render_portal,
+)
 from aurora_core.dashboard.server import DashboardHandler
 from aurora_core.dashboard.service import HealthService
 
@@ -111,6 +116,34 @@ def _report(
     )
 
 
+def _replace_component(
+    report: HealthReport,
+    name: str,
+    *,
+    status: HealthStatus | None = None,
+    message: str | None = None,
+    details: dict[str, object] | None = None,
+    remove_detail: str | None = None,
+) -> HealthReport:
+    components = []
+    for component in report.components:
+        if component.name != name:
+            components.append(component)
+            continue
+        updated_details = dict(component.details) if details is None else details
+        if remove_detail is not None:
+            updated_details.pop(remove_detail, None)
+        components.append(
+            replace(
+                component,
+                status=component.status if status is None else status,
+                message=component.message if message is None else message,
+                details=updated_details,
+            )
+        )
+    return replace(report, components=tuple(components))
+
+
 class StubHealthService:
     def __init__(self, report: HealthReport) -> None:
         self.report = report
@@ -123,7 +156,11 @@ class StubHealthService:
 
 def _handler(service: object) -> DashboardHandler:
     handler = DashboardHandler.__new__(DashboardHandler)
-    handler.server = SimpleNamespace(health_service=service, refresh_seconds=5)
+    handler.server = SimpleNamespace(
+        health_service=service,
+        refresh_seconds=5,
+        configuration_profile="default",
+    )
     return handler
 
 
@@ -171,6 +208,219 @@ def test_overview_contains_existing_component_and_system_health() -> None:
         "Service uptime",
     ):
         assert expected in page
+
+
+def test_current_lighting_reports_active_from_complete_true_observations() -> None:
+    page = render_portal(
+        _report(),
+        "/",
+        5,
+        configuration_profile="living-room",
+    )
+    for expected in (
+        "Current Lighting",
+        'aria-label="Reported Ambient Path: Active"',
+        "WLED output state",
+        "WLED brightness",
+        "64 / 255",
+        "HyperHDR instance state",
+        "HyperHDR video-grabber state",
+        "HyperHDR LED-output state",
+        "Capture-device availability",
+        "Aurora configuration profile",
+        "living-room",
+    ):
+        assert expected in page
+    assert "does not verify physical LED illumination" in page
+    assert "live HDMI signal" in page
+    assert "screen-content matching" in page
+
+
+@pytest.mark.parametrize(
+    ("component_name", "detail_name"),
+    (
+        ("wled", "output_on"),
+        ("hyperhdr", "instance_running"),
+        ("hyperhdr", "grabber_active"),
+        ("hyperhdr", "led_output_active"),
+        ("capture", "device_node_present"),
+    ),
+)
+def test_current_lighting_reports_inactive_for_any_exact_false_activity(
+    component_name: str,
+    detail_name: str,
+) -> None:
+    report = _report()
+    component = next(item for item in report.components if item.name == component_name)
+    details = dict(component.details)
+    details[detail_name] = False
+    report = _replace_component(report, component_name, details=details)
+    page = render_portal(report, "/", 5)
+    assert 'aria-label="Reported Ambient Path: Inactive"' in page
+
+
+@pytest.mark.parametrize(
+    ("component_name", "detail_name"),
+    (
+        ("wled", "output_on"),
+        ("hyperhdr", "instance_running"),
+        ("hyperhdr", "grabber_active"),
+        ("hyperhdr", "led_output_active"),
+        ("capture", "device_node_present"),
+    ),
+)
+def test_current_lighting_reports_unavailable_for_missing_activity(
+    component_name: str,
+    detail_name: str,
+) -> None:
+    report = _replace_component(
+        _report(),
+        component_name,
+        remove_detail=detail_name,
+    )
+    page = render_portal(report, "/", 5)
+    assert 'aria-label="Reported Ambient Path: Unavailable"' in page
+
+
+@pytest.mark.parametrize("wrong_value", (1, 0.0, "true", [], None))
+def test_current_lighting_reports_unavailable_for_wrong_type_activity(
+    wrong_value: object,
+) -> None:
+    report = _report()
+    wled = next(item for item in report.components if item.name == "wled")
+    details = dict(wled.details)
+    details["output_on"] = wrong_value
+    page = render_portal(
+        _replace_component(report, "wled", details=details),
+        "/",
+        5,
+    )
+    assert 'aria-label="Reported Ambient Path: Unavailable"' in page
+
+
+@pytest.mark.parametrize("component_name", ("wled", "hyperhdr", "capture"))
+def test_current_lighting_reports_unavailable_for_unavailable_component(
+    component_name: str,
+) -> None:
+    report = _replace_component(
+        _report(),
+        component_name,
+        status=HealthStatus.UNAVAILABLE,
+    )
+    page = render_portal(report, "/", 5)
+    assert 'aria-label="Reported Ambient Path: Unavailable"' in page
+
+
+def test_degraded_component_health_remains_independent_from_active_path() -> None:
+    report = _replace_component(
+        _report(HealthStatus.DEGRADED),
+        "wled",
+        status=HealthStatus.DEGRADED,
+        message="LED-count mismatch",
+    )
+    page = render_portal(report, "/", 5)
+    assert 'aria-label="Reported Ambient Path: Active"' in page
+    assert "LED-count mismatch" in page
+    assert 'class="status-badge degraded"' in page
+
+
+def test_current_lighting_displays_only_valid_configuration_profile_ids() -> None:
+    valid = render_portal(
+        _report(),
+        "/",
+        5,
+        configuration_profile="caption-friendly",
+    )
+    assert "caption-friendly" in valid
+    assert "Custom configuration" not in valid
+
+    private_canary = "PRIVATE_PROFILE_<script>canary()</script>"
+    invalid = render_portal(
+        _report(),
+        "/",
+        5,
+        configuration_profile=private_canary,
+    )
+    assert "Custom configuration" in invalid
+    assert private_canary not in invalid
+    assert "PRIVATE_PROFILE" not in invalid
+    assert "canary" not in invalid
+
+
+@pytest.mark.parametrize("profile", (None, "", "Uppercase", "a" * 41, 7, True))
+def test_current_lighting_uses_generic_label_for_malformed_profile(
+    profile: object,
+) -> None:
+    page = render_portal(_report(), "/", 5, configuration_profile=profile)
+    assert "Custom configuration" in page
+
+
+def test_current_lighting_suppresses_unknown_component_details() -> None:
+    report = _report()
+    wled = next(item for item in report.components if item.name == "wled")
+    details = dict(wled.details)
+    details.update(
+        {
+            "private_host": "PRIVATE_LIGHTING_HOST_CANARY",
+            "raw_response": "PRIVATE_LIGHTING_RESPONSE_CANARY",
+        }
+    )
+    page = render_portal(
+        _replace_component(report, "wled", details=details),
+        "/",
+        5,
+    )
+    assert "PRIVATE_LIGHTING_HOST_CANARY" not in page
+    assert "PRIVATE_LIGHTING_RESPONSE_CANARY" not in page
+
+
+def test_current_lighting_preserves_session_selected_navigation_and_has_no_form() -> (
+    None
+):
+    logged_out = render_portal(
+        _report(),
+        "/",
+        5,
+        control_link=ControlNavigationLink.LOGIN,
+    )
+    logged_in = render_portal(
+        _report(),
+        "/",
+        5,
+        control_link=ControlNavigationLink.CONTROLS,
+    )
+    assert '<a class="lighting-action" href="/login">Login</a>' in logged_out
+    assert '<a class="lighting-action" href="/controls">Controls</a>' in logged_in
+    for page in (logged_out, logged_in):
+        assert "<form" not in page
+        assert "<input" not in page
+        assert "<button" not in page
+        assert "<script" not in page
+
+
+def test_overview_passes_loaded_profile_through_one_cached_health_retrieval() -> None:
+    service = StubHealthService(_report())
+    handler = _handler(service)
+    handler.server.configuration_profile = "movie-night"
+    responses: list[tuple[bytes, str, HTTPStatus]] = []
+    handler._send = lambda body, content_type, status=HTTPStatus.OK: responses.append(  # type: ignore[method-assign]
+        (body, content_type, status)
+    )
+    handler.path = "/"
+    handler.do_GET()
+    page = responses[-1][0].decode()
+    assert "movie-night" in page
+    assert 'aria-label="Reported Ambient Path: Active"' in page
+    assert service.calls == 1
+
+
+def test_device_status_pages_do_not_gain_current_lighting_controls() -> None:
+    for path in ("/wled", "/hyperhdr"):
+        page = render_portal(_report(), path, 5, configuration_profile="default")
+        assert "Current Lighting" not in page
+        assert "Reported Ambient Path" not in page
+        assert "<form" not in page
+        assert "<input" not in page
 
 
 @pytest.mark.parametrize(
