@@ -28,7 +28,9 @@
 > remains deferred. Milestone 19 returns development to the integrated lighting
 > experience. Its first slice adds a prominent Current Lighting summary to the
 > Overview page using only the existing cached health report and loaded
-> configuration snapshot.
+> configuration snapshot. Its second slice makes `/controls` the unified
+> Lighting Controls page, presenting those cached observations beside the seven
+> existing independently bounded WLED and HyperHDR operations.
 > No runtime entry point imports it, no deployment database is created, and no
 > scheduled history or maintenance cadence, route, acknowledgment, worker,
 > notification, or automation behavior is enabled. Broader device control,
@@ -156,6 +158,16 @@ booleans, shows the validated logical Aurora configuration profile, and reuses
 the existing Login-or-Controls session navigation. It makes no additional
 health or device request and does not claim physical illumination, fresh HDMI,
 visual correctness, or screen-content matching.
+
+Milestone 19's second presentation-only slice evolves the existing protected
+`/controls` route into Lighting Controls. It reuses the same Current Lighting
+summary and places the existing three WLED and four HyperHDR forms together in
+appliance-oriented sections. Component-specific protected routes remain
+available, and each form still posts to its original handler with unchanged
+authentication, CSRF, confirmation, rate-limit, verification, audit, and
+sanitized-result behavior. Rendering asks the shared `HealthService` for one
+cached report and makes no direct device request. No combined ambient action or
+new operation is introduced.
 
 Milestone 14's
 [control-plane security foundation](docs/control-plane-security.md) adds optional

@@ -190,13 +190,18 @@
     authorizes no device, service, configuration, command, or arbitrary network
     action. See the
     [health-history and alerting design](health-history-alerting.md).
-19. **Milestone 19 (Slice One completed): Integrated Aurora Lighting
-    Experience.** The first slice adds a presentation-only Current Lighting card
+19. **Milestone 19 (Slices One and Two completed): Integrated Aurora Lighting
+    Experience.** Slice One adds a presentation-only Current Lighting card
     to Overview. It derives Reported Ambient Path from the existing cached WLED,
     HyperHDR, and capture observations; displays only a validated logical Aurora
     configuration profile ID; and reuses the existing session-selected Login or
-    Controls link. It adds no health sweep, device request, public API field,
-    operation, persistence, runtime behavior, or health-history integration.
+    Controls link. Slice Two evolves the existing authenticated `/controls`
+    route into one Lighting Controls page. It reuses that cached summary and
+    presents the existing three WLED and four HyperHDR forms together while
+    retaining their original independent POST routes, security boundaries, and
+    result behavior. The component-specific control routes remain available.
+    These slices add no new operation, extra device request, public API field,
+    persistence, runtime behavior, or health-history integration.
     Combined ambient controls, visual presets, tuning, startup recovery, room
     mapping, and spatial intelligence require later separately reviewed slices.
 20. **Deferred prior proposal: Real-time motion-tracking prototype.**

@@ -901,7 +901,7 @@ def test_disabled_operations_are_not_rendered_and_dynamic_status_does_not_poll()
     assert b'action="/controls/wled/brightness"' not in page
 
 
-def test_controls_card_and_static_asset_do_not_poll_health() -> None:
+def test_controls_page_uses_one_cached_report_and_no_direct_wled_request() -> None:
     health, control, wled, cookie, _, adapter = _http_services()
     controls, _, status, _ = _request(
         health,
@@ -914,7 +914,7 @@ def test_controls_card_and_static_asset_do_not_poll_health() -> None:
     assert b"WLED controls available" in controls
     assert b'href="/controls/wled"' in controls
     _request(health, control, wled, PORTAL_CSS_PATH)
-    assert health.calls == 0 and adapter.calls == []
+    assert health.calls == 1 and adapter.calls == []
 
 
 def test_public_health_api_remains_schema_version_one_with_controls_enabled() -> None:

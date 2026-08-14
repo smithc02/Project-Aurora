@@ -272,19 +272,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         wled = self._wled_control_plane()
         hyperhdr = self._hyperhdr_control_plane()
+        server = cast(DashboardHTTPServer, self.server)
+        report = server.health_service.get_health()
         self._send(
             render_controls(
                 session,
+                report=report,
+                configuration_profile=getattr(server, "configuration_profile", None),
                 capabilities=self._combined_capabilities(),
                 wled_availability=(
                     WLEDControlAvailability.CONTROLS_DISABLED
                     if wled is None
                     else wled.availability
                 ),
+                wled_operations=(() if wled is None else wled.available_operations),
+                wled_maximum_brightness=(
+                    255 if wled is None else wled.maximum_brightness
+                ),
                 hyperhdr_availability=(
                     HyperHDRControlAvailability.CONTROLS_DISABLED
                     if hyperhdr is None
                     else hyperhdr.availability
+                ),
+                hyperhdr_operations=(
+                    () if hyperhdr is None else hyperhdr.available_operations
                 ),
             ).encode(),
             "text/html; charset=utf-8",

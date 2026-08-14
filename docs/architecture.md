@@ -730,3 +730,26 @@ screen-content matching.
 This slice adds no device operation, poll, retry, persistence, background work,
 runtime controller, configuration activation, or health-history dependency.
 Milestone 18 remains paused and production history remains disabled.
+
+## Unified lighting controls boundary (Milestone 19 Slice Two)
+
+The existing authenticated `/controls` route is the canonical Lighting Controls
+page. It obtains one cached `HealthReport` from the existing `HealthService`,
+reuses the exact Current Lighting renderer from Overview, and groups the existing
+WLED and HyperHDR forms into appliance-oriented sections. Rendering does not
+invoke either mutation adapter or a capture probe. Public Overview remains
+mutation-free, and `GET /api/health` remains schema version 1.
+
+No operation identifier or handler is added. WLED power-on, confirmed power-off,
+and absolute brightness still post to their three original routes. HyperHDR
+video-grabber and LED-output enable/confirmed-disable still post to their four
+original routes. Authentication, process-memory sessions, CSRF, operation
+allowlists, confirmation values, independent rate limits and locks, timeouts,
+verification, audit, fixed notices, and redirects remain owned by the existing
+services and handlers. Component-specific `/controls/wled` and
+`/controls/hyperhdr` pages remain functional.
+
+This composition does not define Ambient On or Ambient Off, cross-device
+sequencing, rollback, presets, tuning, discovery, polling, recovery, service
+control, DDP output, persistence, or runtime automation. Milestone 18 stays
+paused and disconnected; production history remains disabled.
