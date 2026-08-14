@@ -9,7 +9,9 @@ status boundary without changing these public pages. Milestones 15 and 16 later
 add separately enabled protected WLED and HyperHDR pages while the Milestone 13
 public portal remains read-only. Milestone 19 Slice One adds a presentation-only
 Current Lighting summary to Overview without adding a device request or public
-operation.
+operation. Milestone 19 Slice Two evolves the existing authenticated `/controls`
+destination into one Lighting Controls view without adding an operation or
+changing the public portal.
 
 Run it with the existing command:
 
@@ -34,6 +36,7 @@ and installations require no configuration change.
 | `/spatial-intelligence` | Inactive preview of the future spatial-event pipeline. |
 | `/api/health` | Unchanged machine-readable health response, schema version 1. |
 | `/static/portal.css` | Locally bundled portal presentation. |
+| `/controls` | Authenticated Current Lighting summary plus the existing WLED and HyperHDR controls in one appliance-oriented page. |
 | `/controls/wled` | Authenticated Milestone 15 WLED status and bounded forms; unavailable when authentication is disabled. |
 | `/controls/hyperhdr` | Authenticated Milestone 16 HyperHDR status and four bounded forms; unavailable when authentication is disabled. |
 
@@ -45,6 +48,12 @@ When it is disabled, those protected routes remain unavailable.
 Milestone 15 adds three fixed POST routes under `/controls/wled`; they are not
 part of the public portal route group. Milestone 16 adds four fixed POST routes
 under `/controls/hyperhdr` with the same separation.
+
+Milestone 19 Slice Two keeps `/controls` as the canonical protected destination
+and renders only the operations those same services report as allowlisted. The
+three WLED and four HyperHDR forms retain their original component-specific POST
+routes. Existing `/controls/wled` and `/controls/hyperhdr` deep links remain
+functional for detailed component status and fixed operation notices.
 
 Every HTML page has a semantic header, primary navigation, current page title,
 overall health indicator, component status where applicable, snapshot time,
@@ -88,6 +97,22 @@ The existing server-side session boundary supplies Login or Controls
 navigation. The card contains no form, input, script, polling, or mutation route.
 It does not prove physical LED illumination, live HDMI signal freshness, visual
 correctness, or actual screen-content matching.
+
+## Unified Lighting Controls
+
+An authenticated `GET /controls` asks the existing `HealthService` for one
+cached `HealthReport` and renders the same Current Lighting helper used by
+Overview. It performs no component-specific poll or direct WLED, HyperHDR, or
+capture request. The loaded configuration profile uses the same bounded
+identifier display rule.
+
+The page groups the existing WLED power-on, confirmed power-off, and absolute
+brightness forms under WLED / Brightness. It groups the existing HyperHDR video
+grabber and LED-output enable/confirmed-disable forms under Ambient Processing /
+HyperHDR. Every form posts to its existing handler; authentication, session,
+CSRF, confirmation, allowlist, attempt limiting, serialized device access,
+verification, audit, sanitized notice, and redirect semantics are unchanged.
+There is no combined ambient action, sequencing, transaction, or rollback.
 
 The Milestone 13 portal added no state-changing operation. Milestone 14 accepted
 POST only for login and CSRF-protected logout in a separate authentication

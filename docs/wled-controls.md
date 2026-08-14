@@ -76,6 +76,12 @@ Successful processing redirects only to `/controls/wled` with a fixed notice
 code. Submitted values, endpoint data, credentials, session identifiers, CSRF
 tokens, and raw errors never enter a URL.
 
+Milestone 19 Slice Two also presents these same three forms on the canonical
+authenticated `/controls` Lighting Controls page. They keep the exact POST routes
+above and continue to redirect to the detailed `/controls/wled` page for their
+fixed result notice. That presentation change adds no WLED request while the
+page renders and does not alter any operation contract.
+
 ## Fixed adapter and verification
 
 The synchronous adapter performs exactly one HTTP `POST` to the configured WLED
@@ -158,7 +164,8 @@ informational, not a lock on WLED state.
 8. Run `uv run aurora config validate --config <config-file>` and restart the
    externally managed dashboard process.
 9. Authenticate, inspect `/api/control/status`, and confirm it lists only the
-   intended operations before using `/controls/wled`.
+   intended operations before using `/controls`; `/controls/wled` remains the
+   detailed WLED route.
 
 To roll back capability, set `wled.controls.enabled` to false or empty the
 allowlist, validate configuration, and restart the externally managed process.

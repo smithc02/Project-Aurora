@@ -361,11 +361,12 @@ def _lighting_control_link(control_link: ControlNavigationLink | None) -> str:
     return ""
 
 
-def _current_lighting(
+def render_current_lighting(
     report: HealthReport,
     configuration_profile: object,
-    control_link: ControlNavigationLink | None,
+    control_link: ControlNavigationLink | None = None,
 ) -> str:
+    """Render the shared allowlisted Current Lighting presentation."""
     ambient_path = _reported_ambient_path(report)
     badge_status = {
         _ReportedAmbientPath.ACTIVE: HealthStatus.HEALTHY,
@@ -489,7 +490,7 @@ def _overview(
   </div>
   {_badge(report.status)}
 </section>
-{_current_lighting(report, configuration_profile, control_link)}
+{render_current_lighting(report, configuration_profile, control_link)}
 <section class="component-grid" aria-label="Component health">
   {cards}
 </section>"""

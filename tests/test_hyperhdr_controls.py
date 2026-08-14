@@ -1010,6 +1010,28 @@ def test_authenticated_page_uses_shared_snapshot_and_fixed_forms() -> None:
     assert b"hyperhdr.invalid" not in body and b"json-rpc" not in body
 
 
+def test_unified_controls_page_uses_one_cached_report_and_no_hyperhdr_request() -> None:
+    health, control, hyperhdr, wled, cookie, _, adapter = _http_services()
+    body, content_type, status, _ = _request(
+        health,
+        control,
+        hyperhdr,
+        wled,
+        "/controls",
+        headers=_headers(cookie=cookie),
+    )
+    assert status is HTTPStatus.OK and content_type.startswith("text/html")
+    assert b"Lighting Controls" in body
+    for path in (
+        b"/controls/hyperhdr/video-grabber/enable",
+        b"/controls/hyperhdr/video-grabber/disable",
+        b"/controls/hyperhdr/led-output/enable",
+        b"/controls/hyperhdr/led-output/disable",
+    ):
+        assert path in body
+    assert health.calls == 1 and adapter.calls == []
+
+
 @pytest.mark.parametrize(
     ("path", "fields", "operation"),
     (

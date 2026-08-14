@@ -16,13 +16,17 @@ from urllib.parse import urlencode
 import pytest
 
 from aurora_core.config import load_settings
+from aurora_core.config.models import HyperHDROperation, WLEDOperation
 from aurora_core.control_plane.audit import SecurityAudit
+from aurora_core.control_plane.contracts import ControlCapabilities
 from aurora_core.control_plane.cookies import SESSION_COOKIE_NAME
+from aurora_core.control_plane.hyperhdr_service import HyperHDRControlAvailability
 from aurora_core.control_plane.rendering import render_controls
 from aurora_core.control_plane.service import ControlPlaneService
 from aurora_core.control_plane.sessions import SessionContext
+from aurora_core.control_plane.wled_service import WLEDControlAvailability
 from aurora_core.dashboard.assets import PORTAL_CSS_PATH
-from aurora_core.dashboard.models import HealthReport, HealthStatus
+from aurora_core.dashboard.models import ComponentHealth, HealthReport, HealthStatus
 from aurora_core.dashboard.server import DashboardHandler
 from aurora_core.security.passwords import hash_password
 
@@ -78,6 +82,33 @@ class StubHealthService:
     def get_health(self) -> HealthReport:
         self.calls += 1
         return self.report
+
+
+class StubWLEDControls:
+    availability = WLEDControlAvailability.AVAILABLE
+    available_operations = tuple(WLEDOperation)
+    maximum_brightness = 200
+    device_calls = 0
+
+    def capabilities(self) -> ControlCapabilities:
+        operations = tuple(operation.value for operation in self.available_operations)
+        return ControlCapabilities(
+            mutations_enabled=True,
+            available_operations=operations,
+        )
+
+
+class StubHyperHDRControls:
+    availability = HyperHDRControlAvailability.AVAILABLE
+    available_operations = tuple(HyperHDROperation)
+    device_calls = 0
+
+    def capabilities(self) -> ControlCapabilities:
+        operations = tuple(operation.value for operation in self.available_operations)
+        return ControlCapabilities(
+            mutations_enabled=True,
+            available_operations=operations,
+        )
 
 
 class AuditCapture:
@@ -136,14 +167,22 @@ def _request(
     method: str = "GET",
     body: bytes = b"",
     headers: Message | None = None,
+    wled_controls: object | None = None,
+    hyperhdr_controls: object | None = None,
+    configuration_profile: object = None,
 ) -> tuple[bytes, str, HTTPStatus, dict[str, str]]:
     handler = DashboardHandler.__new__(DashboardHandler)
     server_values: dict[str, object] = {
         "health_service": service,
         "refresh_seconds": 5,
+        "configuration_profile": configuration_profile,
     }
     if control is not None:
         server_values["control_plane"] = control
+    if wled_controls is not None:
+        server_values["wled_controls"] = wled_controls
+    if hyperhdr_controls is not None:
+        server_values["hyperhdr_controls"] = hyperhdr_controls
     handler.server = SimpleNamespace(**server_values)
     handler.path = path
     handler.headers = Message() if headers is None else headers
@@ -216,6 +255,49 @@ def _cookie_value(set_cookie: str) -> str:
 
 def _request_cookie(set_cookie: str) -> str:
     return f"{SESSION_COOKIE_NAME}={_cookie_value(set_cookie)}"
+
+
+def _lighting_report(
+    *,
+    wled_output: object = True,
+    capture_status: HealthStatus = HealthStatus.HEALTHY,
+) -> HealthReport:
+    checked_at = "2026-01-01T00:00:00+00:00"
+    return HealthReport(
+        status=HealthStatus.DEGRADED,
+        checked_at=checked_at,
+        service_uptime_seconds=1.0,
+        components=(
+            ComponentHealth(
+                name="wled",
+                status=HealthStatus.DEGRADED,
+                message="LED-count mismatch",
+                checked_at=checked_at,
+                latency_ms=1.0,
+                details={"output_on": wled_output, "brightness": 123},
+            ),
+            ComponentHealth(
+                name="hyperhdr",
+                status=HealthStatus.HEALTHY,
+                message="Available",
+                checked_at=checked_at,
+                latency_ms=1.0,
+                details={
+                    "instance_running": True,
+                    "grabber_active": True,
+                    "led_output_active": True,
+                },
+            ),
+            ComponentHealth(
+                name="capture",
+                status=capture_status,
+                message="Available",
+                checked_at=checked_at,
+                latency_ms=1.0,
+                details={"device_node_present": True},
+            ),
+        ),
+    )
 
 
 def test_authentication_disabled_fails_closed_without_health_polling() -> None:
@@ -575,7 +657,7 @@ def test_session_identifier_rotates_and_old_cookie_is_invalid() -> None:
         headers=_headers(cookie=second_cookie),
     )
     assert new_status is HTTPStatus.OK
-    assert b"Control-plane status" in page
+    assert b"Lighting Controls" in page
 
 
 def test_protected_page_redirect_and_api_json_unauthorized_behavior() -> None:
@@ -641,11 +723,103 @@ def test_authenticated_controls_and_status_are_sanitized_and_hardware_free() -> 
         "mutations_enabled": False,
         "available_operations": [],
     }
-    assert service.calls == 0
+    assert service.calls == 1
+
+
+def test_unified_lighting_controls_reuse_exact_existing_operations_and_snapshot() -> (
+    None
+):
+    service = StubHealthService()
+    service.report = _lighting_report()
+    control = _control()
+    wled = StubWLEDControls()
+    hyperhdr = StubHyperHDRControls()
+    _, _, _, login_headers = _login(service, control)
+    cookie = _request_cookie(login_headers["Set-Cookie"])
+
+    page, content_type, status, _ = _request(
+        service,
+        control,
+        "/controls",
+        headers=_headers(cookie=cookie),
+        wled_controls=wled,
+        hyperhdr_controls=hyperhdr,
+        configuration_profile="living-room",
+    )
+
+    assert status is HTTPStatus.OK
+    assert content_type == "text/html; charset=utf-8"
+    assert b"Lighting Controls" in page
+    assert b"Current Lighting" in page
+    assert b'aria-label="Reported Ambient Path: Active"' in page
+    assert b"WLED / Brightness" in page
+    assert b"Ambient Processing / HyperHDR" in page
+    assert b"living-room" in page
+    assert b"degraded" in page
+    assert b'href="/controls/wled"' in page
+    assert b'href="/controls/hyperhdr"' in page
+    assert b"<script" not in page
+
+    actions = set(re.findall(rb'<form method="post" action="([^"]+)"', page))
+    assert actions == {
+        b"/controls/wled/power-on",
+        b"/controls/wled/power-off",
+        b"/controls/wled/brightness",
+        b"/controls/hyperhdr/video-grabber/enable",
+        b"/controls/hyperhdr/video-grabber/disable",
+        b"/controls/hyperhdr/led-output/enable",
+        b"/controls/hyperhdr/led-output/disable",
+        b"/logout",
+    }
+    assert b'min="1"' in page and b'max="200"' in page
+    assert page.count(b'name="confirmation"') == 3
+    assert b"ambient_on" not in page and b"ambient_off" not in page
+    assert service.calls == 1
+    assert wled.device_calls == 0
+    assert hyperhdr.device_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    (
+        (_lighting_report(), "Active"),
+        (_lighting_report(wled_output=False), "Inactive"),
+        (_lighting_report(wled_output="true"), "Unavailable"),
+        (
+            _lighting_report(capture_status=HealthStatus.UNAVAILABLE),
+            "Unavailable",
+        ),
+    ),
+)
+def test_unified_controls_uses_shared_reported_ambient_path_rules(
+    report: HealthReport,
+    expected: str,
+) -> None:
+    page = render_controls(
+        SessionContext("operator", "A" * 43, 60.0),
+        report=report,
+    )
+    assert f'aria-label="Reported Ambient Path: {expected}"' in page
+
+
+def test_unified_controls_sanitizes_invalid_configuration_profile() -> None:
+    private_canary = "<private-profile-canary>"
+    page = render_controls(
+        SessionContext("operator", "A" * 43, 60.0),
+        report=_lighting_report(),
+        configuration_profile=private_canary,
+    )
+    assert "Custom configuration" in page
+    assert private_canary not in page
+    assert "&lt;private-profile-canary&gt;" not in page
 
 
 def test_controls_renderer_escapes_operator_name() -> None:
-    page = render_controls(SessionContext("<unsafe-operator>", "A" * 43, 60.0))
+    report = StubHealthService().report
+    page = render_controls(
+        SessionContext("<unsafe-operator>", "A" * 43, 60.0),
+        report=report,
+    )
     assert "&lt;unsafe-operator&gt;" in page
     assert "<unsafe-operator>" not in page
 
@@ -726,7 +900,7 @@ def test_logout_requires_csrf_then_invalidates_session_and_clears_cookie() -> No
     assert csrf not in serialized
     assert cookie not in serialized
     assert _cookie_value(login_headers["Set-Cookie"]) not in serialized
-    assert service.calls == 0
+    assert service.calls == 1
 
 
 @pytest.mark.parametrize(

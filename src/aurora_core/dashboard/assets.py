@@ -346,6 +346,33 @@ h3 { margin-block: 0; font-size: 1rem; }
   cursor: pointer;
 }
 .auth-form button:hover { background: #bae6fd; }
+.lighting-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+.control-section { border-color: #256a91; }
+.control-section .eyebrow { margin: 0 0 0.35rem; }
+.compact-metrics { margin-top: 1rem; }
+.control-forms { margin-top: 1.2rem; }
+.control-forms h3 { margin-bottom: 0.8rem; }
+.control-operation-grid { display: grid; gap: 0.8rem; }
+.control-operation-grid .auth-form {
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: rgb(8 13 20 / 55%);
+}
+.destructive-control { border-color: #864052 !important; }
+.destructive-control button {
+  border-color: #9f5365;
+  color: var(--text);
+  background: var(--unavailable-bg);
+}
+.destructive-control button:hover { background: #62313e; }
+.detail-link { margin: 1rem 0 0; }
+.controls-meta { margin-top: 1rem; }
 .form-error {
   padding: 0.7rem 0.8rem;
   border: 1px solid #864052;
@@ -376,7 +403,9 @@ h3 { margin-block: 0; font-size: 1rem; }
     align-items: flex-end;
     gap: 0.35rem;
   }
-  .component-grid, .detail-layout { grid-template-columns: 1fr; }
+  .component-grid, .detail-layout, .lighting-controls-grid {
+    grid-template-columns: 1fr;
+  }
   .lighting-metrics {
     grid-template-columns: minmax(0, 1fr) minmax(7rem, auto);
     column-gap: 0;

@@ -15,7 +15,8 @@ from aurora_core.control_plane.contracts import (
 from aurora_core.control_plane.hyperhdr_service import HyperHDRControlAvailability
 from aurora_core.control_plane.sessions import SessionContext
 from aurora_core.control_plane.wled_service import WLEDControlAvailability
-from aurora_core.dashboard.models import ComponentHealth
+from aurora_core.dashboard.models import ComponentHealth, HealthReport
+from aurora_core.dashboard.portal import render_current_lighting
 
 
 def _escape(value: object) -> str:
@@ -121,18 +122,141 @@ def render_login(
     return _shell(title="Operator login", content=content, active_label="Login")
 
 
+def _component(report: HealthReport, name: str) -> ComponentHealth | None:
+    return next((item for item in report.components if item.name == name), None)
+
+
+def _wled_availability_text(availability: WLEDControlAvailability) -> str:
+    return {
+        WLEDControlAvailability.AUTHENTICATION_UNAVAILABLE: (
+            "Authentication unavailable"
+        ),
+        WLEDControlAvailability.WLED_UNAVAILABLE: "WLED unavailable",
+        WLEDControlAvailability.CONTROLS_DISABLED: "WLED controls disabled",
+        WLEDControlAvailability.NO_OPERATIONS: "No operations allowlisted",
+        WLEDControlAvailability.AVAILABLE: "WLED controls available",
+    }[availability]
+
+
+def _hyperhdr_availability_text(
+    availability: HyperHDRControlAvailability,
+) -> str:
+    return {
+        HyperHDRControlAvailability.AUTHENTICATION_UNAVAILABLE: (
+            "Authentication unavailable"
+        ),
+        HyperHDRControlAvailability.HYPERHDR_UNAVAILABLE: "HyperHDR unavailable",
+        HyperHDRControlAvailability.CONTROLS_DISABLED: "HyperHDR controls disabled",
+        HyperHDRControlAvailability.NO_OPERATIONS: "No operations allowlisted",
+        HyperHDRControlAvailability.AVAILABLE: "HyperHDR controls available",
+    }[availability]
+
+
+def _wled_forms(
+    session: SessionContext,
+    operations: tuple[WLEDOperation, ...],
+    maximum_brightness: int,
+) -> str:
+    forms: list[str] = []
+    if WLEDOperation.POWER_ON in operations:
+        forms.append(f"""
+<form method="post" action="/controls/wled/power-on" class="auth-form">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <button type="submit">Power on</button>
+</form>""")
+    if WLEDOperation.POWER_OFF in operations:
+        forms.append(f"""
+<form method="post" action="/controls/wled/power-off"
+  class="auth-form destructive-control">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <label>
+    <input type="checkbox" name="confirmation"
+      value="{POWER_OFF_CONFIRMATION_VALUE}" required>
+    Confirm that lighting may black out
+  </label>
+  <button type="submit">Power off</button>
+</form>""")
+    if WLEDOperation.BRIGHTNESS_SET in operations:
+        forms.append(f"""
+<form method="post" action="/controls/wled/brightness" class="auth-form">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <div class="form-field">
+    <label for="brightness">Brightness (1–{_escape(maximum_brightness)})</label>
+    <input id="brightness" name="brightness" type="number" min="1"
+      max="{_escape(maximum_brightness)}" step="1" required>
+  </div>
+  <button type="submit">Set brightness</button>
+</form>""")
+    if not forms:
+        return "<p>No WLED operation forms are currently available.</p>"
+    return f'<div class="control-operation-grid">{"".join(forms)}</div>'
+
+
+def _hyperhdr_forms(
+    session: SessionContext,
+    operations: tuple[HyperHDROperation, ...],
+) -> str:
+    forms: list[str] = []
+    if HyperHDROperation.VIDEO_GRABBER_ENABLE in operations:
+        forms.append(f"""
+<form method="post" action="/controls/hyperhdr/video-grabber/enable"
+  class="auth-form">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <button type="submit">Enable video grabber</button>
+</form>""")
+    if HyperHDROperation.VIDEO_GRABBER_DISABLE in operations:
+        forms.append(f"""
+<form method="post" action="/controls/hyperhdr/video-grabber/disable"
+  class="auth-form destructive-control">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <label>
+    <input type="checkbox" name="confirmation"
+      value="{VIDEO_GRABBER_DISABLE_CONFIRMATION_VALUE}" required>
+    Confirm that disabling the video grabber interrupts HyperHDR capture
+  </label>
+  <button type="submit">Disable video grabber</button>
+</form>""")
+    if HyperHDROperation.LED_OUTPUT_ENABLE in operations:
+        forms.append(f"""
+<form method="post" action="/controls/hyperhdr/led-output/enable"
+  class="auth-form">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <button type="submit">Enable LED output</button>
+</form>""")
+    if HyperHDROperation.LED_OUTPUT_DISABLE in operations:
+        forms.append(f"""
+<form method="post" action="/controls/hyperhdr/led-output/disable"
+  class="auth-form destructive-control">
+  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
+  <label>
+    <input type="checkbox" name="confirmation"
+      value="{LED_OUTPUT_DISABLE_CONFIRMATION_VALUE}" required>
+    Confirm that disabling LED output interrupts HyperHDR LED transmission
+  </label>
+  <button type="submit">Disable LED output</button>
+</form>""")
+    if not forms:
+        return "<p>No HyperHDR operation forms are currently available.</p>"
+    return f'<div class="control-operation-grid">{"".join(forms)}</div>'
+
+
 def render_controls(
     session: SessionContext,
     *,
+    report: HealthReport,
+    configuration_profile: object = None,
     capabilities: ControlCapabilities | None = None,
     wled_availability: WLEDControlAvailability = (
         WLEDControlAvailability.CONTROLS_DISABLED
     ),
+    wled_operations: tuple[WLEDOperation, ...] = (),
+    wled_maximum_brightness: int = 255,
     hyperhdr_availability: HyperHDRControlAvailability = (
         HyperHDRControlAvailability.CONTROLS_DISABLED
     ),
+    hyperhdr_operations: tuple[HyperHDROperation, ...] = (),
 ) -> str:
-    """Render authenticated capability status and fixed adapter cards."""
+    """Render one authenticated view of cached state and fixed controls."""
     if capabilities is None:
         capabilities = ControlCapabilities()
     remaining_minutes = max(1, math.ceil(session.expires_in_seconds / 60))
@@ -142,84 +266,67 @@ def render_controls(
         else ", ".join(capabilities.available_operations)
     )
     mutations = "Yes" if capabilities.mutations_enabled else "No"
-    availability_messages = {
-        WLEDControlAvailability.AUTHENTICATION_UNAVAILABLE: (
-            "Authentication unavailable",
-            "Authentication is disabled, so the control plane remains unavailable.",
-            False,
-        ),
-        WLEDControlAvailability.WLED_UNAVAILABLE: (
-            "WLED unavailable",
-            "No validated enabled WLED endpoint is available for bounded controls.",
-            False,
-        ),
-        WLEDControlAvailability.CONTROLS_DISABLED: (
-            "WLED controls disabled",
-            "The separate WLED control switch is disabled.",
-            True,
-        ),
-        WLEDControlAvailability.NO_OPERATIONS: (
-            "No operations allowlisted",
-            "WLED controls are configured, but the operation allowlist is empty.",
-            True,
-        ),
-        WLEDControlAvailability.AVAILABLE: (
-            "WLED controls available",
-            "Only the configured and implemented WLED operations are available.",
-            True,
-        ),
-    }
-    availability_title, availability_text, link_allowed = availability_messages[
-        wled_availability
-    ]
-    wled_link = (
-        '<p><a href="/controls/wled">Open bounded WLED controls</a></p>'
-        if link_allowed
-        else ""
+    wled_component = _component(report, "wled")
+    hyperhdr_component = _component(report, "hyperhdr")
+    wled_health = (
+        "Not reported" if wled_component is None else wled_component.status.value
     )
-    hyperhdr_availability_messages = {
-        HyperHDRControlAvailability.AUTHENTICATION_UNAVAILABLE: (
-            "Authentication unavailable",
-            "Authentication is disabled, so the control plane remains unavailable.",
-            False,
-        ),
-        HyperHDRControlAvailability.HYPERHDR_UNAVAILABLE: (
-            "HyperHDR unavailable",
-            "No validated enabled HyperHDR endpoint is available for bounded controls.",
-            False,
-        ),
-        HyperHDRControlAvailability.CONTROLS_DISABLED: (
-            "HyperHDR controls disabled",
-            "The separate HyperHDR control switch is disabled.",
-            True,
-        ),
-        HyperHDRControlAvailability.NO_OPERATIONS: (
-            "No HyperHDR operations allowlisted",
-            "HyperHDR controls are configured, but the operation allowlist is empty.",
-            True,
-        ),
-        HyperHDRControlAvailability.AVAILABLE: (
-            "HyperHDR controls available",
-            "Only configured and implemented HyperHDR operations are available.",
-            True,
-        ),
-    }
-    hyperhdr_title, hyperhdr_text, hyperhdr_link_allowed = (
-        hyperhdr_availability_messages[hyperhdr_availability]
-    )
-    hyperhdr_link = (
-        '<p><a href="/controls/hyperhdr">Open bounded HyperHDR controls</a></p>'
-        if hyperhdr_link_allowed
-        else ""
+    hyperhdr_health = (
+        "Not reported"
+        if hyperhdr_component is None
+        else hyperhdr_component.status.value
     )
     content = f"""
 <header class="page-heading">
-  <p class="eyebrow">Authenticated · bounded control plane</p>
-  <h1>Control-plane status</h1>
-  <p class="lede">Capabilities are the intersection of code-owned operations and
-  explicitly enabled configuration.</p>
+  <p class="eyebrow">Authenticated · bounded appliance controls</p>
+  <h1>Lighting Controls</h1>
+  <p class="lede">Current cached lighting state and the existing independently
+  bounded WLED and HyperHDR controls in one Aurora view.</p>
 </header>
-<div class="detail-layout">
+{render_current_lighting(report, configuration_profile)}
+<div class="lighting-controls-grid">
+  <section class="panel control-section" aria-labelledby="wled-control-heading">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">WLED / Brightness</p>
+        <h2 id="wled-control-heading">WLED lighting output</h2>
+      </div>
+      <span class="status-badge healthy">Authenticated</span>
+    </div>
+    <dl class="metrics compact-metrics">
+      <div><dt>Control availability</dt>
+        <dd>{_escape(_wled_availability_text(wled_availability))}</dd></div>
+      <div><dt>Cached component health</dt><dd>{_escape(wled_health)}</dd></div>
+    </dl>
+    <div class="control-forms" aria-labelledby="wled-operations-heading">
+      <h3 id="wled-operations-heading">Allowlisted operations</h3>
+      {_wled_forms(session, wled_operations, wled_maximum_brightness)}
+    </div>
+    <p class="detail-link"><a href="/controls/wled">Open detailed WLED status</a></p>
+  </section>
+  <section class="panel control-section"
+    aria-labelledby="hyperhdr-control-heading">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Ambient Processing / HyperHDR</p>
+        <h2 id="hyperhdr-control-heading">Ambient processing</h2>
+      </div>
+      <span class="status-badge healthy">Authenticated</span>
+    </div>
+    <dl class="metrics compact-metrics">
+      <div><dt>Control availability</dt>
+        <dd>{_escape(_hyperhdr_availability_text(hyperhdr_availability))}</dd></div>
+      <div><dt>Cached component health</dt><dd>{_escape(hyperhdr_health)}</dd></div>
+    </dl>
+    <div class="control-forms" aria-labelledby="hyperhdr-operations-heading">
+      <h3 id="hyperhdr-operations-heading">Allowlisted operations</h3>
+      {_hyperhdr_forms(session, hyperhdr_operations)}
+    </div>
+    <p class="detail-link"><a href="/controls/hyperhdr">
+      Open detailed HyperHDR status</a></p>
+  </section>
+</div>
+<div class="detail-layout controls-meta">
   <section class="panel" aria-labelledby="session-heading">
     <div class="panel-heading">
       <h2 id="session-heading">Authenticated session</h2>
@@ -237,30 +344,14 @@ def render_controls(
       <button type="submit" class="secondary-button">Sign out</button>
     </form>
   </section>
-</div>
-<div class="component-grid">
-  <aside class="panel" aria-labelledby="wled-control-heading">
-    <span class="future-label">Milestone 15</span>
-    <h2 id="wled-control-heading">{_escape(availability_title)}</h2>
-    <p>{_escape(availability_text)}</p>
-    {wled_link}
-  </aside>
-  <aside class="panel" aria-labelledby="hyperhdr-control-heading">
-    <span class="future-label">Milestone 16</span>
-    <h2 id="hyperhdr-control-heading">{_escape(hyperhdr_title)}</h2>
-    <p>{_escape(hyperhdr_text)}</p>
-    {hyperhdr_link}
-  </aside>
-</div>
-<section class="panel safety-statement" aria-labelledby="safety-heading">
-  <h2 id="safety-heading">Strict control boundary</h2>
-  <p>No presets, effects, colors, segments, DDP, service, process, instance,
-  power-supply, room-map, multi-zone, arbitrary JSON-RPC, combined ambient, or AI
-  controls exist. Authentication alone does not enable device operations.</p>
-</section>"""
-    return _shell(
-        title="Control-plane status", content=content, active_label="Controls"
-    )
+  <section class="panel safety-statement" aria-labelledby="safety-heading">
+    <h2 id="safety-heading">Strict control boundary</h2>
+    <p>Each form invokes one existing independently bounded operation. No combined
+    Ambient On or Ambient Off action, sequencing, rollback, preset, effect,
+    service, power-supply, or arbitrary device operation exists.</p>
+  </section>
+</div>"""
+    return _shell(title="Lighting Controls", content=content, active_label="Controls")
 
 
 def render_wled_controls(
@@ -289,15 +380,7 @@ def render_wled_controls(
         if notice not in notices
         else f'<p class="form-error" role="status">{_escape(notices[notice])}</p>'
     )
-    availability_text = {
-        WLEDControlAvailability.AUTHENTICATION_UNAVAILABLE: (
-            "Authentication unavailable"
-        ),
-        WLEDControlAvailability.WLED_UNAVAILABLE: "WLED unavailable",
-        WLEDControlAvailability.CONTROLS_DISABLED: "WLED controls disabled",
-        WLEDControlAvailability.NO_OPERATIONS: "No operations allowlisted",
-        WLEDControlAvailability.AVAILABLE: "WLED controls available",
-    }[availability]
+    availability_text = _wled_availability_text(availability)
     status = "Not reported" if component is None else component.status.value
     output = "Not reported"
     brightness = "Not reported"
@@ -313,40 +396,7 @@ def render_wled_controls(
         if type(brightness_value) is int:
             brightness = str(brightness_value)
 
-    forms: list[str] = []
-    if WLEDOperation.POWER_ON in operations:
-        forms.append(f"""
-<form method="post" action="/controls/wled/power-on" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <button type="submit">Power on</button>
-</form>""")
-    if WLEDOperation.POWER_OFF in operations:
-        forms.append(f"""
-<form method="post" action="/controls/wled/power-off" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <label>
-    <input type="checkbox" name="confirmation"
-      value="{POWER_OFF_CONFIRMATION_VALUE}" required>
-    Confirm that lighting may black out
-  </label>
-  <button type="submit">Power off</button>
-</form>""")
-    if WLEDOperation.BRIGHTNESS_SET in operations:
-        forms.append(f"""
-<form method="post" action="/controls/wled/brightness" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <div class="form-field">
-    <label for="brightness">Brightness (1–{_escape(maximum_brightness)})</label>
-    <input id="brightness" name="brightness" type="number" min="1"
-      max="{_escape(maximum_brightness)}" step="1" required>
-  </div>
-  <button type="submit">Set brightness</button>
-</form>""")
-    forms_html = (
-        "".join(forms)
-        if forms
-        else "<p>No WLED operation forms are currently available.</p>"
-    )
+    forms_html = _wled_forms(session, operations, maximum_brightness)
     content = f"""
 <header class="page-heading">
   <p class="eyebrow">Authenticated · fixed WLED adapter</p>
@@ -408,15 +458,7 @@ def render_hyperhdr_controls(
         if notice not in notices
         else f'<p class="form-error" role="status">{_escape(notices[notice])}</p>'
     )
-    availability_text = {
-        HyperHDRControlAvailability.AUTHENTICATION_UNAVAILABLE: (
-            "Authentication unavailable"
-        ),
-        HyperHDRControlAvailability.HYPERHDR_UNAVAILABLE: "HyperHDR unavailable",
-        HyperHDRControlAvailability.CONTROLS_DISABLED: "HyperHDR controls disabled",
-        HyperHDRControlAvailability.NO_OPERATIONS: "No operations allowlisted",
-        HyperHDRControlAvailability.AVAILABLE: "HyperHDR controls available",
-    }[availability]
+    availability_text = _hyperhdr_availability_text(availability)
     health = "Not reported" if component is None else component.status.value
     instance = "Not reported"
     grabber = "Not reported"
@@ -443,46 +485,7 @@ def render_hyperhdr_controls(
         grabber = rendered["grabber"]
         led_output = rendered["led_output"]
 
-    forms: list[str] = []
-    if HyperHDROperation.VIDEO_GRABBER_ENABLE in operations:
-        forms.append(f"""
-<form method="post" action="/controls/hyperhdr/video-grabber/enable" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <button type="submit">Enable video grabber</button>
-</form>""")
-    if HyperHDROperation.VIDEO_GRABBER_DISABLE in operations:
-        forms.append(f"""
-<form method="post" action="/controls/hyperhdr/video-grabber/disable" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <label>
-    <input type="checkbox" name="confirmation"
-      value="{VIDEO_GRABBER_DISABLE_CONFIRMATION_VALUE}" required>
-    Confirm that disabling the video grabber interrupts HyperHDR capture
-  </label>
-  <button type="submit">Disable video grabber</button>
-</form>""")
-    if HyperHDROperation.LED_OUTPUT_ENABLE in operations:
-        forms.append(f"""
-<form method="post" action="/controls/hyperhdr/led-output/enable" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <button type="submit">Enable LED output</button>
-</form>""")
-    if HyperHDROperation.LED_OUTPUT_DISABLE in operations:
-        forms.append(f"""
-<form method="post" action="/controls/hyperhdr/led-output/disable" class="auth-form">
-  <input type="hidden" name="csrf_token" value="{_escape(session.csrf_token)}">
-  <label>
-    <input type="checkbox" name="confirmation"
-      value="{LED_OUTPUT_DISABLE_CONFIRMATION_VALUE}" required>
-    Confirm that disabling LED output interrupts HyperHDR LED transmission
-  </label>
-  <button type="submit">Disable LED output</button>
-</form>""")
-    forms_html = (
-        "".join(forms)
-        if forms
-        else "<p>No HyperHDR operation forms are currently available.</p>"
-    )
+    forms_html = _hyperhdr_forms(session, operations)
     content = f"""
 <header class="page-heading">
   <p class="eyebrow">Authenticated · fixed HyperHDR adapter</p>

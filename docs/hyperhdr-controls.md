@@ -106,6 +106,7 @@ state, wiring, or power state.
 
 The protected routes are:
 
+- `GET /controls` for the unified Lighting Controls presentation
 - `GET /controls/hyperhdr`
 - `POST /controls/hyperhdr/video-grabber/enable`
 - `POST /controls/hyperhdr/video-grabber/disable`
@@ -130,6 +131,11 @@ does not poll independently. Only a verified success invalidates the existing
 cache, without polling. Denied, malformed, rate-limited, busy, failed, and
 unverified outcomes leave it unchanged. The next normal health request refreshes
 the snapshot.
+
+Milestone 19 Slice Two reuses the same four forms on `/controls`; each keeps its
+original component-specific POST handler and result redirect, and the detailed
+route remains functional. Merely rendering either page never invokes the
+HyperHDR mutation adapter.
 
 ## Audit and disclosure boundary
 
